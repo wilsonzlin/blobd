@@ -1,3 +1,7 @@
+#define _GNU_SOURCE
+
+#include <inttypes.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -6,7 +10,7 @@
 #include "device.h"
 #include "log.h"
 #include "util.h"
-#include "../ext/xxHash/xxhash.h";
+#include "../ext/xxHash/xxhash.h"
 
 LOGGER("bucket");
 

@@ -1,7 +1,14 @@
+#define _GNU_SOURCE
+
+#include <pthread.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
+#include "errno.h"
 #include "exit.h"
 #include "list.h"
 #include "server.h"
@@ -15,10 +22,12 @@
 
 KHASH_MAP_INIT_INT(svr_fd_to_client, uint32_t);
 
+LIST_DEF(client_ids, uint32_t);
+LIST(client_ids, uint32_t);
+
 // `n` must be nonzero.
 // Returns -1 on error or close, 0 on not ready, and nonzero on (partial) read.
-static inline read_t maybe_read(int fd, uint8_t* out_buf, size_t n) {
-  read_t res;
+static inline int maybe_read(int fd, uint8_t* out_buf, size_t n) {
   int readno = read(fd, out_buf, n);
   if (readno == -1) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -29,12 +38,12 @@ static inline read_t maybe_read(int fd, uint8_t* out_buf, size_t n) {
   return readno;
 }
 
-typedef struct {
+struct svr_method_args_parser_s {
   uint16_t read_next;
   uint16_t write_next;
   uint8_t raw_len;
   uint8_t raw[];
-} svr_method_args_parser_t;
+};
 
 svr_method_args_parser_t* args_parser_create(size_t raw_len) {
   svr_method_args_parser_t* p = malloc(sizeof(svr_method_args_parser_t) + raw_len);
@@ -48,37 +57,34 @@ void args_parser_destroy(svr_method_args_parser_t* p) {
   free(p);
 }
 
-typedef enum {
-  AWAITING_CLIENT_IO,
-  AWAITING_FLUSH,
-  READY,
-} svr_client_state_t;
+uint8_t* svr_method_args_parser_parse(svr_method_args_parser_t* parser, size_t want_bytes) {
+  if (parser->read_next + want_bytes > parser->raw_len) {
+    return NULL;
+  }
+  uint8_t* rv = parser->raw + parser->read_next;
+  parser->read_next += want_bytes;
+  return rv;
+}
 
-typedef enum {
-  // Dummy value.
-  SVR_METHOD__UNKNOWN = 0,
-  SVR_METHOD_CREATE_OBJECT = 1,
-  // (u8 key_len, char[] key, i64 start, i64 end_exclusive_or_zero_for_eof).
-  SVR_METHOD_READ_OBJECT = 2,
-  // (u8 key_len, char[] key, i64 start, i64 end_exclusive).
-  SVR_METHOD_WRITE_OBJECT = 3,
-  // (u8 key_len, char[] key).
-  SVR_METHOD_DELETE_OBJECT = 4,
-} svr_method_t;
+bool svr_method_args_parser_end(svr_method_args_parser_t* parser) {
+  return parser->read_next == parser->raw_len;
+}
 
-// The server is like RPC. There are methods, with one signature each. The arguments are serialised into a binary format and stored sequentially, like an ABI calling convention. Then the handler will read and write directly between the memory and socket (no user space buffering). The handler must do as much work as possible, then yield back ASAP for cooperative multitasking on one thread. This could be when writing to socket or flushing to disk. Even if we use multiple threads, it's still not ideal to waste threads by blocking on I/O tasks and idling CPU.
-// The client must pass the length of the serialised arguments list in bytes. The server will only parse them once all bytes have been received.
-// The server will use epoll to read and write to sockets, and then call handlers to resume handling after bytes are available/have been written.
-// There is no multiplexing. A client must only send new calls after old calls have been responded. If there is an error, the client is simply disconnected.
-typedef struct {
-  atomic_uint_least8_t open;
-  atomic_uint_least8_t state;
-  int fd;
-  svr_method_args_parser_t* args_parser;
-  svr_method_t method;
-  void* method_state;
-  void (*method_state_destructor)(void*);
-} svr_client_t;
+struct svr_clients_s {
+  kh_svr_fd_to_client_t* fd_to_client;
+  pthread_rwlock_t fd_to_client_lock;
+  svr_client_t* ring_buf;
+  size_t ring_buf_cap_log2;
+  size_t ring_buf_read;
+  size_t ring_buf_write;
+  // The size of this ring buffer should also be ring_buf_cap_log2.
+  uint32_t* ready_ring_buf;
+  size_t ready_ring_buf_read;
+  size_t ready_ring_buf_write;
+  pthread_mutex_t ready_lock;
+  client_ids_t* awaiting_flush;
+  pthread_mutex_t awaiting_flush_lock;
+};
 
 typedef struct {
   svr_clients_t* svr;
@@ -87,7 +93,7 @@ typedef struct {
 } worker_state_t;
 
 #define READ_OR_RELEASE(readres, fd, buf, n) \
-  int readres = maybe_read(client->fd, buf, 1); \
+  readres = maybe_read(fd, buf, 1); \
   if (!readres) { \
     res = SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE; \
     break; \
@@ -148,14 +154,14 @@ void* worker_start(void* state_raw) {
               ap->write_next += readlen;
             } else {
               // We haven't parsed the args.
-              if (method == SVR_METHOD_CREATE_OBJECT) {
+              if (client->method == SVR_METHOD_CREATE_OBJECT) {
                 client->method_state = method_create_object_state_create(state->ctx, ap);
                 client->method_state_destructor = method_create_object_state_destroy;
-              } else if (method == SVR_METHOD_READ_OBJECT) {
+              } else if (client->method == SVR_METHOD_READ_OBJECT) {
                 // TODO
-              } else if (method == SVR_METHOD_WRITE_OBJECT) {
+              } else if (client->method == SVR_METHOD_WRITE_OBJECT) {
                 // TODO
-              } else if (method == SVR_METHOD_DELETE_OBJECT) {
+              } else if (client->method == SVR_METHOD_DELETE_OBJECT) {
                 // TODO
               } else {
                 fprintf(stderr, "Unknown client method %u\n", client->method);
@@ -166,13 +172,13 @@ void* worker_start(void* state_raw) {
             }
           }
         } else {
-          if (method == SVR_METHOD_CREATE_OBJECT) {
-            res = method_create_object(state->ctx, client->method_state);
-          } else if (method == SVR_METHOD_READ_OBJECT) {
+          if (client->method == SVR_METHOD_CREATE_OBJECT) {
+            res = method_create_object(state->ctx, client->method_state, client->fd);
+          } else if (client->method == SVR_METHOD_READ_OBJECT) {
             // TODO
-          } else if (method == SVR_METHOD_WRITE_OBJECT) {
+          } else if (client->method == SVR_METHOD_WRITE_OBJECT) {
             // TODO
-          } else if (method == SVR_METHOD_DELETE_OBJECT) {
+          } else if (client->method == SVR_METHOD_DELETE_OBJECT) {
             // TODO
           } else {
             fprintf(stderr, "Unknown client method %u\n", client->method);
@@ -184,7 +190,7 @@ void* worker_start(void* state_raw) {
 
       if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE || res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
         // Release before adding back to epoll.
-        client->state = AWAITING_CLIENT_IO;
+        client->state = SVR_CLIENT_STATE_AWAITING_CLIENT_IO;
         struct epoll_event ev;
         ev.events = EPOLLONESHOT | (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE ? EPOLLIN : EPOLLOUT);
         ev.data.fd = client->fd;
@@ -194,7 +200,7 @@ void* worker_start(void* state_raw) {
         }
       } else if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH) {
         // Release before appending to list.
-        client->state = AWAITING_FLUSH;
+        client->state = SVR_CLIENT_STATE_AWAITING_FLUSH;
         if (pthread_mutex_lock(&state->svr->awaiting_flush_lock)) {
           perror("Failed to acquire lock on awaiting flush list");
           exit(EXIT_INTERNAL);
@@ -206,7 +212,7 @@ void* worker_start(void* state_raw) {
         }
       } else if (res == SVR_CLIENT_RESULT_END) {
         res = SVR_CLIENT_RESULT__UNKNOWN;
-        client->state = READY;
+        client->state = SVR_CLIENT_STATE_READY;
         client->method = SVR_METHOD__UNKNOWN;
         if (client->args_parser != NULL) {
           args_parser_destroy(client->args_parser);
@@ -257,6 +263,80 @@ void* worker_start(void* state_raw) {
   return NULL;
 }
 
+svr_clients_t* server_clients_create(size_t max_clients_log2) {
+  svr_clients_t* clients = malloc(sizeof(svr_clients_t));
+  clients->fd_to_client = kh_init_svr_fd_to_client();
+  if (pthread_rwlock_init(&clients->fd_to_client_lock, NULL)) {
+    perror("Failed to create lock for FD map");
+    exit(EXIT_INTERNAL);
+  }
+  clients->ring_buf = malloc(sizeof(svr_client_t) * (1 << max_clients_log2));
+  clients->ring_buf_cap_log2 = max_clients_log2;
+  clients->ring_buf_read = 0;
+  clients->ring_buf_write = 0;
+  clients->ready_ring_buf = malloc(sizeof(uint32_t) * (1 << max_clients_log2));
+  clients->ready_ring_buf_read = 0;
+  clients->ready_ring_buf_write = 0;
+  if (pthread_mutex_init(&clients->ready_lock, NULL)) {
+    perror("Failed to create lock for ready clients");
+    exit(EXIT_INTERNAL);
+  }
+  clients->awaiting_flush = client_ids_create_with_capacity(1 << max_clients_log2);
+  if (pthread_mutex_init(&clients->awaiting_flush_lock, NULL)) {
+    perror("Failed to create lock for awaiting flush list");
+    exit(EXIT_INTERNAL);
+  }
+  return clients;
+}
+
+size_t server_clients_get_capacity(svr_clients_t* clients) {
+  return 1 << clients->ring_buf_cap_log2;
+}
+
+void server_clients_acquire_awaiting_flush_lock(svr_clients_t* clients) {
+  if (pthread_mutex_lock(&clients->awaiting_flush_lock)) {
+    perror("Failed to acquire lock on awaiting flush list");
+    exit(EXIT_INTERNAL);
+  }
+}
+
+void server_clients_release_awaiting_flush_lock(svr_clients_t* clients) {
+  if (pthread_mutex_unlock(&clients->awaiting_flush_lock)) {
+    perror("Failed to release lock on awaiting flush list");
+    exit(EXIT_INTERNAL);
+  }
+}
+
+size_t server_clients_get_awaiting_flush_count(svr_clients_t* clients) {
+  return clients->awaiting_flush->len;
+}
+
+void server_clients_pop_all_awaiting_flush(svr_clients_t* clients, uint32_t* out) {
+  memcpy(out, clients->awaiting_flush->elems, clients->awaiting_flush->len);
+  clients->awaiting_flush->len = 0;
+}
+
+void server_clients_push_all_ready(svr_clients_t* clients, uint32_t* client_ids, size_t n) {
+  if (pthread_mutex_lock(&clients->ready_lock)) {
+    perror("Failed to lock ready clients");
+    exit(EXIT_INTERNAL);
+  }
+  for (size_t i = 0; i < n; i++) {
+    uint32_t client_id = client_ids[i];
+    if (clients->ready_ring_buf[clients->ready_ring_buf_write] != 0xFFFFFFFF) {
+      fprintf(stderr, "Too many clients\n");
+      exit(EXIT_INTERNAL);
+    }
+    clients->ring_buf[client_id].state = SVR_CLIENT_STATE_READY;
+    clients->ready_ring_buf[clients->ready_ring_buf_write] = client_id;
+    clients->ready_ring_buf_write = (clients->ready_ring_buf_write + 1) & ((1 << clients->ring_buf_cap_log2) - 1);
+  }
+  if (pthread_mutex_unlock(&clients->ready_lock)) {
+    perror("Failed to unlock ready clients");
+    exit(EXIT_INTERNAL);
+  }
+}
+
 void server_start_loop(
   svr_clients_t* svr,
   size_t worker_count,
@@ -299,6 +379,22 @@ void server_start_loop(
     exit(EXIT_INTERNAL);
   }
 
+  worker_state_t* worker_state = malloc(sizeof(worker_state_t));
+  worker_state->svr = svr;
+  worker_state->epoll_fd = svr_epoll_fd;
+  worker_state->ctx = malloc(sizeof(svr_method_handler_ctx_t));
+  worker_state->ctx->bkts = bkts;
+  worker_state->ctx->dev = dev;
+  worker_state->ctx->fl = fl;
+  worker_state->ctx->flush = flush;
+  for (size_t i = 0; i < worker_count; i++) {
+    pthread_t t;
+    if (pthread_create(&t, NULL, worker_start, worker_state)) {
+      perror("Failed to create server worker");
+      exit(EXIT_INTERNAL);
+    }
+  }
+
   struct epoll_event svr_epoll_ctl_event;
   svr_epoll_ctl_event.events = EPOLLIN;
   svr_epoll_ctl_event.data.fd = svr_socket;
@@ -336,7 +432,7 @@ void server_start_loop(
         }
 
         // Get client ID.
-        if (svr->ring_buf[svr->ring_buf_write]->open) {
+        if (svr->ring_buf[svr->ring_buf_write].open) {
           // TODO Drop client instead.
           perror("Too many clients");
           exit(EXIT_CONF);
@@ -347,7 +443,7 @@ void server_start_loop(
         // Set client.
         svr_client_t* client = svr->ring_buf + client_id;
         client->open = true;
-        client->state = READY;
+        client->state = SVR_CLIENT_STATE_READY;
         client->fd = peer;
         client->args_parser = NULL;
         client->method = SVR_METHOD__UNKNOWN;
@@ -389,7 +485,7 @@ void server_start_loop(
           exit(EXIT_INTERNAL);
         }
         svr_client_t* client = svr->ring_buf + client_id;
-        if (client->state != AWAITING_CLIENT_IO) {
+        if (client->state != SVR_CLIENT_STATE_AWAITING_CLIENT_IO) {
           fprintf(stderr, "epoll emitted event on non-owned client\n");
           exit(EXIT_INTERNAL);
         }
@@ -402,7 +498,7 @@ void server_start_loop(
           exit(EXIT_INTERNAL);
         }
         // This will hand off ownership of the client.
-        client->state = READY;
+        client->state = SVR_CLIENT_STATE_READY;
         svr->ready_ring_buf[svr->ready_ring_buf_write] = client_id;
         svr->ready_ring_buf_write = (svr->ready_ring_buf_write + 1) & ring_buf_mask;
         if (pthread_mutex_unlock(&svr->ready_lock)) {

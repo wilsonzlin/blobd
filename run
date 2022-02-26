@@ -2,5 +2,5 @@
 
 set -Eeuxo pipefail
 
-gcc --std=c18 -Wall -Wextra -Werror -O3 -o main -l pthread ext/xxHash/xxhash.c src/main.c
+gcc --std=c18 -Wall -Wextra -Werror -O3 -flto -march=native -o main -l pthread ext/xxHash/xxhash.c src/**/*.c src/*.c
 sudo ./main

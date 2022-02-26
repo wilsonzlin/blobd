@@ -4,7 +4,6 @@
 #include <pthread.h>
 #include <unistd.h>
 #include "cursor.h"
-#include "list.h"
 #include "vec.h"
 
 /**

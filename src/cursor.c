@@ -1,5 +1,9 @@
+#define _DEFAULT_SOURCE
+
 #include <endian.h>
 #include <stdint.h>
+#include <stddef.h>
+#include <string.h>
 #include "cursor.h"
 
 uint16_t read_u16(cursor_t* cur) {
@@ -28,25 +32,25 @@ uint64_t read_u64(cursor_t* cur) {
 }
 
 uint16_t consume_u16(cursor_t** cur) {
-  uint16_t value = read_u16(*cur);
+  uint16_t v = read_u16(*cur);
   *cur += 2;
   return v;
 }
 
 uint32_t consume_u24(cursor_t** cur) {
-  uint24_t value = read_u24(*cur);
+  uint32_t v = read_u24(*cur);
   *cur += 3;
   return v;
 }
 
 uint32_t consume_u32(cursor_t** cur) {
-  uint32_t value = read_u32(*cur);
+  uint32_t v = read_u32(*cur);
   *cur += 4;
   return v;
 }
 
 uint64_t consume_u64(cursor_t** cur) {
-  uint64_t value = read_u64(*cur);
+  uint64_t v = read_u64(*cur);
   *cur += 8;
   return v;
 }

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "device.h"
 #include "tile.h"
+#include "util.h"
 
 device_t* device_create(void* mmap, size_t size) {
   device_t* dev = malloc(sizeof(device_t));

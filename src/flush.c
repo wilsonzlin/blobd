@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -18,11 +20,9 @@
 #include "vec.h"
 #include "../ext/xxHash/xxhash.h"
 
-LOGGER("flush");
-
 flush_state_t* flush_create() {
   flush_state_t* flush = malloc(sizeof(flush_state_t));
-  if (pthread_rwlock_init(&(flush->rwlock), NULL)) {
+  if (pthread_rwlock_init(&flush->rwlock, NULL)) {
     perror("Failed to create flushing lock");
     exit(EXIT_INTERNAL);
   }
@@ -35,11 +35,12 @@ typedef struct {
   uint32_t offset_in_change_data_pool;
 } change_t;
 
+LIST_DEF(changes, change_t);
 LIST(changes, change_t);
 
 typedef struct {
   flush_state_t* flush;
-  svr_t* svr;
+  svr_clients_t* svr;
   device_t* dev;
   journal_t* journal;
   freelist_t* fl;
@@ -76,9 +77,9 @@ static inline void append_change(
     change_t c = {
       .device_offset = device_offset,
       .len = len,
-      .offset_in_change_data_pool = change_data_next,
-    }
-    changes_append(state->changes, c);
+      .offset_in_change_data_pool = *change_data_next,
+    };
+    changes_append(changes, c);
   }
   *change_data_next += len;
 }
@@ -114,7 +115,7 @@ void visit_bucket_dirty_bitmap(
   } else {
     for (size_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
       size_t offset = base * 64 + i1;
-      visit_bucket_dirty_bitmap(bkts, bkts->dirty_sixteen_pointers[layer + 1][i1], offset, layer + 1);
+      visit_bucket_dirty_bitmap(state, change_data_next, bkts->dirty_sixteen_pointers[layer + 1][i1], offset, layer + 1);
     }
   }
 }
@@ -131,11 +132,8 @@ void* thread(void* state_raw) {
       exit(EXIT_INTERNAL);
     }
 
-    if (pthread_mutex_lock(&state->svr->awaiting_flush_lock)) {
-      perror("Failed to acquire lock on awaiting flush list");
-      exit(EXIT_INTERNAL);
-    }
-    size_t client_len = state->svr->awaiting_flush->len;
+    server_clients_acquire_awaiting_flush_lock(state->svr);
+    size_t client_len = server_clients_get_awaiting_flush_count(state->svr);
     if (client_len >= state->client_ids_cap) {
       while (client_len >= state->client_ids_cap) {
         state->client_ids_cap *= 2;
@@ -143,12 +141,8 @@ void* thread(void* state_raw) {
       free(state->client_ids_buf);
       state->client_ids_buf = malloc(sizeof(uint32_t) * state->client_ids_cap);
     }
-    memcpy(state->client_ids_buf, state->svr->awaiting_flush->elems, client_len);
-    state->svr->awaiting_flush->len = 0;
-    if (pthread_mutex_unlock(&state->svr->awaiting_flush_lock)) {
-      perror("Failed to release lock on awaiting flush list");
-      exit(EXIT_INTERNAL);
-    }
+    server_clients_pop_all_awaiting_flush(state->svr, state->client_ids_buf);
+    server_clients_release_awaiting_flush_lock(state->svr);
 
     if (pthread_rwlock_wrlock(&state->flush->rwlock)) {
       perror("Failed to acquire write lock on flushing");
@@ -166,13 +160,13 @@ void* thread(void* state_raw) {
     size_t change_data_next = 0;
 
     if (state->fl->dirty_eight_tiles_bitmap_1) {
-      vec_128i_u8_t i1_candidates = vec_find_indices_of_nonzero_bits_16(fl->dirty_eight_tiles_bitmap_1);
+      vec_128i_u8_t i1_candidates = vec_find_indices_of_nonzero_bits_16(state->fl->dirty_eight_tiles_bitmap_1);
       for (size_t o1 = 0, i1; (i1 = i1_candidates.elems[o1]) != 16; o1++) {
-        vec_512i_u8_t i2_candidates = vec_find_indices_of_nonzero_bits_64(fl->dirty_eight_tiles_bitmap_2[i1]);
+        vec_512i_u8_t i2_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_eight_tiles_bitmap_2[i1]);
         for (size_t o2 = 0, i2; (i2 = i2_candidates.elems[o2]) != 64; o2++) {
-          vec_512i_u8_t i3_candidates = vec_find_indices_of_nonzero_bits_64(fl->dirty_eight_tiles_bitmap_3[i1 * 8 + i2]);
+          vec_512i_u8_t i3_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_eight_tiles_bitmap_3[i1 * 8 + i2]);
           for (size_t o3 = 0, i3; (i3 = i3_candidates.elems[o3]) != 64; o3++) {
-            vec_512i_u8_t i4_candidates = vec_find_indices_of_nonzero_bits_64(fl->dirty_eight_tiles_bitmap_4[(((i1 * 8) + i2) * 64) + i3]);
+            vec_512i_u8_t i4_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_eight_tiles_bitmap_4[(((i1 * 8) + i2) * 64) + i3]);
             for (size_t o4 = 0, i4; (i4 = i4_candidates.elems[o4]) != 64; o4++) {
               uint32_t eight_tiles = ((((i1 * 8) + i2) * 64) + i3) * 64 + i4;
               size_t len = 8 + 1 + 3 * 8;
@@ -190,7 +184,7 @@ void* thread(void* state_raw) {
                 size_t a4 = atmp % 16; atmp /= 16;
                 size_t a5 = atmp % 16; atmp /= 16;
                 size_t a6 = atmp % 16;
-                produce_u24(&cur, TILE_SIZE - state->fl->microtile_free_map_6[a1][a2][a3][a4][a5].elems[a6] - 1)
+                produce_u24(&cur, TILE_SIZE - state->fl->microtile_free_map_6[a1][a2][a3][a4][a5].elems[a6] - 1);
               }
               uint64_t checksum = XXH3_64bits(start, len - 8);
               produce_u64(&cur, checksum);
@@ -238,11 +232,11 @@ void* thread(void* state_raw) {
 
     // Clear dirty bitmaps.
     state->fl->dirty_eight_tiles_bitmap_1 = 0;
-    memset(state->fl->dirty_eight_tiles_bitmap_2, 64 * sizeof(uint64_t), 0);
-    memset(state->fl->dirty_eight_tiles_bitmap_3, 64 * 64 * sizeof(uint64_t), 0);
-    memset(state->fl->dirty_eight_tiles_bitmap_4, 64 * 64 * 8 * sizeof(uint64_t), 0);
+    memset(state->fl->dirty_eight_tiles_bitmap_2, 0, 64 * sizeof(uint64_t));
+    memset(state->fl->dirty_eight_tiles_bitmap_3, 0, 64 * 64 * sizeof(uint64_t));
+    memset(state->fl->dirty_eight_tiles_bitmap_4, 0, 64 * 64 * 8 * sizeof(uint64_t));
     for (size_t i = 0, l = 1; i < state->buckets->dirty_sixteen_pointers_layer_count; i++, l *= 64) {
-      memset(state->buckets->dirty_sixteen_pointers[i], l * sizeof(uint64_t), 0);
+      memset(state->buckets->dirty_sixteen_pointers[i], 0, l * sizeof(uint64_t));
     }
 
     if (pthread_rwlock_unlock(&state->flush->rwlock)) {
@@ -250,29 +244,13 @@ void* thread(void* state_raw) {
       exit(EXIT_INTERNAL);
     }
 
-    if (pthread_mutex_lock(&state->svr->ready_lock)) {
-      perror("Failed to lock ready clients");
-      exit(EXIT_INTERNAL);
-    }
-    for (size_t i = 0; i < client_len; i++) {
-      uint32_t client_id = state->client_ids_buf[i];
-      if (state->svr->ready_ring_buf[state->svr->ready_ring_buf_write] != 0xFFFFFFFF) {
-        fprintf(stderr, "Too many clients\n");
-        exit(EXIT_INTERNAL);
-      }
-      state->svr->ring_buf[client_id]->state = READY;
-      state->svr->ready_ring_buf[state->svr->ready_ring_buf_write] = client_id;
-      state->svr->ready_ring_buf_write = (state->svr->ready_ring_buf_write + 1) & ring_buf_mask;
-    }
-    if (pthread_mutex_unlock(&state->svr->ready_lock)) {
-      perror("Failed to unlock ready clients");
-      exit(EXIT_INTERNAL);
-    }
+    server_clients_push_all_ready(state->svr, state->client_ids_buf, client_len);
   }
 }
 
 void flush_worker_start(
   flush_state_t* flush,
+  svr_clients_t* svr,
   device_t* dev,
   journal_t* journal,
   freelist_t* fl,
@@ -280,16 +258,19 @@ void flush_worker_start(
 ) {
   thread_state_t* state = malloc(sizeof(thread_state_t));
   state->flush = flush;
+  state->svr = svr;
   state->dev = dev;
   state->journal = journal;
   state->fl = fl;
   state->buckets = buckets;
+  state->client_ids_cap = server_clients_get_capacity(svr);
+  state->client_ids_buf = malloc(sizeof(uint32_t) * state->client_ids_cap);
   state->changes = changes_create_with_capacity(128);
   state->change_data_pool_cap = 2048;
   state->change_data_pool = malloc(state->change_data_pool_cap);
   uint8_t u32_0[4];
-  write_u32(&u32_0, 0);
-  state->xxhash_u32_0 = XXH3_64bits(&u32_0, 4);
+  write_u32(u32_0, 0);
+  state->xxhash_u32_0 = XXH3_64bits(u32_0, 4);
 
   pthread_t t;
   if (pthread_create(&t, NULL, thread, state)) {

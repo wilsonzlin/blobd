@@ -1,19 +1,15 @@
 #pragma once
 
-#include <pthread.h>
 #include "bucket.h"
 #include "device.h"
+#include "flushstate.h"
 #include "freelist.h"
 #include "journal.h"
-
-typedef struct {
-  pthread_rwlock_t rwlock;
-} flush_state_t;
-
-flush_state_t* flush_create();
+#include "server.h"
 
 void flush_worker_start(
   flush_state_t* flush,
+  svr_clients_t* svr,
   device_t* dev,
   journal_t* journal,
   freelist_t* fl,

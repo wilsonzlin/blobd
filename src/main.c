@@ -16,28 +16,22 @@
 #include "device.h"
 #include "exit.h"
 #include "flush.h"
+#include "flushstate.h"
 #include "freelist.h"
-#include "mmap.h"
 #include "server.h"
 #include "tile.h"
 #include "util.h"
 
 int main(int argc, char** argv) {
-  long page_size = sysconf(_SC_PAGE_SIZE);
-  if (-1 == page_size) {
-    perror("Failed to get page size");
-    exit(EXIT_INTERNAL);
-  }
-  MMAP_PAGE_SIZE = page_size;
-
-  if (argc != 4) {
-    fprintf(stderr, "Not enough arguments provided");
+  if (argc != 5) {
+    fprintf(stderr, "Not enough arguments provided\n");
     exit(EXIT_CONF);
   }
 
   char* arg_action = argv[1];
   char* arg_dev = argv[2];
   char* arg_worker_count = argv[3];
+  char* arg_client_max = argv[4];
 
   int dev_fd = open(arg_dev, O_RDWR);
   if (-1 == dev_fd) {
@@ -62,6 +56,15 @@ int main(int argc, char** argv) {
     exit(EXIT_INTERNAL);
   }
 
+  if (!strcmp("format", arg_action)) {
+    // TODO
+  }
+
+  if (strcmp("start", arg_action)) {
+    fprintf(stderr, "Unknown action: %s\n", arg_action);
+    exit(EXIT_CONF);
+  }
+
   errno = 0;
   size_t worker_count = strtoull(arg_worker_count, NULL, 10);
   if (errno != 0) {
@@ -78,6 +81,15 @@ int main(int argc, char** argv) {
     worker_count = v;
   }
 
+  errno = 0;
+  size_t client_max_log2 = strtoull(arg_client_max, NULL, 10);
+  if (errno != 0) {
+    perror("Failed to parse maximum clients argument");
+    exit(EXIT_CONF);
+  }
+
+  svr_clients_t* svr = server_clients_create(client_max_log2);
+
   device_t* dev = device_create(dev_mmap, dev_size);
 
   journal_t* journal = journal_create(0);
@@ -86,10 +98,11 @@ int main(int argc, char** argv) {
 
   buckets_t* buckets = buckets_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE + 2097152 * (1 + 3 * 8 + 8));
 
-  flush_t* flush = flush_create();
+  flush_state_t* flush = flush_create();
 
   flush_worker_start(
     flush,
+    svr,
     dev,
     journal,
     freelist,
@@ -97,6 +110,7 @@ int main(int argc, char** argv) {
   );
 
   server_start_loop(
+    svr,
     worker_count,
     dev,
     flush,

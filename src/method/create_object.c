@@ -1,19 +1,31 @@
+#define _GNU_SOURCE
+
+#include <errno.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
-#include "../cursor.h";
+#include "../cursor.h"
 #include "../device.h"
 #include "../exit.h"
-#include "../inode.h";
-#include "../object.h";
-#include "../server.h";
-#include "../tile.h";
-#include "../util.h";
+#include "../inode.h"
+#include "../object.h"
+#include "../server.h"
+#include "../tile.h"
+#include "../util.h"
 #include "create_object.h"
 #include "../../ext/xxHash/xxhash.h"
 
-typedef struct {
+typedef enum {
+  METHOD_CREATE_OBJECT_ERROR__UNKNOWN,
+  METHOD_CREATE_OBJECT_ERROR_OK,
+  METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS,
+  METHOD_CREATE_OBJECT_ERROR_KEY_TOO_LONG,
+  METHOD_CREATE_OBJECT_ERROR_TOO_MANY_ARGS,
+} method_create_object_error_t;
+
+struct method_create_object_state_s {
   // If this is not METHOD_CREATE_OBJECT_ERROR__UNKNOWN, all other fields are undefined.
   method_create_object_error_t response;
   vec_512i_u8_t key_half_lower;
@@ -21,20 +33,13 @@ typedef struct {
   uint64_t key_bucket;
   uint8_t key_len;
   uint64_t size;
-} method_create_object_state_t;
-
-typedef enum {
-  METHOD_CREATE_OBJECT_ERROR__UNKNOWN,
-  METHOD_CREATE_OBJECT_ERROR_OK,
-  METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS,
-  METHOD_CREATE_OBJECT_ERROR_KEY_TOO_LONG,
-} method_create_object_error_t;
+};
 
 #define PARSE_OR_ERROR(out_parsed, parser, n, error) \
   out_parsed = svr_method_args_parser_parse(parser, 1); \
   if (p == NULL) { \
-    args->err = error; \
-    return args;
+    args->response = error; \
+    return args; \
   }
 
 // Method signature: (u8 key_len, char[] key, u64 size).
@@ -42,30 +47,32 @@ method_create_object_state_t* method_create_object_state_create(
   svr_method_handler_ctx_t* ctx,
   svr_method_args_parser_t* parser
 ) {
-  method_create_object_error_t err = METHOD_CREATE_OBJECT_ERROR__UNKNOWN;
-  method_create_object_state_t* args = NULL;
+  method_create_object_state_t* args = malloc(sizeof(method_create_object_state_t));
+  args->response = METHOD_CREATE_OBJECT_ERROR__UNKNOWN;
   uint8_t* p = NULL;
 
-  args = malloc(sizeof(method_create_object_state_t));
   PARSE_OR_ERROR(p, parser, 1, METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS);
   args->key_len = *p;
   if (args->key_len > 128) {
-    err = METHOD_CREATE_OBJECT_ERROR_KEY_TOO_LONG;
-    goto revert;
+    args->response = METHOD_CREATE_OBJECT_ERROR_KEY_TOO_LONG;
+    return args;
   }
   uint8_t key[128];
   PARSE_OR_ERROR(p, parser, args->key_len, METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS);
   memcpy(key, p, args->key_len);
-  memcpy(&(args->key_half_lower.elems[0]), key, 64);
-  memcpy(&(args->key_half_upper.elems[0]), &key[64], 64);
+  memcpy(&args->key_half_lower.elems[0], key, 64);
+  memcpy(&args->key_half_upper.elems[0], &key[64], 64);
   args->key_bucket = XXH3_64bits(key, args->key_len) & ((1 << ctx->bkts->count_log2) - 1);
   PARSE_OR_ERROR(p, parser, 8, METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS);
   args->size = read_u64(p);
-  svr_method_args_parser_end(parser);
+  if (!svr_method_args_parser_end(parser)) {
+    args->response = METHOD_CREATE_OBJECT_ERROR_TOO_MANY_ARGS;
+    return args;
+  }
   return args;
 }
 
-void method_create_object_state_destroy(method_create_object_state_t* state) {
+void method_create_object_state_destroy(void* state) {
   free(state);
 }
 
@@ -102,7 +109,7 @@ svr_client_result_t method_create_object(
   }
   size_t inode_size = 8 + 3 + 3 + 1 + 5 + 1 + args->key_len + (full_tiles * 11) + 1 + last_tile_metadata_size;
 
-  if (pthread_rwlock_rdlock(ctx->flush->rwlock)) {
+  if (pthread_rwlock_rdlock(&ctx->flush->rwlock)) {
     perror("Failed to acquire read lock on flushing");
     exit(EXIT_INTERNAL);
   }
@@ -112,9 +119,9 @@ svr_client_result_t method_create_object(
   produce_u8(&cur, INO_STATE_OK);
   produce_u40(&cur, args->size);
   produce_u8(&cur, args->key_len);
-  produce_n(&cur, &(args->key_half_lower.elems[0]), min(args->key_len, 64));
+  produce_n(&cur, &args->key_half_lower.elems[0], min(args->key_len, 64));
   if (args->key_len > 64) {
-    produce_n(&cur, &(args->key_half_upper.elems[0]), args->key_len - 64);
+    produce_n(&cur, &args->key_half_upper.elems[0], args->key_len - 64);
   }
   produce_u8(&cur, last_tile_mode);
   if (full_tiles) {
@@ -132,18 +139,18 @@ svr_client_result_t method_create_object(
   uint_least64_t bkt_ptr_existing = ctx->bkts->bucket_pointers[args->key_bucket];
   while (!atomic_compare_exchange_weak(&ctx->bkts->bucket_pointers[args->key_bucket], &bkt_ptr_existing, bkt_ptr_new)) {}
 
-  if (pthread_rwlock_wrlock(ctx->bkts->dirty_sixteen_pointers_rwlock)) {
+  if (pthread_rwlock_wrlock(&ctx->bkts->dirty_sixteen_pointers_rwlock)) {
     perror("Failed to acquire write lock on buckets");
     exit(EXIT_INTERNAL);
   }
   for (
-    size_t o = args->key_bucket, i = ctx->bkts->dirty_sixteen_pointers_layer_count - 1;
-    i >= 0;
+    size_t o = args->key_bucket, i = ctx->bkts->dirty_sixteen_pointers_layer_count;
+    i > 0;
     o /= 64, i--
   ) {
-    ctx->bkts->dirty_sixteen_pointers[i][o / 64] |= (1 << (o % 64));
+    ctx->bkts->dirty_sixteen_pointers[i - 1][o / 64] |= (1 << (o % 64));
   }
-  if (pthread_rwlock_unlock(ctx->bkts->lock)) {
+  if (pthread_rwlock_unlock(&ctx->bkts->dirty_sixteen_pointers_rwlock)) {
     perror("Failed to release write lock on buckets");
     exit(EXIT_INTERNAL);
   }
@@ -153,7 +160,7 @@ svr_client_result_t method_create_object(
   uint64_t hash = XXH3_64bits(inode_cur + 8, inode_size - 8);
   write_u64(inode_cur, hash);
 
-  if (pthread_rwlock_unlock(ctx->flush->rwlock)) {
+  if (pthread_rwlock_unlock(&ctx->flush->rwlock)) {
     perror("Failed to release read lock on flushing");
     exit(EXIT_INTERNAL);
   }
