@@ -45,6 +45,7 @@ int main(int argc, char** argv) {
     exit(EXIT_INTERNAL);
   }
 
+  // Do not use MAP_PRIVATE as that requires reserving memory upfront.
   char* dev_mmap = mmap(NULL, dev_size, PROT_READ | PROT_WRITE, MAP_SHARED_VALIDATE, dev_fd, 0);
   if (MAP_FAILED == dev_mmap) {
     perror("Failed to map block device");
