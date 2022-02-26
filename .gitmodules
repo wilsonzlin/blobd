@@ -1,0 +1,6 @@
+[submodule "ext/xxHash"]
+	path = ext/xxHash
+	url = https://github.com/Cyan4973/xxHash.git
+[submodule "ext/klib"]
+	path = ext/klib
+	url = https://github.com/attractivechaos/klib.git

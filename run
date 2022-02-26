@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+set -Eeuxo pipefail
+
+gcc --std=c18 -Wall -Wextra -Werror -O3 -o main -l pthread ext/xxHash/xxhash.c src/main.c
+sudo ./main
