@@ -36,6 +36,7 @@ buckets_t* buckets_create_from_disk_state(
     bkts->dirty_sixteen_pointers[i] = aligned_alloc(sizeof(uint64_t), sizeof(uint64_t) * l);
   }
 
+  ts_log(DEBUG, "Loading %zu buckets", bkt_cnt);
   cursor_t* cur = dev->mmap + bkts->dev_offset_pointers;
   bkts->bucket_pointers = malloc(sizeof(atomic_uint_least64_t) * bkt_cnt);
   for (size_t i = 0; i < sixteens; i++) {
@@ -50,6 +51,8 @@ buckets_t* buckets_create_from_disk_state(
       CORRUPT("invalid bucket data hash at 16-bucket group %zu, recorded hash is %"PRIx64" but recorded data hashes to %"PRIx64, i, checksum_recorded, checksum_actual);
     }
   }
+
+  ts_log(DEBUG, "Loaded buckets");
 
   return bkts;
 }

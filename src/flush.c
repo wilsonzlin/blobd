@@ -144,6 +144,10 @@ void* thread(void* state_raw) {
     server_clients_pop_all_awaiting_flush(state->svr, state->client_ids_buf);
     server_clients_release_awaiting_flush_lock(state->svr);
 
+    if (!client_len) {
+      continue;
+    }
+
     if (pthread_rwlock_wrlock(&state->flush->rwlock)) {
       perror("Failed to acquire write lock on flushing");
       exit(EXIT_INTERNAL);

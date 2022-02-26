@@ -6,16 +6,20 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "../cursor.h"
 #include "../device.h"
 #include "../exit.h"
 #include "../inode.h"
+#include "../log.h"
 #include "../object.h"
 #include "../server.h"
 #include "../tile.h"
 #include "../util.h"
 #include "create_object.h"
 #include "../../ext/xxHash/xxhash.h"
+
+LOGGER("method_create_object");
 
 typedef enum {
   METHOD_CREATE_OBJECT_ERROR__UNKNOWN,
@@ -36,7 +40,7 @@ struct method_create_object_state_s {
 };
 
 #define PARSE_OR_ERROR(out_parsed, parser, n, error) \
-  out_parsed = svr_method_args_parser_parse(parser, 1); \
+  out_parsed = svr_method_args_parser_parse(parser, n); \
   if (p == NULL) { \
     args->response = error; \
     return args; \
@@ -47,7 +51,8 @@ method_create_object_state_t* method_create_object_state_create(
   svr_method_handler_ctx_t* ctx,
   svr_method_args_parser_t* parser
 ) {
-  method_create_object_state_t* args = malloc(sizeof(method_create_object_state_t));
+  method_create_object_state_t* args = aligned_alloc(64, sizeof(method_create_object_state_t));
+  memset(args, 0, sizeof(method_create_object_state_t));
   args->response = METHOD_CREATE_OBJECT_ERROR__UNKNOWN;
   uint8_t* p = NULL;
 
@@ -93,6 +98,7 @@ svr_client_result_t method_create_object(
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
+  ts_log(DEBUG, "create_object(key=%.64s%.64s, size=%zu)", args->key_half_lower.elems, args->key_half_upper.elems, args->size);
   size_t full_tiles = args->size / TILE_SIZE;
   size_t last_tile_size = args->size % TILE_SIZE;
   ino_last_tile_mode_t last_tile_mode;

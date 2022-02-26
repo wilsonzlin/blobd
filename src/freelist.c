@@ -21,13 +21,16 @@ LOGGER("freelist");
 freelist_t* freelist_create_from_disk_state(device_t* dev, size_t dev_offset) {
   cursor_t* cur = dev->mmap + dev_offset;
 
-  freelist_t* fl = calloc(1, sizeof(freelist_t));
+  // `malloc` aligns on word size (i.e. 8), but we need to align on __m512i.
+  freelist_t* fl = aligned_alloc(64, sizeof(freelist_t));
+  memset(fl, 0, sizeof(freelist_t));
   fl->dev_offset = dev_offset;
   if (pthread_rwlock_init(&fl->rwlock, NULL)) {
     perror("Failed to initialise lock on freelist");
     exit(EXIT_INTERNAL);
   }
 
+  ts_log(DEBUG, "Loading %zu tiles", dev->tile_count);
   for (size_t tile_no = 0; tile_no < dev->tile_count; ) {
     XXH64_hash_t xxhash_actual = XXH3_64bits(cur, 1 + 3 * 8);
     uint64_t tile8_bitmap = *cur++;
@@ -56,42 +59,46 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, size_t dev_offset) {
     if (xxhash_actual != xxhash_recorded) {
       CORRUPT("invalid freelist data hash at tile %zu, recorded hash is %"PRIx64" but recorded data hashes to %"PRIx64, tile_no, xxhash_recorded, xxhash_actual);
     }
-
-    __m512i zeroes = _mm512_setzero_si512();
-    for (size_t i1 = 0; i1 < 64; i1 += 8) {
-      for (size_t i2 = 0; i2 < 64; i2 += 8) {
-        for (size_t i3 = 0; i3 < 64; i3 += 8) {
-          uint64_t m = _mm512_cmpeq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_4[i1][i2][i3]), zeroes);
-          fl->tile_bitmap_3[i1][i2] |= m << i3;
-        }
-        uint64_t m = _mm512_cmpeq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_3[i1][i2]), zeroes);
-        fl->tile_bitmap_2[i1] |= m << i2;
-      }
-      uint64_t m = _mm512_cmpeq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_3[i1]), zeroes);
-      fl->tile_bitmap_1 |= m << i1;
-    }
-
-    for (size_t i1 = 0; i1 < 16; i1++) {
-      for (size_t i2 = 0; i2 < 16; i2++) {
-        for (size_t i3 = 0; i3 < 16; i3++) {
-          for (size_t i4 = 0; i4 < 16; i4++) {
-            for (size_t i5 = 0; i5 < 16; i5++) {
-              uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_6[i1][i2][i3][i4][i5].vec);
-              fl->microtile_free_map_5[i1][i2][i3][i4].elems[i5] = m;
-            }
-            uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_5[i1][i2][i3][i4].vec);
-            fl->microtile_free_map_4[i1][i2][i3].elems[i4] = (m & ~15) | i4;
-          }
-          uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_4[i1][i2][i3].vec);
-          fl->microtile_free_map_3[i1][i2].elems[i3] = (m & ~15) | i3;
-        }
-        uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_3[i1][i2].vec);
-        fl->microtile_free_map_2[i1].elems[i2] = (m & ~15) | i2;
-      }
-      uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_2[i1].vec);
-      fl->microtile_free_map_1.elems[i1] = (m & ~15) | i1;
-    }
   }
+
+  ts_log(DEBUG, "Creating tile bitmaps");
+  __m512i zeroes = _mm512_setzero_si512();
+  for (size_t i1 = 0; i1 < 64; i1 += 8) {
+    for (size_t i2 = 0; i2 < 64; i2 += 8) {
+      for (size_t i3 = 0; i3 < 64; i3 += 8) {
+        uint64_t m = _mm512_cmpeq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_4[i1][i2][i3]), zeroes);
+        fl->tile_bitmap_3[i1][i2] |= m << i3;
+      }
+      uint64_t m = _mm512_cmpeq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_3[i1][i2]), zeroes);
+      fl->tile_bitmap_2[i1] |= m << i2;
+    }
+    uint64_t m = _mm512_cmpeq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_3[i1]), zeroes);
+    fl->tile_bitmap_1 |= m << i1;
+  }
+
+  ts_log(DEBUG, "Creating microtile data structures");
+  for (size_t i1 = 0; i1 < 16; i1++) {
+    for (size_t i2 = 0; i2 < 16; i2++) {
+      for (size_t i3 = 0; i3 < 16; i3++) {
+        for (size_t i4 = 0; i4 < 16; i4++) {
+          for (size_t i5 = 0; i5 < 16; i5++) {
+            uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_6[i1][i2][i3][i4][i5].vec);
+            fl->microtile_free_map_5[i1][i2][i3][i4].elems[i5] = m;
+          }
+          uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_5[i1][i2][i3][i4].vec);
+          fl->microtile_free_map_4[i1][i2][i3].elems[i4] = (m & ~15) | i4;
+        }
+        uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_4[i1][i2][i3].vec);
+        fl->microtile_free_map_3[i1][i2].elems[i3] = (m & ~15) | i3;
+      }
+      uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_3[i1][i2].vec);
+      fl->microtile_free_map_2[i1].elems[i2] = (m & ~15) | i2;
+    }
+    uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_2[i1].vec);
+    fl->microtile_free_map_1.elems[i1] = (m & ~15) | i1;
+  }
+
+  ts_log(DEBUG, "Loaded freelist");
 
   return fl;
 }

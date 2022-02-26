@@ -10,4 +10,5 @@ void log_direct(char const* subsystem, log_level_t lvl, char const* format, va_l
   strftime(timefmtbuf, sizeof(timefmtbuf), "%FT%TZ", gmtime(&now));
   fprintf(stderr, "<%d>[%s %s] ", lvl, timefmtbuf, subsystem);
   vfprintf(stderr, format, argptr);
+  fprintf(stderr, "\n");
 }

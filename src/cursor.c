@@ -57,7 +57,7 @@ uint64_t consume_u64(cursor_t** cur) {
 
 void write_u16(cursor_t* cur, uint16_t v) {
   uint16_t encoded = htobe16(v);
-  memcpy(&encoded, cur, 2);
+  memcpy(cur, &encoded, 2);
 }
 
 void write_u24(cursor_t* cur, uint32_t v) {
@@ -68,7 +68,7 @@ void write_u24(cursor_t* cur, uint32_t v) {
 
 void write_u32(cursor_t* cur, uint32_t v) {
   uint32_t encoded = htobe32(v);
-  memcpy(&encoded, cur, 4);
+  memcpy(cur, &encoded, 4);
 }
 
 void write_u40(cursor_t* cur, uint64_t v) {
@@ -90,7 +90,7 @@ void write_u48(cursor_t* cur, uint64_t v) {
 
 void write_u64(cursor_t* cur, uint64_t v) {
   uint64_t encoded = htobe64(v);
-  memcpy(&encoded, cur, 8);
+  memcpy(cur, &encoded, 8);
 }
 
 void produce_u8(cursor_t** cur, uint8_t v) {

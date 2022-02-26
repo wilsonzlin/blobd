@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
 
   char* arg_action = argv[1];
   char* arg_dev = argv[2];
-  char* arg_worker_count = argv[3];
+  char* arg_worker_or_bucket_count = argv[3];
   char* arg_client_max = argv[4];
 
   int dev_fd = open(arg_dev, O_RDWR);
@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
     exit(EXIT_INTERNAL);
   }
 
-  char* dev_mmap = mmap(NULL, dev_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, dev_fd, 0);
+  char* dev_mmap = mmap(NULL, dev_size, PROT_READ | PROT_WRITE, MAP_SHARED_VALIDATE, dev_fd, 0);
   if (MAP_FAILED == dev_mmap) {
     perror("Failed to map block device");
     exit(EXIT_INTERNAL);
@@ -56,8 +56,31 @@ int main(int argc, char** argv) {
     exit(EXIT_INTERNAL);
   }
 
+  device_t* dev = device_create(dev_mmap, dev_size);
+
   if (!strcmp("format", arg_action)) {
-    // TODO
+    errno = 0;
+    size_t bucket_count = strtoull(arg_worker_or_bucket_count, NULL, 10);
+    if (errno != 0) {
+      perror("Failed to parse bucket count argument");
+      exit(EXIT_CONF);
+    }
+
+    if (bucket_count & (bucket_count - 1)) {
+      fprintf(stderr, "Bucket count must be a power of 2\n");
+      exit(EXIT_CONF);
+    }
+
+    if (bucket_count < 4096 || bucket_count > 281474976710656) {
+      fprintf(stderr, "Bucket count must be in the range [4096, 281474976710656]\n");
+      exit(EXIT_CONF);
+    }
+
+    size_t bucket_count_log2 = _tzcnt_u64(bucket_count);
+
+    device_format(dev, bucket_count_log2);
+
+    return 0;
   }
 
   if (strcmp("start", arg_action)) {
@@ -66,7 +89,7 @@ int main(int argc, char** argv) {
   }
 
   errno = 0;
-  size_t worker_count = strtoull(arg_worker_count, NULL, 10);
+  size_t worker_count = strtoull(arg_worker_or_bucket_count, NULL, 10);
   if (errno != 0) {
     perror("Failed to parse worker count argument");
     exit(EXIT_CONF);
@@ -89,8 +112,6 @@ int main(int argc, char** argv) {
   }
 
   svr_clients_t* svr = server_clients_create(client_max_log2);
-
-  device_t* dev = device_create(dev_mmap, dev_size);
 
   journal_t* journal = journal_create(0);
 

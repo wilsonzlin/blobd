@@ -27,3 +27,5 @@ typedef struct {
 } device_t;
 
 device_t* device_create(void* mmap, size_t size);
+
+void device_format(device_t* dev, uint8_t bucket_count_log2);

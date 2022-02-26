@@ -2,5 +2,13 @@
 
 set -Eeuxo pipefail
 
-gcc --std=c18 -Wall -Wextra -Werror -O3 -flto -march=native -o main -l pthread ext/xxHash/xxhash.c src/**/*.c src/*.c
-sudo ./main
+pushd "$(dirname "$0")"
+
+if [[ "${DEBUG:-}" == "1" ]]; then
+  cc_args="-O0 -g"
+else
+  cc_args="-O3 -flto"
+fi
+
+gcc --std=c18 -Wall -Wextra -Werror $cc_args -march=native -o main -l pthread ext/xxHash/xxhash.c src/**/*.c src/*.c
+sudo ./main $@

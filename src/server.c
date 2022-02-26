@@ -11,6 +11,7 @@
 #include "errno.h"
 #include "exit.h"
 #include "list.h"
+#include "log.h"
 #include "server.h"
 #include "method/create_object.h"
 #include "../ext/klib/khash.h"
@@ -25,6 +26,8 @@ KHASH_MAP_INIT_INT(svr_fd_to_client, uint32_t);
 LIST_DEF(client_ids, uint32_t);
 LIST(client_ids, uint32_t);
 
+LOGGER("server");
+
 // `n` must be nonzero.
 // Returns -1 on error or close, 0 on not ready, and nonzero on (partial) read.
 static inline int maybe_read(int fd, uint8_t* out_buf, size_t n) {
@@ -33,6 +36,9 @@ static inline int maybe_read(int fd, uint8_t* out_buf, size_t n) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       return 0;
     }
+    return -1;
+  }
+  if (!readno) {
     return -1;
   }
   return readno;
@@ -93,7 +99,7 @@ typedef struct {
 } worker_state_t;
 
 #define READ_OR_RELEASE(readres, fd, buf, n) \
-  readres = maybe_read(fd, buf, 1); \
+  readres = maybe_read(fd, buf, n); \
   if (!readres) { \
     res = SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE; \
     break; \
@@ -128,9 +134,11 @@ void* worker_start(void* state_raw) {
     if (client_id != 0xFFFFFFFF) {
       // We now own this client. We keep working on it and transitioning states until we get to a state where we can no longer do work immediately.
       svr_client_t* client = state->svr->ring_buf + client_id;
+      ts_log(DEBUG, "Worker handling client with ID=%u", client_id);
       svr_client_result_t res = SVR_CLIENT_RESULT__UNKNOWN;
       loop: while (true) {
         if (client->method == SVR_METHOD__UNKNOWN) {
+          ts_log(DEBUG, "Parsing method of client with ID=%u", client_id);
           // We haven't parsed the method yet.
           uint8_t buf[1];
           int readlen;
@@ -141,6 +149,7 @@ void* worker_start(void* state_raw) {
           // NOTE: args_parser may be NULL if we've freed it after parsing and creating method_state.
           if (client->args_parser == NULL) {
             // We haven't got the args length.
+            ts_log(DEBUG, "Creating args parser for client with ID=%u", client_id);
             uint8_t buf[1];
             int readlen;
             READ_OR_RELEASE(readlen, client->fd, buf, 1);
@@ -149,11 +158,13 @@ void* worker_start(void* state_raw) {
             svr_method_args_parser_t* ap = client->args_parser;
             if (ap->write_next < ap->raw_len) {
               // We haven't received all args.
+              ts_log(DEBUG, "Reading arg bytes for client with ID=%u", client_id);
               int readlen;
-              READ_OR_RELEASE(readlen, client->fd, &ap->raw[ap->write_next], ap->raw_len - ap->write_next);
+              READ_OR_RELEASE(readlen, client->fd, ap->raw + ap->write_next, ap->raw_len - ap->write_next);
               ap->write_next += readlen;
             } else {
               // We haven't parsed the args.
+              ts_log(DEBUG, "Parsing args for client with ID=%u", client_id);
               if (client->method == SVR_METHOD_CREATE_OBJECT) {
                 client->method_state = method_create_object_state_create(state->ctx, ap);
                 client->method_state_destructor = method_create_object_state_destroy;
@@ -172,6 +183,7 @@ void* worker_start(void* state_raw) {
             }
           }
         } else {
+          ts_log(DEBUG, "Calling method handler for client with ID=%u", client_id);
           if (client->method == SVR_METHOD_CREATE_OBJECT) {
             res = method_create_object(state->ctx, client->method_state, client->fd);
           } else if (client->method == SVR_METHOD_READ_OBJECT) {
@@ -188,6 +200,7 @@ void* worker_start(void* state_raw) {
         }
       }
 
+      ts_log(DEBUG, "Client resulted in state %d with ID=%u", res, client_id);
       if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE || res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
         // Release before adding back to epoll.
         client->state = SVR_CLIENT_STATE_AWAITING_CLIENT_IO;
@@ -270,22 +283,26 @@ svr_clients_t* server_clients_create(size_t max_clients_log2) {
     perror("Failed to create lock for FD map");
     exit(EXIT_INTERNAL);
   }
-  clients->ring_buf = malloc(sizeof(svr_client_t) * (1 << max_clients_log2));
+  size_t max_clients = 1 << max_clients_log2;
+  // We must calloc to ensure client->open is false.
+  clients->ring_buf = calloc(max_clients, sizeof(svr_client_t));
   clients->ring_buf_cap_log2 = max_clients_log2;
   clients->ring_buf_read = 0;
   clients->ring_buf_write = 0;
-  clients->ready_ring_buf = malloc(sizeof(uint32_t) * (1 << max_clients_log2));
+  clients->ready_ring_buf = malloc(sizeof(uint32_t) * max_clients);
+  memset(clients->ready_ring_buf, 0xFFFFFFFF, max_clients);
   clients->ready_ring_buf_read = 0;
   clients->ready_ring_buf_write = 0;
   if (pthread_mutex_init(&clients->ready_lock, NULL)) {
     perror("Failed to create lock for ready clients");
     exit(EXIT_INTERNAL);
   }
-  clients->awaiting_flush = client_ids_create_with_capacity(1 << max_clients_log2);
+  clients->awaiting_flush = client_ids_create_with_capacity(max_clients);
   if (pthread_mutex_init(&clients->awaiting_flush_lock, NULL)) {
     perror("Failed to create lock for awaiting flush list");
     exit(EXIT_INTERNAL);
   }
+  ts_log(DEBUG, "Created clients list with capacity %zu", max_clients);
   return clients;
 }
 
@@ -371,7 +388,7 @@ void server_start_loop(
     perror("Failed to listen on socket");
     exit(EXIT_INTERNAL);
   }
-  printf("Now listening\n");
+  ts_log(DEBUG, "Listening");
 
   int svr_epoll_fd = epoll_create1(0);
   if (-1 == svr_epoll_fd) {
@@ -439,11 +456,12 @@ void server_start_loop(
         }
         uint32_t client_id = svr->ring_buf_write;
         svr->ring_buf_write = (svr->ring_buf_write + 1) & ring_buf_mask;
+        ts_log(DEBUG, "Registered new client with ID=%u and FD=%d", client_id, peer);
 
         // Set client.
         svr_client_t* client = svr->ring_buf + client_id;
         client->open = true;
-        client->state = SVR_CLIENT_STATE_READY;
+        client->state = SVR_CLIENT_STATE_AWAITING_CLIENT_IO;
         client->fd = peer;
         client->args_parser = NULL;
         client->method = SVR_METHOD__UNKNOWN;
@@ -480,6 +498,7 @@ void server_start_loop(
           exit(EXIT_INTERNAL);
         }
         uint32_t client_id = kh_val(svr->fd_to_client, k);
+        ts_log(DEBUG, "Received new event on client with ID=%u and FD=%d", client_id, peer);
         if (pthread_rwlock_unlock(&svr->fd_to_client_lock)) {
           perror("Failed to release read lock on FD map");
           exit(EXIT_INTERNAL);
