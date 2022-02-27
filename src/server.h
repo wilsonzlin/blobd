@@ -23,12 +23,6 @@ We must use ONESHOT to avoid race conditions: [worker] read() EAGAIN => [main] e
 **/
 
 typedef enum {
-  SVR_CLIENT_STATE_AWAITING_CLIENT_IO,
-  SVR_CLIENT_STATE_AWAITING_FLUSH,
-  SVR_CLIENT_STATE_READY,
-} svr_client_state_t;
-
-typedef enum {
   SVR_CLIENT_RESULT__UNKNOWN,
   SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE,
   SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE,
@@ -64,38 +58,22 @@ typedef enum {
   SVR_METHOD_DELETE_OBJECT = 4,
 } svr_method_t;
 
-typedef struct {
-  atomic_uint_least8_t open;
-  atomic_uint_least8_t state;
-  int fd;
-  svr_method_args_parser_t* args_parser;
-  svr_method_t method;
-  void* method_state;
-  void (*method_state_destructor)(void*);
-} svr_client_t;
+typedef struct server_s server_t;
 
-typedef struct svr_clients_s svr_clients_t;
-
-svr_clients_t* server_clients_create(size_t max_clients_log2);
-
-size_t server_clients_get_capacity(svr_clients_t* clients);
-
-void server_clients_acquire_awaiting_flush_lock(svr_clients_t* clients);
-
-void server_clients_release_awaiting_flush_lock(svr_clients_t* clients);
-
-size_t server_clients_get_awaiting_flush_count(svr_clients_t* clients);
-
-void server_clients_pop_all_awaiting_flush(svr_clients_t* clients, uint32_t* out);
-
-void server_clients_push_all_ready(svr_clients_t* clients, uint32_t* client_ids, size_t n);
-
-// This never returns.
-void server_start_loop(
-  svr_clients_t* svr,
-  size_t worker_count,
+server_t* server_create(
   device_t* dev,
   flush_state_t* flush,
   freelist_t* fl,
   buckets_t* bkts
+);
+
+// Returns false if no clients are awaiting flush.
+bool server_on_flush_start(server_t* server);
+
+void server_on_flush_end(server_t* server);
+
+// This never returns.
+void server_start_loop(
+  server_t* server,
+  size_t worker_count
 );

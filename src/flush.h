@@ -9,7 +9,7 @@
 
 void flush_worker_start(
   flush_state_t* flush,
-  svr_clients_t* svr,
+  server_t* svr,
   device_t* dev,
   journal_t* journal,
   freelist_t* fl,

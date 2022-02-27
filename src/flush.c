@@ -40,13 +40,11 @@ LIST(changes, change_t);
 
 typedef struct {
   flush_state_t* flush;
-  svr_clients_t* svr;
+  server_t* svr;
   device_t* dev;
   journal_t* journal;
   freelist_t* fl;
   buckets_t* buckets;
-  uint32_t* client_ids_buf;
-  size_t client_ids_cap;
   changes_t* changes;
   uint8_t* change_data_pool;
   size_t change_data_pool_cap;
@@ -132,19 +130,7 @@ void* thread(void* state_raw) {
       exit(EXIT_INTERNAL);
     }
 
-    server_clients_acquire_awaiting_flush_lock(state->svr);
-    size_t client_len = server_clients_get_awaiting_flush_count(state->svr);
-    if (client_len >= state->client_ids_cap) {
-      while (client_len >= state->client_ids_cap) {
-        state->client_ids_cap *= 2;
-      }
-      free(state->client_ids_buf);
-      state->client_ids_buf = malloc(sizeof(uint32_t) * state->client_ids_cap);
-    }
-    server_clients_pop_all_awaiting_flush(state->svr, state->client_ids_buf);
-    server_clients_release_awaiting_flush_lock(state->svr);
-
-    if (!client_len) {
+    if (!server_on_flush_start(state->svr)) {
       continue;
     }
 
@@ -248,13 +234,13 @@ void* thread(void* state_raw) {
       exit(EXIT_INTERNAL);
     }
 
-    server_clients_push_all_ready(state->svr, state->client_ids_buf, client_len);
+    server_on_flush_end(state->svr);
   }
 }
 
 void flush_worker_start(
   flush_state_t* flush,
-  svr_clients_t* svr,
+  server_t* svr,
   device_t* dev,
   journal_t* journal,
   freelist_t* fl,
@@ -267,8 +253,6 @@ void flush_worker_start(
   state->journal = journal;
   state->fl = fl;
   state->buckets = buckets;
-  state->client_ids_cap = server_clients_get_capacity(svr);
-  state->client_ids_buf = malloc(sizeof(uint32_t) * state->client_ids_cap);
   state->changes = changes_create_with_capacity(128);
   state->change_data_pool_cap = 2048;
   state->change_data_pool = malloc(state->change_data_pool_cap);
