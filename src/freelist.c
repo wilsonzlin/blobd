@@ -41,18 +41,21 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, size_t dev_offset) {
     size_t i1 = itmp;
     fl->tile_bitmap_4[i1][i2][i3] |= (tile8_bitmap << i4);
     for (size_t i = 0; tile_no < dev->tile_count && i < 8; i++, tile_no++) {
+      size_t itmp = tile_no;
+      size_t i6 = itmp % 16; itmp /= 16;
+      size_t i5 = itmp % 16; itmp /= 16;
+      size_t i4 = itmp % 16; itmp /= 16;
+      size_t i3 = itmp % 16; itmp /= 16;
+      size_t i2 = itmp % 16; itmp /= 16;
+      size_t i1 = itmp;
       uint32_t raw = consume_u24(&cur);
       if (raw) {
         uint32_t usage = raw + 1;
         uint32_t free = TILE_SIZE - usage;
-        size_t itmp = tile_no;
-        size_t i6 = itmp % 16; itmp /= 16;
-        size_t i5 = itmp % 16; itmp /= 16;
-        size_t i4 = itmp % 16; itmp /= 16;
-        size_t i3 = itmp % 16; itmp /= 16;
-        size_t i2 = itmp % 16; itmp /= 16;
-        size_t i1 = itmp;
         fl->microtile_free_map_6[i1][i2][i3][i4][i5].elems[i6] = (free << 8) | i6;
+      } else {
+        // Special marking to show that the tile is not a microtile, so we don't write its used size when flushing.
+        fl->microtile_free_map_6[i1][i2][i3][i4][i5].elems[i6] = 16;
       }
     }
     uint64_t xxhash_recorded = consume_u64(&cur);
@@ -124,7 +127,7 @@ static inline free_tiles_t find_free_tiles_in_region(uint64_t region_tile_bitmap
   size_t shift_avail = highest_bit_idx + 1;
   uint64_t new_bitmap = (region_tile_bitmap >> shift_avail) << shift_avail;
   // Limit tile count to tile_count_wanted.
-  available.vec = _mm512_mask_blend_epi8((1 << tile_count_wanted) - 1, fill, available.vec);
+  available.vec = _mm512_mask_blend_epi8((1llu << tile_count_wanted) - 1, fill, available.vec);
   free_tiles_t result = {
     .tiles = available,
     .new_bitmap = new_bitmap,
@@ -133,21 +136,18 @@ static inline free_tiles_t find_free_tiles_in_region(uint64_t region_tile_bitmap
 }
 
 static inline void mark_tile_as_dirty(freelist_t* fl, uint32_t tile) {
-  size_t itmp = tile / 8, i, o;
-  i = itmp / 64; o = itmp % 64; itmp /= 64;
-  fl->dirty_eight_tiles_bitmap_4[i] |= (1 << o);
-  i = itmp / 64; o = itmp % 64; itmp /= 64;
-  fl->dirty_eight_tiles_bitmap_3[i] |= (1 << o);
-  i = itmp / 8; o = itmp % 64; itmp /= 8;
-  fl->dirty_eight_tiles_bitmap_2[i] |= (1 << o);
-  fl->dirty_eight_tiles_bitmap_1 |= (1 << itmp);
+  size_t itmp = tile / 8;
+  fl->dirty_eight_tiles_bitmap_4[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
+  fl->dirty_eight_tiles_bitmap_3[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
+  fl->dirty_eight_tiles_bitmap_2[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
+  fl->dirty_eight_tiles_bitmap_1 |= (1llu << itmp);
 }
 
 static inline void propagate_tile_bitmap_change(freelist_t* fl, uint64_t new_bitmap, size_t i1, size_t i2, size_t i3) {
   if (!(fl->tile_bitmap_4[i1][i2][i3] = new_bitmap)) {
-    if (!(fl->tile_bitmap_3[i1][i2] &= ~(1 << i3))) {
-      if (!(fl->tile_bitmap_2[i1] &= ~(1 << i2))) {
-        fl->tile_bitmap_1 &= ~(1 << i1);
+    if (!(fl->tile_bitmap_3[i1][i2] &= ~(1llu << i3))) {
+      if (!(fl->tile_bitmap_2[i1] &= ~(1llu << i2))) {
+        fl->tile_bitmap_1 &= ~(1llu << i1);
       }
     }
   }
@@ -166,7 +166,7 @@ uint32_t fast_allocate_one_tile(freelist_t* fl) {
   // TODO assert i4 <= 63;
   size_t i4 = _tzcnt_u64(fl->tile_bitmap_4[i1][i2][i3]);
 
-  propagate_tile_bitmap_change(fl, fl->tile_bitmap_4[i1][i2][i3] & ~(1 << i4), i1, i2, i3);
+  propagate_tile_bitmap_change(fl, fl->tile_bitmap_4[i1][i2][i3] & ~(1llu << i4), i1, i2, i3);
   uint32_t tile = (((((i1 * 64) + i2) * 64) + i3) * 64) + i4;
   mark_tile_as_dirty(fl, tile);
 
@@ -282,7 +282,6 @@ freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, size_t
 
   // TODO assert cur_usage >= bytes_needed.
   uint32_t new_free = cur_free - bytes_needed;
-  // TODO Flush. WARNING: Remember when flushing to offset by one!
   fl->microtile_free_map_6[i1][i2][i3][i4][i5].elems[i6] = (new_free << 8) | i6;
   fl->microtile_free_map_5[i1][i2][i3][i4].elems[i5] = _mm512_reduce_max_epu32(fl->microtile_free_map_6[i1][i2][i3][i4][i5].vec);
   fl->microtile_free_map_4[i1][i2][i3].elems[i4] = (_mm512_reduce_max_epu32(fl->microtile_free_map_5[i1][i2][i3][i4].vec) & ~15) | i5;

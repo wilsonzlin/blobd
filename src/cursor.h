@@ -10,6 +10,8 @@ uint32_t read_u24(cursor_t* cur);
 
 uint32_t read_u32(cursor_t* cur);
 
+uint64_t read_u40(cursor_t* cur);
+
 uint64_t read_u64(cursor_t* cur);
 
 uint16_t consume_u16(cursor_t** cur);

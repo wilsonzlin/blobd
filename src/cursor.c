@@ -25,6 +25,15 @@ uint32_t read_u32(cursor_t* cur) {
   return be32toh(v);
 }
 
+uint64_t read_u40(cursor_t* cur) {
+  uint64_t v = cur[0];
+  v = (v << 8) | cur[1];
+  v = (v << 8) | cur[2];
+  v = (v << 8) | cur[3];
+  v = (v << 8) | cur[4];
+  return v;
+}
+
 uint64_t read_u64(cursor_t* cur) {
   uint64_t v;
   memcpy(&v, cur, 8);

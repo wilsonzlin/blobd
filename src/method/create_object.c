@@ -32,11 +32,10 @@ typedef enum {
 struct method_create_object_state_s {
   // If this is not METHOD_CREATE_OBJECT_ERROR__UNKNOWN, all other fields are undefined.
   method_create_object_error_t response;
-  vec_512i_u8_t key_half_lower;
-  vec_512i_u8_t key_half_upper;
+  uint64_t size;
   uint64_t key_bucket;
   uint8_t key_len;
-  uint64_t size;
+  uint8_t key[128 + 1];
 };
 
 #define PARSE_OR_ERROR(out_parsed, parser, n, error) \
@@ -51,8 +50,7 @@ method_create_object_state_t* method_create_object_state_create(
   svr_method_handler_ctx_t* ctx,
   svr_method_args_parser_t* parser
 ) {
-  method_create_object_state_t* args = aligned_alloc(64, sizeof(method_create_object_state_t));
-  memset(args, 0, sizeof(method_create_object_state_t));
+  method_create_object_state_t* args = malloc(sizeof(method_create_object_state_t));
   args->response = METHOD_CREATE_OBJECT_ERROR__UNKNOWN;
   uint8_t* p = NULL;
 
@@ -62,12 +60,10 @@ method_create_object_state_t* method_create_object_state_create(
     args->response = METHOD_CREATE_OBJECT_ERROR_KEY_TOO_LONG;
     return args;
   }
-  uint8_t key[128];
   PARSE_OR_ERROR(p, parser, args->key_len, METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS);
-  memcpy(key, p, args->key_len);
-  memcpy(&args->key_half_lower.elems[0], key, 64);
-  memcpy(&args->key_half_upper.elems[0], &key[64], 64);
-  args->key_bucket = XXH3_64bits(key, args->key_len) & ((1 << ctx->bkts->count_log2) - 1);
+  memcpy(&args->key, p, args->key_len);
+  args->key[args->key_len] = 0;
+  args->key_bucket = XXH3_64bits(args->key, args->key_len) & ((1llu << ctx->bkts->count_log2) - 1);
   PARSE_OR_ERROR(p, parser, 8, METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS);
   args->size = read_u64(p);
   if (!svr_method_args_parser_end(parser)) {
@@ -98,7 +94,7 @@ svr_client_result_t method_create_object(
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
-  ts_log(DEBUG, "create_object(key=%.64s%.64s, size=%zu)", args->key_half_lower.elems, args->key_half_upper.elems, args->size);
+  ts_log(DEBUG, "create_object(key=%s, size=%zu)", args->key, args->size);
   size_t full_tiles = args->size / TILE_SIZE;
   size_t last_tile_size = args->size % TILE_SIZE;
   ino_last_tile_mode_t last_tile_mode;
@@ -108,12 +104,12 @@ svr_client_result_t method_create_object(
     last_tile_metadata_size = last_tile_size;
   } else if (last_tile_size >= (TILE_SIZE - INO_LAST_TILE_THRESHOLD)) {
     last_tile_mode = INO_LAST_TILE_MODE_TILE;
-    last_tile_metadata_size = 3;
+    last_tile_metadata_size = 11;
   } else {
     last_tile_mode = INO_LAST_TILE_MODE_MICROTILE;
-    last_tile_metadata_size = 6;
+    last_tile_metadata_size = 14;
   }
-  size_t inode_size = 8 + 3 + 3 + 1 + 5 + 1 + args->key_len + (full_tiles * 11) + 1 + last_tile_metadata_size;
+  size_t inode_size = 8 + 3 + 3 + 3 + 1 + 5 + 1 + args->key_len + (full_tiles * 11) + 1 + last_tile_metadata_size;
 
   if (pthread_rwlock_rdlock(&ctx->flush->rwlock)) {
     perror("Failed to acquire read lock on flushing");
@@ -121,14 +117,12 @@ svr_client_result_t method_create_object(
   }
   freelist_consumed_microtile_t inode_addr = freelist_consume_microtiles(ctx->fl, inode_size);
   cursor_t* inode_cur = ctx->dev->mmap + (inode_addr.microtile * TILE_SIZE) + inode_addr.microtile_offset;
-  cursor_t* cur = inode_cur + 8 + 3 + 3;
+  write_u24(inode_cur + 8, inode_size - 8);
+  cursor_t* cur = inode_cur + 8 + 3 + 3 + 3;
   produce_u8(&cur, INO_STATE_OK);
   produce_u40(&cur, args->size);
   produce_u8(&cur, args->key_len);
-  produce_n(&cur, &args->key_half_lower.elems[0], min(args->key_len, 64));
-  if (args->key_len > 64) {
-    produce_n(&cur, &args->key_half_upper.elems[0], args->key_len - 64);
-  }
+  produce_n(&cur, args->key, args->key_len);
   produce_u8(&cur, last_tile_mode);
   if (full_tiles) {
     freelist_consume_tiles(ctx->fl, full_tiles + (last_tile_mode == INO_LAST_TILE_MODE_TILE), &cur);
@@ -140,31 +134,32 @@ svr_client_result_t method_create_object(
   }
   ts_log(DEBUG, "Using %zu tiles and last tile mode %d", full_tiles, last_tile_mode);
 
+  // TODO Possible concern: reader will get the bucket and try to read the inode before we've set the checksum or next address values of inode.
   uint_least64_t bkt_ptr_new = (inode_addr.microtile << 24) | (inode_addr.microtile_offset);
   uint_least64_t bkt_ptr_existing = ctx->bkts->bucket_pointers[args->key_bucket];
   while (!atomic_compare_exchange_weak(&ctx->bkts->bucket_pointers[args->key_bucket], &bkt_ptr_existing, bkt_ptr_new)) {}
   uint32_t bkt_ptr_existing_microtile = bkt_ptr_existing >> 24;
   uint32_t bkt_ptr_existing_microtile_offset = bkt_ptr_existing & ((1 << 24) - 1);
-  ts_log(DEBUG, "Next object is at microtile %u and offset %u", bkt_ptr_existing_microtile, bkt_ptr_existing_microtile_offset);
+  ts_log(DEBUG, "Next inode is at microtile %u and offset %u", bkt_ptr_existing_microtile, bkt_ptr_existing_microtile_offset);
 
   if (pthread_rwlock_wrlock(&ctx->bkts->dirty_sixteen_pointers_rwlock)) {
     perror("Failed to acquire write lock on buckets");
     exit(EXIT_INTERNAL);
   }
   for (
-    size_t o = args->key_bucket, i = ctx->bkts->dirty_sixteen_pointers_layer_count;
+    size_t o = args->key_bucket / 16, i = ctx->bkts->dirty_sixteen_pointers_layer_count;
     i > 0;
     o /= 64, i--
   ) {
-    ctx->bkts->dirty_sixteen_pointers[i - 1][o / 64] |= (1 << (o % 64));
+    ctx->bkts->dirty_sixteen_pointers[i - 1][o / 64] |= (1llu << (o % 64));
   }
   if (pthread_rwlock_unlock(&ctx->bkts->dirty_sixteen_pointers_rwlock)) {
     perror("Failed to release write lock on buckets");
     exit(EXIT_INTERNAL);
   }
 
-  write_u24(inode_cur + 8, bkt_ptr_existing_microtile);
-  write_u24(inode_cur + 8 + 3, bkt_ptr_existing_microtile_offset);
+  write_u24(inode_cur + 8 + 3, bkt_ptr_existing_microtile);
+  write_u24(inode_cur + 8 + 3 + 3, bkt_ptr_existing_microtile_offset);
   uint64_t hash = XXH3_64bits(inode_cur + 8, inode_size - 8);
   write_u64(inode_cur, hash);
   ts_log(DEBUG, "Wrote inode");

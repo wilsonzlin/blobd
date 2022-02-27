@@ -9,6 +9,7 @@ Structure
 ---------
 
 u64 xxhash
+u24 inode_size_excluding_xxhash
 u24 next_inode_tile_or_zero_if_end
 u24 next_inode_byte_offset
 u8 state

@@ -24,7 +24,7 @@ buckets_t* buckets_create_from_disk_state(
   bkts->count_log2 = dev->mmap[dev_offset];
   bkts->dev_offset_pointers = dev_offset + 1;
   // TODO Ensure this does not overflow.
-  size_t bkt_cnt = 1 << bkts->count_log2;
+  size_t bkt_cnt = 1llu << bkts->count_log2;
   // This will always divide perfectly because count_log2 must be greater than or equal to 12.
   size_t sixteens = bkt_cnt / 16;
 
@@ -35,7 +35,7 @@ buckets_t* buckets_create_from_disk_state(
   bkts->dirty_sixteen_pointers_layer_count = dirty_layer_count;
   bkts->dirty_sixteen_pointers = malloc(sizeof(uint64_t*) * dirty_layer_count);
   for (size_t i = 0, l = 1; i < dirty_layer_count; i++, l *= 64) {
-    bkts->dirty_sixteen_pointers[i] = aligned_alloc(sizeof(uint64_t), sizeof(uint64_t) * l);
+    bkts->dirty_sixteen_pointers[i] = calloc(l, sizeof(uint64_t));
   }
   if (pthread_rwlock_init(&bkts->dirty_sixteen_pointers_rwlock, NULL)) {
     perror("Failed to initialise buckets lock");

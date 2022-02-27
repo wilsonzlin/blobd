@@ -50,12 +50,13 @@ typedef enum {
   // Dummy value.
   SVR_METHOD__UNKNOWN = 0,
   SVR_METHOD_CREATE_OBJECT = 1,
+  SVR_METHOD_INSPECT_OBJECT = 2,
   // (u8 key_len, char[] key, i64 start, i64 end_exclusive_or_zero_for_eof).
-  SVR_METHOD_READ_OBJECT = 2,
+  SVR_METHOD_READ_OBJECT = 3,
   // (u8 key_len, char[] key, i64 start, i64 end_exclusive).
-  SVR_METHOD_WRITE_OBJECT = 3,
+  SVR_METHOD_WRITE_OBJECT = 4,
   // (u8 key_len, char[] key).
-  SVR_METHOD_DELETE_OBJECT = 4,
+  SVR_METHOD_DELETE_OBJECT = 5,
 } svr_method_t;
 
 typedef struct server_s server_t;
