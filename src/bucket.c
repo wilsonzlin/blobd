@@ -4,10 +4,12 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include "bucket.h"
 #include "cursor.h"
 #include "device.h"
+#include "exit.h"
 #include "log.h"
 #include "util.h"
 #include "../ext/xxHash/xxhash.h"
@@ -34,6 +36,10 @@ buckets_t* buckets_create_from_disk_state(
   bkts->dirty_sixteen_pointers = malloc(sizeof(uint64_t*) * dirty_layer_count);
   for (size_t i = 0, l = 1; i < dirty_layer_count; i++, l *= 64) {
     bkts->dirty_sixteen_pointers[i] = aligned_alloc(sizeof(uint64_t), sizeof(uint64_t) * l);
+  }
+  if (pthread_rwlock_init(&bkts->dirty_sixteen_pointers_rwlock, NULL)) {
+    perror("Failed to initialise buckets lock");
+    exit(EXIT_INTERNAL);
   }
 
   ts_log(DEBUG, "Loading %zu buckets", bkt_cnt);

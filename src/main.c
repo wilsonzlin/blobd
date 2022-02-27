@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
 
   buckets_t* buckets = buckets_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE + 2097152 * (1 + 3 * 8 + 8));
 
-  flush_state_t* flush = flush_create();
+  flush_state_t* flush = flush_state_create();
 
   server_t* svr = server_create(
     dev,

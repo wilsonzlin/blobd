@@ -133,17 +133,19 @@ svr_client_result_t method_create_object(
   if (full_tiles) {
     freelist_consume_tiles(ctx->fl, full_tiles + (last_tile_mode == INO_LAST_TILE_MODE_TILE), &cur);
   }
-  if (last_tile_mode == INO_LAST_TILE_MODE_TILE) {
-    cur -= 8;
-  } else if (last_tile_mode == INO_LAST_TILE_MODE_MICROTILE) {
+  if (last_tile_mode == INO_LAST_TILE_MODE_MICROTILE) {
     freelist_consumed_microtile_t l = freelist_consume_microtiles(ctx->fl, last_tile_size);
     produce_u24(&cur, l.microtile);
     produce_u24(&cur, l.microtile_offset);
   }
+  ts_log(DEBUG, "Using %zu tiles and last tile mode %d", full_tiles, last_tile_mode);
 
   uint_least64_t bkt_ptr_new = (inode_addr.microtile << 24) | (inode_addr.microtile_offset);
   uint_least64_t bkt_ptr_existing = ctx->bkts->bucket_pointers[args->key_bucket];
   while (!atomic_compare_exchange_weak(&ctx->bkts->bucket_pointers[args->key_bucket], &bkt_ptr_existing, bkt_ptr_new)) {}
+  uint32_t bkt_ptr_existing_microtile = bkt_ptr_existing >> 24;
+  uint32_t bkt_ptr_existing_microtile_offset = bkt_ptr_existing & ((1 << 24) - 1);
+  ts_log(DEBUG, "Next object is at microtile %u and offset %u", bkt_ptr_existing_microtile, bkt_ptr_existing_microtile_offset);
 
   if (pthread_rwlock_wrlock(&ctx->bkts->dirty_sixteen_pointers_rwlock)) {
     perror("Failed to acquire write lock on buckets");
@@ -161,10 +163,11 @@ svr_client_result_t method_create_object(
     exit(EXIT_INTERNAL);
   }
 
-  write_u24(inode_cur + 8, bkt_ptr_existing >> 24);
-  write_u24(inode_cur + 8 + 3, bkt_ptr_existing & ((1 << 24) - 1));
+  write_u24(inode_cur + 8, bkt_ptr_existing_microtile);
+  write_u24(inode_cur + 8 + 3, bkt_ptr_existing_microtile_offset);
   uint64_t hash = XXH3_64bits(inode_cur + 8, inode_size - 8);
   write_u64(inode_cur, hash);
+  ts_log(DEBUG, "Wrote inode");
 
   if (pthread_rwlock_unlock(&ctx->flush->rwlock)) {
     perror("Failed to release read lock on flushing");

@@ -24,9 +24,11 @@ union {
   u8[] inline_data
 } | {
   u24 tile
+  u64 xxhash_of_contents
 } | {
   u24 microtile
   u24 microtile_offset
+  u64 xxhash_of_contents
 } last_tile
 
 **/

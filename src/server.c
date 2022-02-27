@@ -261,6 +261,9 @@ void* worker_start(void* state_raw) {
         socklen_t peer_addr_size = sizeof(peer_addr);
         int peer = accept4(state->svr_socket_fd, (struct sockaddr*) &peer_addr, &peer_addr_size, SOCK_NONBLOCK);
         if (-1 == peer) {
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            continue;
+          }
           perror("Failed to accept client");
           exit(EXIT_INTERNAL);
         }
@@ -399,23 +402,23 @@ bool server_on_flush_start(server_t* clients) {
     perror("Failed to acquire lock on awaiting flush list");
     exit(EXIT_INTERNAL);
   }
-  if (!clients->awaiting_flush->len) {
-    return false;
-  }
-  if (clients->flushing->cap < clients->awaiting_flush->len) {
-    while (clients->flushing->cap < clients->awaiting_flush->len) {
-      clients->flushing->cap *= 2;
+  bool has_awaiting = !!clients->awaiting_flush->len;
+  if (has_awaiting) {
+    if (clients->flushing->cap < clients->awaiting_flush->len) {
+      while (clients->flushing->cap < clients->awaiting_flush->len) {
+        clients->flushing->cap *= 2;
+      }
+      clients->flushing->elems = realloc(clients->flushing->elems, clients->flushing->cap * sizeof(svr_client_t*));
     }
-    clients->flushing->elems = realloc(clients->flushing->elems, clients->flushing->cap * sizeof(svr_client_t*));
+    memcpy(clients->flushing->elems, clients->awaiting_flush->elems, clients->awaiting_flush->len * sizeof(svr_client_t*));
+    clients->flushing->len = clients->awaiting_flush->len;
+    clients->awaiting_flush->len = 0;
   }
-  memcpy(clients->flushing->elems, clients->awaiting_flush->elems, clients->awaiting_flush->len * sizeof(svr_client_t*));
-  clients->flushing->len = clients->awaiting_flush->len;
-  clients->awaiting_flush->len = 0;
   if (pthread_mutex_unlock(&clients->awaiting_flush_lock)) {
     perror("Failed to release lock on awaiting flush list");
     exit(EXIT_INTERNAL);
   }
-  return true;
+  return has_awaiting;
 }
 
 void server_on_flush_end(server_t* clients) {

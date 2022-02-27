@@ -20,14 +20,7 @@
 #include "vec.h"
 #include "../ext/xxHash/xxhash.h"
 
-flush_state_t* flush_create() {
-  flush_state_t* flush = malloc(sizeof(flush_state_t));
-  if (pthread_rwlock_init(&flush->rwlock, NULL)) {
-    perror("Failed to create flushing lock");
-    exit(EXIT_INTERNAL);
-  }
-  return flush;
-}
+LOGGER("flush");
 
 typedef struct {
   size_t device_offset;
@@ -120,6 +113,7 @@ void visit_bucket_dirty_bitmap(
 
 void* thread(void* state_raw) {
   thread_state_t* state = (thread_state_t*) state_raw;
+  ts_log(DEBUG, "Started flush worker");
 
   while (true) {
     struct timespec sleep_req;
@@ -134,6 +128,7 @@ void* thread(void* state_raw) {
       continue;
     }
 
+    ts_log(DEBUG, "Starting flush");
     if (pthread_rwlock_wrlock(&state->flush->rwlock)) {
       perror("Failed to acquire write lock on flushing");
       exit(EXIT_INTERNAL);
@@ -235,6 +230,7 @@ void* thread(void* state_raw) {
     }
 
     server_on_flush_end(state->svr);
+    ts_log(DEBUG, "Flush ended");
   }
 }
 

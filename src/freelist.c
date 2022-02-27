@@ -66,13 +66,13 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, size_t dev_offset) {
   for (size_t i1 = 0; i1 < 64; i1 += 8) {
     for (size_t i2 = 0; i2 < 64; i2 += 8) {
       for (size_t i3 = 0; i3 < 64; i3 += 8) {
-        uint64_t m = _mm512_cmpeq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_4[i1][i2][i3]), zeroes);
+        uint64_t m = _mm512_cmpneq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_4[i1][i2][i3]), zeroes);
         fl->tile_bitmap_3[i1][i2] |= m << i3;
       }
-      uint64_t m = _mm512_cmpeq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_3[i1][i2]), zeroes);
+      uint64_t m = _mm512_cmpneq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_3[i1][i2]), zeroes);
       fl->tile_bitmap_2[i1] |= m << i2;
     }
-    uint64_t m = _mm512_cmpeq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_3[i1]), zeroes);
+    uint64_t m = _mm512_cmpneq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_3[i1]), zeroes);
     fl->tile_bitmap_1 |= m << i1;
   }
 
@@ -122,9 +122,12 @@ static inline free_tiles_t find_free_tiles_in_region(uint64_t region_tile_bitmap
   uint8_t highest_bit_idx = min(63 - _lzcnt_u64(region_tile_bitmap), available.elems[(tile_count_wanted - 1)]);
   // We use shifts as building a mask using ((1 << (highest_bit_idx + 1)) - 1) requires special handling if highest_bit_idx is 63, and the same for ~(0x8000000000000000 >> (63 - highest_bit_idx)).
   size_t shift_avail = highest_bit_idx + 1;
+  uint64_t new_bitmap = (region_tile_bitmap >> shift_avail) << shift_avail;
+  // Limit tile count to tile_count_wanted.
+  available.vec = _mm512_mask_blend_epi8((1 << tile_count_wanted) - 1, fill, available.vec);
   free_tiles_t result = {
     .tiles = available,
-    .new_bitmap = (region_tile_bitmap >> shift_avail) << shift_avail,
+    .new_bitmap = new_bitmap,
   };
   return result;
 }
@@ -177,6 +180,8 @@ void freelist_consume_tiles(freelist_t* fl, size_t tiles_needed, cursor_t** out)
     exit(EXIT_INTERNAL);
   }
 
+  size_t tiles_needed_orig = tiles_needed;
+
   vec_512i_u8_t i1_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_1);
   for (size_t o1 = 0, i1; (i1 = i1_candidates.elems[o1]) != 64; o1++) {
     vec_512i_u8_t i2_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_2[i1]);
@@ -202,14 +207,16 @@ void freelist_consume_tiles(freelist_t* fl, size_t tiles_needed, cursor_t** out)
 
   postloop:
   if (tiles_needed) {
-    ts_log(CRIT, "Failed to allocate all tiles");
+    ts_log(CRIT, "Failed to allocate %zu of %zu requested tiles", tiles_needed, tiles_needed_orig);
     exit(EXIT_NO_SPACE);
   }
 
-  if (pthread_rwlock_unlock(& fl->rwlock)) {
+  if (pthread_rwlock_unlock(&fl->rwlock)) {
     perror("Failed to release write lock on freelist");
     exit(EXIT_INTERNAL);
   }
+
+  ts_log(DEBUG, "Allocated %zu tiles", tiles_needed_orig);
 }
 
 freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, size_t bytes_needed) {
@@ -228,6 +235,7 @@ freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, size_t
   if (p1 == 32) {
     // There are no microtiles, so allocate a new one.
     microtile_addr = fast_allocate_one_tile(fl);
+    ts_log(DEBUG, "Created a new microtile at %u", microtile_addr);
     cur_free = TILE_SIZE;
     size_t itmp = microtile_addr;
     i6 = itmp % 16; itmp /= 16;
