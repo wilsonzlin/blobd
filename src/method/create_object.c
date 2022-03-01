@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
-#include <stdatomic.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -77,6 +77,12 @@ void method_create_object_state_destroy(void* state) {
   free(state);
 }
 
+typedef enum {
+  ALLOC_FULL_TILE,
+  ALLOC_MICROTILE_WITH_FULL_LAST_TILE,
+  ALLOC_MICROTILE_WITH_INLINE_LAST_TILE,
+} alloc_strategy_t;
+
 svr_client_result_t method_create_object(
   svr_method_handler_ctx_t* ctx,
   method_create_object_state_t* args,
@@ -97,50 +103,63 @@ svr_client_result_t method_create_object(
   ts_log(DEBUG, "create_object(key=%s, size=%zu)", args->key, args->size);
   size_t full_tiles = args->size / TILE_SIZE;
   size_t last_tile_size = args->size % TILE_SIZE;
-  ino_last_tile_mode_t last_tile_mode;
-  size_t last_tile_metadata_size;
-  if (last_tile_size <= INO_LAST_TILE_THRESHOLD) {
-    last_tile_mode = INO_LAST_TILE_MODE_INLINE;
-    last_tile_metadata_size = last_tile_size;
-  } else if (last_tile_size >= (TILE_SIZE - INO_LAST_TILE_THRESHOLD)) {
-    last_tile_mode = INO_LAST_TILE_MODE_TILE;
-    last_tile_metadata_size = 11;
+
+  ino_last_tile_mode_t ltm;
+  alloc_strategy_t alloc_strategy;
+  size_t ino_size_excluding_last_tile = 8 + 3 + 3 + 3 + 1 + 5 + 1 + args->key_len + 1 + (full_tiles * 11);
+  size_t ino_size_if_inline = ino_size_excluding_last_tile + 8 + last_tile_size;
+  size_t ino_size;
+  size_t ino_size_checksummed;
+  if (ino_size_if_inline >= TILE_SIZE) {
+    alloc_strategy = ALLOC_MICROTILE_WITH_FULL_LAST_TILE;
+    ino_size = ino_size_excluding_last_tile + 11;
+    ino_size_checksummed = ino_size - 8;
+    ltm = INO_LAST_TILE_MODE_TILE;
+  } else if (ino_size_if_inline + 8 + 3 + 3 + 3 + 1 + 5 + 1 + 128 + 1 + 11 >= TILE_SIZE) {
+    alloc_strategy = ALLOC_FULL_TILE;
+    ino_size = ino_size_if_inline;
+    ino_size_checksummed = ino_size_excluding_last_tile + 8 - 8;
+    ltm = INO_LAST_TILE_MODE_INLINE;
   } else {
-    last_tile_mode = INO_LAST_TILE_MODE_MICROTILE;
-    last_tile_metadata_size = 14;
+    alloc_strategy = ALLOC_MICROTILE_WITH_INLINE_LAST_TILE;
+    ino_size = ino_size_if_inline;
+    ino_size_checksummed = ino_size_excluding_last_tile + 8 - 8;
+    ltm = INO_LAST_TILE_MODE_INLINE;
   }
-  size_t inode_size = 8 + 3 + 3 + 3 + 1 + 5 + 1 + args->key_len + (full_tiles * 11) + 1 + last_tile_metadata_size;
 
   if (pthread_rwlock_rdlock(&ctx->flush->rwlock)) {
     perror("Failed to acquire read lock on flushing");
     exit(EXIT_INTERNAL);
   }
-  freelist_consumed_microtile_t inode_addr = freelist_consume_microtiles(ctx->fl, inode_size);
-  cursor_t* inode_cur = ctx->dev->mmap + (inode_addr.microtile * TILE_SIZE) + inode_addr.microtile_offset;
-  write_u24(inode_cur + 8, inode_size - 8);
+  // Use 64-bit values as we'll multiply these to get device offset.
+  uint64_t ino_addr_tile;
+  uint64_t ino_addr_tile_byte_offset;
+  if (alloc_strategy == ALLOC_FULL_TILE) {
+    ino_addr_tile = freelist_consume_one_tile(ctx->fl);
+    ino_addr_tile_byte_offset = 0;
+  } else {
+    freelist_consumed_microtile_t c = freelist_consume_microtiles(ctx->fl, ino_size);
+    ino_addr_tile = c.microtile;
+    ino_addr_tile_byte_offset = c.microtile_offset;
+  }
+
+  cursor_t* inode_cur = ctx->dev->mmap + (ino_addr_tile * TILE_SIZE) + ino_addr_tile_byte_offset;
+  write_u24(inode_cur + 8, ino_size_checksummed);
   cursor_t* cur = inode_cur + 8 + 3 + 3 + 3;
   produce_u8(&cur, INO_STATE_OK);
   produce_u40(&cur, args->size);
   produce_u8(&cur, args->key_len);
   produce_n(&cur, args->key, args->key_len);
-  produce_u8(&cur, last_tile_mode);
+  produce_u8(&cur, ltm);
   if (full_tiles) {
-    freelist_consume_tiles(ctx->fl, full_tiles + (last_tile_mode == INO_LAST_TILE_MODE_TILE), &cur);
+    freelist_consume_tiles(ctx->fl, full_tiles + ((ltm == INO_LAST_TILE_MODE_TILE) ? 1 : 0), &cur);
   }
-  if (last_tile_mode == INO_LAST_TILE_MODE_MICROTILE) {
-    freelist_consumed_microtile_t l = freelist_consume_microtiles(ctx->fl, last_tile_size);
-    produce_u24(&cur, l.microtile);
-    produce_u24(&cur, l.microtile_offset);
+  if (ltm == INO_LAST_TILE_MODE_INLINE) {
+    memset(cur + 8, 0, last_tile_size);
+    uint64_t inline_data_hash = XXH3_64bits(cur + 8, last_tile_size);
+    produce_u64(&cur, inline_data_hash);
   }
-  ts_log(DEBUG, "Using %zu tiles and last tile mode %d", full_tiles, last_tile_mode);
-
-  // TODO Possible concern: reader will get the bucket and try to read the inode before we've set the checksum or next address values of inode.
-  uint_least64_t bkt_ptr_new = (inode_addr.microtile << 24) | (inode_addr.microtile_offset);
-  uint_least64_t bkt_ptr_existing = ctx->bkts->bucket_pointers[args->key_bucket];
-  while (!atomic_compare_exchange_weak(&ctx->bkts->bucket_pointers[args->key_bucket], &bkt_ptr_existing, bkt_ptr_new)) {}
-  uint32_t bkt_ptr_existing_microtile = bkt_ptr_existing >> 24;
-  uint32_t bkt_ptr_existing_microtile_offset = bkt_ptr_existing & ((1 << 24) - 1);
-  ts_log(DEBUG, "Next inode is at microtile %u and offset %u", bkt_ptr_existing_microtile, bkt_ptr_existing_microtile_offset);
+  ts_log(DEBUG, "Using %zu tiles and last tile mode %d", full_tiles, ltm);
 
   if (pthread_rwlock_wrlock(&ctx->bkts->dirty_sixteen_pointers_rwlock)) {
     perror("Failed to acquire write lock on buckets");
@@ -158,11 +177,23 @@ svr_client_result_t method_create_object(
     exit(EXIT_INTERNAL);
   }
 
-  write_u24(inode_cur + 8 + 3, bkt_ptr_existing_microtile);
-  write_u24(inode_cur + 8 + 3 + 3, bkt_ptr_existing_microtile_offset);
-  uint64_t hash = XXH3_64bits(inode_cur + 8, inode_size - 8);
+  bucket_t* bkt = ctx->bkts->buckets + args->key_bucket;
+  if (pthread_rwlock_wrlock(&bkt->lock)) {
+    perror("Failed to acquire write lock on bucket");
+    exit(EXIT_INTERNAL);
+  }
+  ts_log(DEBUG, "Next inode is at microtile %u and offset %u", bkt->microtile, bkt->microtile_byte_offset);
+  write_u24(inode_cur + 8 + 3, bkt->microtile);
+  write_u24(inode_cur + 8 + 3 + 3, bkt->microtile_byte_offset);
+  uint64_t hash = XXH3_64bits(inode_cur + 8, ino_size_checksummed);
   write_u64(inode_cur, hash);
   ts_log(DEBUG, "Wrote inode");
+  bkt->microtile = ino_addr_tile;
+  bkt->microtile_byte_offset = ino_addr_tile_byte_offset;
+  if (pthread_rwlock_unlock(&bkt->lock)) {
+    perror("Failed to release write lock on bucket");
+    exit(EXIT_INTERNAL);
+  }
 
   if (pthread_rwlock_unlock(&ctx->flush->rwlock)) {
     perror("Failed to release read lock on flushing");

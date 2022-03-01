@@ -2,7 +2,6 @@
 
 #include <errno.h>
 #include <immintrin.h>
-#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -111,15 +110,19 @@ svr_client_result_t method_inspect_object(
 
   cursor_t* inode_cur = NULL;
 
-  uint_least64_t bkt_ptr_raw = atomic_load(ctx->bkts->bucket_pointers + args->key_bucket);
-  uint32_t bkt_microtile = bkt_ptr_raw >> 24;
-  uint32_t bkt_microtile_offset = bkt_ptr_raw & ((1llu << 24) - 1);
+  bucket_t* bkt = &ctx->bkts->buckets[args->key_bucket];
+  if (pthread_rwlock_rdlock(&bkt->lock)) {
+    perror("Failed to acquire read lock on bucket");
+    exit(EXIT_INTERNAL);
+  }
+  uint32_t bkt_microtile = bkt->microtile;
+  uint32_t bkt_microtile_offset = bkt->microtile_byte_offset;
   while (bkt_microtile) {
     ts_log(DEBUG, "Checking inode at microtile %zu offset %zu", bkt_microtile, bkt_microtile_offset);
     cursor_t* cur = ctx->dev->mmap + (TILE_SIZE * bkt_microtile) + bkt_microtile_offset;
     uint64_t checksum_recorded = read_u64(cur);
-    uint32_t inode_size_excluding_xxhash = read_u24(cur + 8);
-    uint64_t checksum_actual = XXH3_64bits(cur + 8, inode_size_excluding_xxhash);
+    uint32_t inode_size_checksummed = read_u24(cur + 8);
+    uint64_t checksum_actual = XXH3_64bits(cur + 8, inode_size_checksummed);
     if (checksum_recorded != checksum_actual) {
       CORRUPT("inode at microtile %u offset %u has recorded checksum %x but data checksums to %x", bkt_microtile, bkt_microtile_offset, checksum_recorded, checksum_actual);
     }
@@ -145,6 +148,10 @@ svr_client_result_t method_inspect_object(
     }
     inode_cur = cur;
     break;
+  }
+  if (pthread_rwlock_unlock(&bkt->lock)) {
+    perror("Failed to release read lock on bucket");
+    exit(EXIT_INTERNAL);
   }
 
   cursor_t* res_cur = args->response;

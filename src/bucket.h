@@ -1,7 +1,6 @@
 #pragma once
 
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include "device.h"
@@ -26,9 +25,14 @@ u8 count_log2
 **/
 
 typedef struct {
+  pthread_rwlock_t lock;
+  uint32_t microtile;
+  uint32_t microtile_byte_offset;
+} bucket_t;
+
+typedef struct {
   size_t dev_offset_pointers;
-  // For simplicity, we use u64 values. Bits [24:47] represent microtile, [0:23] microtile byte offset; the other bits are unused.
-  atomic_uint_least64_t* bucket_pointers;
+  bucket_t* buckets;
   uint64_t** dirty_sixteen_pointers;
   size_t dirty_sixteen_pointers_layer_count;
   pthread_rwlock_t dirty_sixteen_pointers_rwlock;

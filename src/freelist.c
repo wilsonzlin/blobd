@@ -219,6 +219,22 @@ void freelist_consume_tiles(freelist_t* fl, size_t tiles_needed, cursor_t** out)
   ts_log(DEBUG, "Allocated %zu tiles", tiles_needed_orig);
 }
 
+uint32_t freelist_consume_one_tile(freelist_t* fl) {
+  if (pthread_rwlock_wrlock(&fl->rwlock)) {
+    perror("Failed to acquire write lock on freelist");
+    exit(EXIT_INTERNAL);
+  }
+
+  uint32_t tile = fast_allocate_one_tile(fl);
+
+  if (pthread_rwlock_unlock(&fl->rwlock)) {
+    perror("Failed to release write lock on freelist");
+    exit(EXIT_INTERNAL);
+  }
+
+  return tile;
+}
+
 freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, size_t bytes_needed) {
   if (pthread_rwlock_wrlock(&fl->rwlock)) {
     perror("Failed to acquire write lock on freelist");

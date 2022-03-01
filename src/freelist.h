@@ -79,4 +79,6 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, size_t dev_offset);
 
 void freelist_consume_tiles(freelist_t* fl, size_t tiles_needed, cursor_t** out);
 
+uint32_t freelist_consume_one_tile(freelist_t* fl);
+
 freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, size_t bytes_needed);

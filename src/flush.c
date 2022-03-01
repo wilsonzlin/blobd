@@ -94,11 +94,9 @@ void visit_bucket_dirty_bitmap(
       cursor_t* cur = start;
       for (size_t j = 0; j < 16; j++) {
         size_t bkt_id = offset * 16 + j;
-        uint_least64_t v = state->buckets->bucket_pointers[bkt_id];
-        uint32_t microtile_offset = v & ((1llu << 24) - 1);
-        uint32_t microtile = (v >> 24);
-        produce_u24(&cur, microtile);
-        produce_u24(&cur, microtile_offset);
+        bucket_t* v = &state->buckets->buckets[bkt_id];
+        produce_u24(&cur, v->microtile);
+        produce_u24(&cur, v->microtile_byte_offset);
       }
       uint64_t checksum = XXH3_64bits(start, len - 8);
       produce_u64(&cur, checksum);

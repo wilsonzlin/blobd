@@ -2,7 +2,6 @@
 
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,13 +43,18 @@ buckets_t* buckets_create_from_disk_state(
 
   ts_log(DEBUG, "Loading %zu buckets", bkt_cnt);
   cursor_t* cur = dev->mmap + bkts->dev_offset_pointers;
-  bkts->bucket_pointers = malloc(sizeof(atomic_uint_least64_t) * bkt_cnt);
+  bkts->buckets = malloc(sizeof(bucket_t) * bkt_cnt);
   for (size_t i = 0; i < sixteens; i++) {
     uint64_t checksum_actual = XXH3_64bits(cur, 6 * 16);
     for (size_t j = 0; j < 16; j++) {
       size_t idx = i * 16 + j;
       // TODO Check tile address is less than tile_count.
-      bkts->bucket_pointers[idx] = (consume_u24(&cur) << 24) | consume_u24(&cur);
+      bkts->buckets[idx].microtile = consume_u24(&cur);
+      bkts->buckets[idx].microtile_byte_offset = consume_u24(&cur);
+      if (pthread_rwlock_init(&bkts->buckets[idx].lock, NULL)) {
+        perror("Failed to initialise bucket lock");
+        exit(EXIT_INTERNAL);
+      }
     }
     uint64_t checksum_recorded = consume_u64(&cur);
     if (checksum_recorded != checksum_actual) {
