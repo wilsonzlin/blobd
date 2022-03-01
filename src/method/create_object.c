@@ -16,34 +16,20 @@
 #include "../server.h"
 #include "../tile.h"
 #include "../util.h"
+#include "_common.h"
 #include "create_object.h"
 #include "../../ext/xxHash/xxhash.h"
 
 LOGGER("method_create_object");
 
-typedef enum {
-  METHOD_CREATE_OBJECT_ERROR__UNKNOWN,
-  METHOD_CREATE_OBJECT_ERROR_OK,
-  METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS,
-  METHOD_CREATE_OBJECT_ERROR_KEY_TOO_LONG,
-  METHOD_CREATE_OBJECT_ERROR_TOO_MANY_ARGS,
-} method_create_object_error_t;
+#define RESPONSE_LEN 1
 
 struct method_create_object_state_s {
-  // If this is not METHOD_CREATE_OBJECT_ERROR__UNKNOWN, all other fields are undefined.
-  method_create_object_error_t response;
+  int response_written;
+  uint8_t response[RESPONSE_LEN];
+  method_common_key_t key;
   uint64_t size;
-  uint64_t key_bucket;
-  uint8_t key_len;
-  uint8_t key[128 + 1];
 };
-
-#define PARSE_OR_ERROR(out_parsed, parser, n, error) \
-  out_parsed = svr_method_args_parser_parse(parser, n); \
-  if (p == NULL) { \
-    args->response = error; \
-    return args; \
-  }
 
 // Method signature: (u8 key_len, char[] key, u64 size).
 method_create_object_state_t* method_create_object_state_create(
@@ -51,25 +37,23 @@ method_create_object_state_t* method_create_object_state_create(
   svr_method_args_parser_t* parser
 ) {
   method_create_object_state_t* args = malloc(sizeof(method_create_object_state_t));
-  args->response = METHOD_CREATE_OBJECT_ERROR__UNKNOWN;
+  INIT_STATE_RESPONSE(args, RESPONSE_LEN);
   uint8_t* p = NULL;
 
-  PARSE_OR_ERROR(p, parser, 1, METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS);
-  args->key_len = *p;
-  if (args->key_len > 128) {
-    args->response = METHOD_CREATE_OBJECT_ERROR_KEY_TOO_LONG;
-    return args;
+  method_error_t key_parse_error = method_common_key_parse(parser, ctx->bkts->count_log2, &args->key);
+  if (key_parse_error != METHOD_ERROR_OK) {
+    PARSE_ERROR(args, key_parse_error);
   }
-  PARSE_OR_ERROR(p, parser, args->key_len, METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS);
-  memcpy(&args->key, p, args->key_len);
-  args->key[args->key_len] = 0;
-  args->key_bucket = XXH3_64bits(args->key, args->key_len) & ((1llu << ctx->bkts->count_log2) - 1);
-  PARSE_OR_ERROR(p, parser, 8, METHOD_CREATE_OBJECT_ERROR_NOT_ENOUGH_ARGS);
+
+  if ((p = svr_method_args_parser_parse(parser, 8)) == NULL) {
+    PARSE_ERROR(args, METHOD_ERROR_NOT_ENOUGH_ARGS);
+  }
   args->size = read_u64(p);
+
   if (!svr_method_args_parser_end(parser)) {
-    args->response = METHOD_CREATE_OBJECT_ERROR_TOO_MANY_ARGS;
-    return args;
+    PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
+
   return args;
 }
 
@@ -88,17 +72,7 @@ svr_client_result_t method_create_object(
   method_create_object_state_t* args,
   int client_fd
 ) {
-  if (args->response != METHOD_CREATE_OBJECT_ERROR__UNKNOWN) {
-    uint8_t buf[1] = {args->response};
-    int writeno = write(client_fd, buf, 1);
-    if (1 == writeno) {
-      return SVR_CLIENT_RESULT_END;
-    }
-    if (-1 == writeno && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
-    }
-    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
-  }
+  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd);
 
   ts_log(DEBUG, "create_object(key=%s, size=%zu)", args->key, args->size);
   size_t full_tiles = args->size / TILE_SIZE;
@@ -106,7 +80,7 @@ svr_client_result_t method_create_object(
 
   ino_last_tile_mode_t ltm;
   alloc_strategy_t alloc_strategy;
-  size_t ino_size_excluding_last_tile = 8 + 3 + 3 + 3 + 1 + 5 + 1 + args->key_len + 1 + (full_tiles * 11);
+  size_t ino_size_excluding_last_tile = 8 + 3 + 3 + 3 + 1 + 5 + 1 + args->key.len + 1 + (full_tiles * 11);
   size_t ino_size_if_inline = ino_size_excluding_last_tile + 8 + last_tile_size;
   size_t ino_size;
   size_t ino_size_checksummed;
@@ -148,8 +122,8 @@ svr_client_result_t method_create_object(
   cursor_t* cur = inode_cur + 8 + 3 + 3 + 3;
   produce_u8(&cur, INO_STATE_OK);
   produce_u40(&cur, args->size);
-  produce_u8(&cur, args->key_len);
-  produce_n(&cur, args->key, args->key_len);
+  produce_u8(&cur, args->key.len);
+  produce_n(&cur, args->key.data.bytes, args->key.len);
   produce_u8(&cur, ltm);
   if (full_tiles) {
     freelist_consume_tiles(ctx->fl, full_tiles + ((ltm == INO_LAST_TILE_MODE_TILE) ? 1 : 0), &cur);
@@ -166,7 +140,7 @@ svr_client_result_t method_create_object(
     exit(EXIT_INTERNAL);
   }
   for (
-    size_t o = args->key_bucket / 16, i = ctx->bkts->dirty_sixteen_pointers_layer_count;
+    size_t o = args->key.bucket / 16, i = ctx->bkts->dirty_sixteen_pointers_layer_count;
     i > 0;
     o /= 64, i--
   ) {
@@ -177,7 +151,7 @@ svr_client_result_t method_create_object(
     exit(EXIT_INTERNAL);
   }
 
-  bucket_t* bkt = ctx->bkts->buckets + args->key_bucket;
+  bucket_t* bkt = ctx->bkts->buckets + args->key.bucket;
   if (pthread_rwlock_wrlock(&bkt->lock)) {
     perror("Failed to acquire write lock on bucket");
     exit(EXIT_INTERNAL);
@@ -200,7 +174,8 @@ svr_client_result_t method_create_object(
     exit(EXIT_INTERNAL);
   }
 
-  args->response = METHOD_CREATE_OBJECT_ERROR_OK;
+  args->response[0] = METHOD_ERROR_OK;
+  args->response_written = 0;
 
   return SVR_CLIENT_RESULT_AWAITING_FLUSH;
 }

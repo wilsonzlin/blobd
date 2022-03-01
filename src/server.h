@@ -53,7 +53,6 @@ typedef enum {
   SVR_METHOD_INSPECT_OBJECT = 2,
   // (u8 key_len, char[] key, i64 start, i64 end_exclusive_or_zero_for_eof).
   SVR_METHOD_READ_OBJECT = 3,
-  // (u8 key_len, char[] key, i64 start, i64 end_exclusive).
   SVR_METHOD_WRITE_OBJECT = 4,
   // (u8 key_len, char[] key).
   SVR_METHOD_DELETE_OBJECT = 5,

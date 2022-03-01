@@ -25,8 +25,12 @@ u32 count
 
 #define JOURNAL_RESERVED_SPACE (1024 * 1024 * 128)
 
-typedef struct {
-  size_t dev_offset;
-} journal_t;
+typedef struct journal_s journal_t;
 
-journal_t* journal_create(size_t dev_offset);
+journal_t* journal_create(device_t* dev, size_t dev_offset);
+
+void journal_append(journal_t* jnl, size_t dev_offset, uint32_t len);
+
+void journal_flush(journal_t* jnl);
+
+void journal_clear(journal_t* jnl);

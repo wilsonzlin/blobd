@@ -196,19 +196,12 @@ void* thread(void* state_raw) {
     }
 
     // Write and flush journal.
-    cursor_t* journal_mmap = state->dev->mmap + state->journal->dev_offset;
-    cursor_t* journal_cur = journal_mmap + 8;
-    produce_u32(&journal_cur, state->changes->len);
     for (size_t i = 0; i < state->changes->len; i++) {
       change_t c = state->changes->elems[i];
-      produce_u48(&journal_cur, c.device_offset);
-      produce_u32(&journal_cur, c.len);
-      produce_n(&journal_cur, state->dev->mmap + c.device_offset, c.len);
+      journal_append(state->journal, c.device_offset, c.len);
     }
-    uint64_t journal_checksum = XXH3_64bits(journal_mmap + 8, journal_cur - (journal_mmap + 8));
-    write_u64(journal_mmap, journal_checksum);
     // Ensure journal has been flushed to disk and written successfully.
-    msync(state->dev->mmap, state->dev->size, MS_SYNC);
+    journal_flush(state->journal);
 
     // Write changes to mmap and flush.
     for (size_t i = 0; i < state->changes->len; i++) {
@@ -220,11 +213,7 @@ void* thread(void* state_raw) {
     state->changes->len = 0;
 
     // Erase and flush journal.
-    journal_cur = journal_mmap;
-    produce_u64(&journal_cur, state->xxhash_u32_0);
-    produce_u32(&journal_cur, 0);
-    // We must flush, or else we'll try recovering from journal and overwrite data.
-    msync(state->dev->mmap, state->dev->size, MS_SYNC);
+    journal_clear(state->journal);
 
     // Clear dirty bitmaps.
     state->fl->dirty_eight_tiles_bitmap_1 = 0;
