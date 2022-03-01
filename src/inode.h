@@ -29,8 +29,10 @@ optional {
 **/
 
 typedef enum {
-  INO_STATE_OK = 1,
-  INO_STATE_CORRUPT = 2,
+  INO_STATE_INCOMPLETE = 1,
+  INO_STATE_READY = 2,
+  INO_STATE_CORRUPT = 3,
+  INO_STATE_DELETED = 4,
 } ino_state_t;
 
 typedef enum {

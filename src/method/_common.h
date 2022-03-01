@@ -1,7 +1,11 @@
 #pragma once
 
+#include <errno.h>
 #include <immintrin.h>
 #include <stdint.h>
+#include "../bucket.h"
+#include "../cursor.h"
+#include "../device.h"
 #include "../server.h"
 
 typedef enum {
@@ -10,6 +14,7 @@ typedef enum {
   METHOD_ERROR_KEY_TOO_LONG,
   METHOD_ERROR_TOO_MANY_ARGS,
   METHOD_ERROR_NOT_FOUND,
+  METHOD_ERROR_INVALID_START,
 } method_error_t;
 
 #define INIT_STATE_RESPONSE(state, response_len) \
@@ -52,4 +57,11 @@ method_error_t method_common_key_parse(
   svr_method_args_parser_t* parser,
   uint8_t bucket_count_log2,
   method_common_key_t* out
+);
+
+cursor_t* method_common_find_inode_in_bucket(
+  bucket_t* bkt,
+  method_common_key_t* key,
+  device_t* dev,
+  ino_state_t required_state
 );

@@ -66,51 +66,13 @@ svr_client_result_t method_inspect_object(
 
   ts_log(DEBUG, "inspect_object(key=%s)", args->key.data.bytes);
 
-  cursor_t* inode_cur = NULL;
-
   bucket_t* bkt = &ctx->bkts->buckets[args->key.bucket];
   if (pthread_rwlock_rdlock(&bkt->lock)) {
     perror("Failed to acquire read lock on bucket");
     exit(EXIT_INTERNAL);
   }
-  uint32_t bkt_microtile = bkt->microtile;
-  uint32_t bkt_microtile_offset = bkt->microtile_byte_offset;
-  while (bkt_microtile) {
-    ts_log(DEBUG, "Checking inode at microtile %zu offset %zu", bkt_microtile, bkt_microtile_offset);
-    cursor_t* cur = ctx->dev->mmap + (TILE_SIZE * bkt_microtile) + bkt_microtile_offset;
-    uint64_t checksum_recorded = read_u64(cur);
-    uint32_t inode_size_checksummed = read_u24(cur + 8);
-    uint64_t checksum_actual = XXH3_64bits(cur + 8, inode_size_checksummed);
-    if (checksum_recorded != checksum_actual) {
-      CORRUPT("inode at microtile %u offset %u has recorded checksum %x but data checksums to %x", bkt_microtile, bkt_microtile_offset, checksum_recorded, checksum_actual);
-    }
-    bkt_microtile = read_u24(cur + 8 + 3);
-    bkt_microtile_offset = read_u24(cur + 8 + 3 + 3);
-    // TODO Check state.
-    uint8_t ino_key_len = cur[8 + 3 + 3 + 3 + 1 + 5];
-    uint8_t ino_key[129];
-    memcpy(ino_key, cur + 8 + 3 + 3 + 3 + 1 + 5 + 1, ino_key_len);
-    ino_key[ino_key_len] = 0;
-    ts_log(DEBUG, "Inode has key %s", ino_key);
-    if (ino_key_len != args->key.len) {
-      continue;
-    }
-    // WARNING: Both __m512i arguments must be filled with the same character.
-    __m512i ino_key_lower = _mm512_loadu_epi8(ino_key);
-    if (_mm512_cmpneq_epi8_mask(ino_key_lower, args->key.data.vecs[0])) {
-      continue;
-    }
-    __m512i ino_key_upper = _mm512_loadu_epi8(ino_key + 64);
-    if (_mm512_cmpneq_epi8_mask(ino_key_upper, args->key.data.vecs[1])) {
-      continue;
-    }
-    inode_cur = cur;
-    break;
-  }
-  if (pthread_rwlock_unlock(&bkt->lock)) {
-    perror("Failed to release read lock on bucket");
-    exit(EXIT_INTERNAL);
-  }
+
+  cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_READY);
 
   args->response_written = 0;
   cursor_t* res_cur = args->response;
@@ -122,6 +84,11 @@ svr_client_result_t method_inspect_object(
     produce_u8(&res_cur, METHOD_ERROR_OK);
     produce_u8(&res_cur, inode_cur[8 + 3 + 3 + 3]);
     produce_u64(&res_cur, read_u40(inode_cur + 8 + 3 + 3 + 3 + 1));
+  }
+
+  if (pthread_rwlock_unlock(&bkt->lock)) {
+    perror("Failed to release read lock on bucket");
+    exit(EXIT_INTERNAL);
   }
 
   return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;

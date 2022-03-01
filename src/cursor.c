@@ -34,6 +34,12 @@ uint64_t read_u40(cursor_t* cur) {
   return v;
 }
 
+int64_t read_i64(cursor_t* cur) {
+  int64_t v;
+  memcpy(&v, cur, 8);
+  return be64toh(v);
+}
+
 uint64_t read_u64(cursor_t* cur) {
   uint64_t v;
   memcpy(&v, cur, 8);

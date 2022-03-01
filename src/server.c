@@ -13,6 +13,7 @@
 #include "list.h"
 #include "log.h"
 #include "server.h"
+#include "util.h"
 #include "method/create_object.h"
 #include "method/inspect_object.h"
 #include "../ext/klib/khash.h"
@@ -23,22 +24,6 @@
 #define SVR_CLIENTS_ACTIVE_MAX 1048576
 
 LOGGER("server");
-
-// `n` must be nonzero.
-// Returns -1 on error or close, 0 on not ready, and nonzero on (partial) read.
-static inline int maybe_read(int fd, uint8_t* out_buf, size_t n) {
-  int readno = read(fd, out_buf, n);
-  if (readno == -1) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      return 0;
-    }
-    return -1;
-  }
-  if (!readno) {
-    return -1;
-  }
-  return readno;
-}
 
 struct svr_method_args_parser_s {
   uint16_t read_next;
