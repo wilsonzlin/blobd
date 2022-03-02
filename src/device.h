@@ -12,6 +12,7 @@ Structure
 ---------
 
 journal
+stream
 freelist
 buckets
 heap

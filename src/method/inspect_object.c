@@ -71,7 +71,7 @@ svr_client_result_t method_inspect_object(
     exit(EXIT_INTERNAL);
   }
 
-  cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_READY);
+  cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_READY, 0);
 
   args->response_written = 0;
   cursor_t* res_cur = args->response;
@@ -81,8 +81,8 @@ svr_client_result_t method_inspect_object(
     produce_u64(&res_cur, 0);
   } else {
     produce_u8(&res_cur, METHOD_ERROR_OK);
-    produce_u8(&res_cur, inode_cur[8 + 3 + 3 + 3]);
-    produce_u64(&res_cur, read_u40(inode_cur + 8 + 3 + 3 + 3 + 1));
+    produce_u8(&res_cur, inode_cur[INO_OFFSETOF_STATE]);
+    produce_u64(&res_cur, read_u40(inode_cur + INO_OFFSETOF_SIZE));
   }
 
   if (pthread_rwlock_unlock(&bkt->lock)) {

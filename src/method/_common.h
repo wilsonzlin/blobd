@@ -63,5 +63,6 @@ cursor_t* method_common_find_inode_in_bucket(
   bucket_t* bkt,
   method_common_key_t* key,
   device_t* dev,
-  ino_state_t required_state
+  ino_state_t required_state,
+  uint64_t required_obj_no_or_zero
 );

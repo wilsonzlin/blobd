@@ -16,6 +16,7 @@
 #include "list.h"
 #include "log.h"
 #include "server.h"
+#include "stream.h"
 #include "tile.h"
 #include "vec.h"
 #include "../ext/xxHash/xxhash.h"
@@ -38,6 +39,7 @@ typedef struct {
   journal_t* journal;
   freelist_t* fl;
   buckets_t* buckets;
+  stream_t* stream;
   changes_t* changes;
   uint8_t* change_data_pool;
   size_t change_data_pool_cap;
@@ -195,6 +197,28 @@ void* thread(void* state_raw) {
       visit_bucket_dirty_bitmap(state, &change_data_next, state->buckets->dirty_sixteen_pointers[0][0], 0, 0);
     }
 
+    if (state->stream->pending_flush->len) {
+      ensure_change_data_pool_cap(state, 8 + state->stream->pending_flush->len * (1 + 8 + 8));
+      cursor_t* cur = state->change_data_pool + change_data_next;
+      produce_u64(&cur, atomic_load_explicit(&state->stream->next_obj_no, memory_order_relaxed));
+      produce_u64(&cur, atomic_load_explicit(&state->stream->next_seq_no, memory_order_relaxed));
+      append_change(state->changes, &change_data_next, state->stream->dev_offset, 8);
+      for (size_t i = 0; i < state->stream->pending_flush->len; i++) {
+        stream_event_t* ev = state->stream->pending_flush->elems + i;
+        uint64_t ring_idx = ev->seq_no % STREAM_EVENTS_BUF_LEN;
+        produce_u8(&cur, ev->typ);
+        produce_u40(&cur, ev->bkt_id);
+        produce_u64(&cur, ev->obj_no);
+        append_change(
+          state->changes,
+          &change_data_next,
+          state->stream->dev_offset + 8 + (ring_idx * (1 + 8 + 8)),
+          1 + 8 + 8
+        );
+      }
+      state->stream->pending_flush->len = 0;
+    }
+
     // Write and flush journal.
     for (size_t i = 0; i < state->changes->len; i++) {
       change_t c = state->changes->elems[i];
@@ -240,7 +264,8 @@ void flush_worker_start(
   device_t* dev,
   journal_t* journal,
   freelist_t* fl,
-  buckets_t* buckets
+  buckets_t* buckets,
+  stream_t* stream
 ) {
   thread_state_t* state = malloc(sizeof(thread_state_t));
   state->flush = flush;
@@ -249,6 +274,7 @@ void flush_worker_start(
   state->journal = journal;
   state->fl = fl;
   state->buckets = buckets;
+  state->stream = stream;
   state->changes = changes_create_with_capacity(128);
   state->change_data_pool_cap = 2048;
   state->change_data_pool = malloc(state->change_data_pool_cap);

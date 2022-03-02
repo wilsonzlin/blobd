@@ -14,6 +14,7 @@
 #include "../log.h"
 #include "../object.h"
 #include "../server.h"
+#include "../stream.h"
 #include "../tile.h"
 #include "../util.h"
 #include "_common.h"
@@ -22,10 +23,11 @@
 
 LOGGER("method_create_object");
 
-#define RESPONSE_LEN 1
+#define RESPONSE_LEN 9
 
 struct method_create_object_state_s {
   int response_written;
+  // [u8 error, u64 obj_no].
   uint8_t response[RESPONSE_LEN];
   method_common_key_t key;
   uint64_t size;
@@ -80,24 +82,20 @@ svr_client_result_t method_create_object(
 
   ino_last_tile_mode_t ltm;
   alloc_strategy_t alloc_strategy;
-  size_t ino_size_excluding_last_tile = 8 + 3 + 3 + 3 + 1 + 5 + 1 + args->key.len + 1 + (full_tiles * 11);
-  size_t ino_size_if_inline = ino_size_excluding_last_tile + 8 + last_tile_size;
+  size_t ino_size_excluding_last_tile = INO_OFFSETOF_LAST_TILE_INLINE_DATA(args->key.len, full_tiles);
+  size_t ino_size_if_inline = ino_size_excluding_last_tile + last_tile_size;
   size_t ino_size;
-  size_t ino_size_checksummed;
   if (ino_size_if_inline >= TILE_SIZE) {
     alloc_strategy = ALLOC_MICROTILE_WITH_FULL_LAST_TILE;
     ino_size = ino_size_excluding_last_tile + 11;
-    ino_size_checksummed = ino_size - 8;
     ltm = INO_LAST_TILE_MODE_TILE;
-  } else if (ino_size_if_inline + 8 + 3 + 3 + 3 + 1 + 5 + 1 + 128 + 1 + 11 >= TILE_SIZE) {
+  } else if (ino_size_if_inline + INO_OFFSETOF_LAST_TILE_INLINE_DATA(128, 1) >= TILE_SIZE) {
     alloc_strategy = ALLOC_FULL_TILE;
     ino_size = ino_size_if_inline;
-    ino_size_checksummed = ino_size_excluding_last_tile + 8 - 8;
     ltm = INO_LAST_TILE_MODE_INLINE;
   } else {
     alloc_strategy = ALLOC_MICROTILE_WITH_INLINE_LAST_TILE;
     ino_size = ino_size_if_inline;
-    ino_size_checksummed = ino_size_excluding_last_tile + 8 - 8;
     ltm = INO_LAST_TILE_MODE_INLINE;
   }
 
@@ -117,21 +115,20 @@ svr_client_result_t method_create_object(
     ino_addr_tile_byte_offset = c.microtile_offset;
   }
 
+  uint64_t obj_no = stream_acquire_obj_no(ctx->stream);
+
   cursor_t* inode_cur = ctx->dev->mmap + (ino_addr_tile * TILE_SIZE) + ino_addr_tile_byte_offset;
-  write_u24(inode_cur + 8, ino_size_checksummed);
-  cursor_t* cur = inode_cur + 8 + 3 + 3 + 3;
-  produce_u8(&cur, INO_STATE_INCOMPLETE);
-  produce_u40(&cur, args->size);
-  produce_u8(&cur, args->key.len);
-  produce_n(&cur, args->key.data.bytes, args->key.len);
-  produce_u8(&cur, ltm);
+  write_u64(inode_cur + INO_OFFSETOF_OBJ_NO, obj_no);
+  write_u8(inode_cur + INO_OFFSETOF_STATE, INO_STATE_INCOMPLETE);
+  write_u40(inode_cur + INO_OFFSETOF_SIZE, args->size);
+  write_u8(inode_cur + INO_OFFSETOF_LAST_TILE_MODE, ltm);
+  write_u8(inode_cur + INO_OFFSETOF_KEY_LEN, args->key.len);
+  memcpy(inode_cur + INO_OFFSETOF_KEY, args->key.data.bytes, args->key.len);
   if (full_tiles) {
-    freelist_consume_tiles(ctx->fl, full_tiles + ((ltm == INO_LAST_TILE_MODE_TILE) ? 1 : 0), &cur);
+    freelist_consume_tiles(ctx->fl, full_tiles + ((ltm == INO_LAST_TILE_MODE_TILE) ? 1 : 0), inode_cur + INO_OFFSETOF_TILES(args->key.len));
   }
   if (ltm == INO_LAST_TILE_MODE_INLINE) {
-    memset(cur + 8, 0, last_tile_size);
-    uint64_t inline_data_hash = XXH3_64bits(cur + 8, last_tile_size);
-    produce_u64(&cur, inline_data_hash);
+    memset(inode_cur + INO_OFFSETOF_LAST_TILE_INLINE_DATA(args->key.len, full_tiles), 0, last_tile_size);
   }
   ts_log(DEBUG, "Using %zu tiles and last tile mode %d", full_tiles, ltm);
 
@@ -157,10 +154,8 @@ svr_client_result_t method_create_object(
     exit(EXIT_INTERNAL);
   }
   ts_log(DEBUG, "Next inode is at microtile %u and offset %u", bkt->microtile, bkt->microtile_byte_offset);
-  write_u24(inode_cur + 8 + 3, bkt->microtile);
-  write_u24(inode_cur + 8 + 3 + 3, bkt->microtile_byte_offset);
-  uint64_t hash = XXH3_64bits(inode_cur + 8, ino_size_checksummed);
-  write_u64(inode_cur, hash);
+  write_u24(inode_cur + INO_OFFSETOF_NEXT_INODE_TILE, bkt->microtile);
+  write_u24(inode_cur + INO_OFFSETOF_NEXT_INODE_OFFSET, bkt->microtile_byte_offset);
   ts_log(DEBUG, "Wrote inode");
   bkt->microtile = ino_addr_tile;
   bkt->microtile_byte_offset = ino_addr_tile_byte_offset;
@@ -175,6 +170,7 @@ svr_client_result_t method_create_object(
   }
 
   args->response[0] = METHOD_ERROR_OK;
+  write_u64(args->response + 1, obj_no);
   args->response_written = 0;
 
   return SVR_CLIENT_RESULT_AWAITING_FLUSH;

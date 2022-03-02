@@ -35,16 +35,12 @@ Reclaiming microtile space
 
 We can reclaim space by:
 - Waiting for all objects that use the microtile to become deleted, and then marking the tile as free again (it doesn't have to keep being a microtile).
-- Occasionally recompacting by scanning the microtile sequentually and moving data towards byte address zero such that there are no gaps (e.g. deletions). The info in inodes will need to be updated simultaneously.
+- Occasionally recompacting by scanning the microtile sequentually and moving data towards byte address zero such that there are no gaps (e.g. deletions).
 
 Structure
 ---------
 
-{
-  u8 tile_bitmap
-  u24[8] microtile_usage_in_bytes_minus_one_or_zero_if_not_microtile
-  u64 xxhash
-}[2097152] eight_tiles
+u24[16777216] microtile_free_space_in_bytes_or_16777215_if_free_tile_or_16777214_if_used_tile
 
 **/
 

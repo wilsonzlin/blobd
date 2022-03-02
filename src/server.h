@@ -44,6 +44,7 @@ typedef struct {
   flush_state_t* flush;
   freelist_t* fl;
   buckets_t* bkts;
+  stream_t* stream;
 } svr_method_handler_ctx_t;
 
 typedef enum {

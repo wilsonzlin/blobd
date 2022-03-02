@@ -174,7 +174,7 @@ uint32_t fast_allocate_one_tile(freelist_t* fl) {
 }
 
 // tiles_needed must be nonzero.
-void freelist_consume_tiles(freelist_t* fl, size_t tiles_needed, cursor_t** out) {
+void freelist_consume_tiles(freelist_t* fl, size_t tiles_needed, cursor_t* out) {
   if (pthread_rwlock_wrlock(&fl->rwlock)) {
     perror("Failed to acquire write lock on freelist");
     exit(EXIT_INTERNAL);
@@ -191,8 +191,7 @@ void freelist_consume_tiles(freelist_t* fl, size_t tiles_needed, cursor_t** out)
         free_tiles_t result = find_free_tiles_in_region(fl->tile_bitmap_4[i1][i2][i3], min(tiles_needed, 64));
         for (size_t i = 0; result.tiles.elems[i] != 64; i++) {
           uint32_t tile = (((((i1 * 64) + i2) * 64) + i3) * 64) + result.tiles.elems[i];
-          produce_u24(out, tile);
-          *out += 8;
+          produce_u24(&out, tile);
           mark_tile_as_dirty(fl, tile);
           tiles_needed--;
         }
