@@ -322,6 +322,52 @@ const TileWaste = ({ diskSize }: { diskSize: number }) => {
 };
 
 // We use an absolute disk size to make aware of the actual physical impact.
+const BlockChecksums = ({ diskSize }: { diskSize: number }) => {
+  const BLOCK_SIZES = [
+    512,
+    1024,
+    4 * 1024,
+    16 * 1024,
+    64 * 1024,
+    256 * 1024,
+    512 * 1024,
+    1024 * 1024,
+    4 * 1024 * 1024,
+    16 * 1024 * 1024,
+  ];
+  const calcYVal = (blockSize: number) => {
+    return Math.ceil(diskSize / blockSize) * 8;
+  };
+  const yTickVals = BLOCK_SIZES.map((blockSize) => calcYVal(blockSize));
+  return (
+    <Plot
+      data={[
+        {
+          x: BLOCK_SIZES,
+          y: yTickVals,
+        },
+      ]}
+      layout={chartLayout({
+        xType: "log",
+        yType: "log",
+        xTitle: "Block sizes",
+        xTickVals: BLOCK_SIZES,
+        xTickText: BLOCK_SIZES.map(formatBytes),
+        yTitle: "Checksum storage",
+        marginLeft: 150,
+        yTickVals,
+        yTickText: yTickVals.map(
+          (usage) =>
+            `${formatBytes(usage)} (${
+              Math.round((usage / diskSize) * 10000) / 100
+            }%)`
+        ),
+      })}
+    />
+  );
+};
+
+// We use an absolute disk size to make aware of the actual physical impact.
 const WorstCaseExtents = ({ diskSize }: { diskSize: number }) => {
   const calcYVal = (tileSize: number, objectSize: number) => {
     const totalTiles = Math.ceil(diskSize / tileSize);
@@ -389,6 +435,10 @@ const App = () => (
     <section>
       <h1>Tile waste, 16 TiB disk</h1>
       <TileWaste diskSize={16 * 1024 * 1024 * 1024 * 1024} />
+    </section>
+    <section>
+      <h1>Block checksums, 16 TiB disk</h1>
+      <BlockChecksums diskSize={16 * 1024 * 1024 * 1024 * 1024} />
     </section>
     <section>
       <h1>Object extents, 16 TiB disk</h1>
