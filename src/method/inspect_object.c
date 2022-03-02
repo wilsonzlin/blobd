@@ -39,7 +39,6 @@ method_inspect_object_state_t* method_inspect_object_state_create(
 ) {
   method_inspect_object_state_t* args = aligned_alloc(64, sizeof(method_inspect_object_state_t));
   INIT_STATE_RESPONSE(args, RESPONSE_LEN);
-  uint8_t* p = NULL;
 
   method_error_t key_parse_error = method_common_key_parse(parser, ctx->bkts->count_log2, &args->key);
   if (key_parse_error != METHOD_ERROR_OK) {

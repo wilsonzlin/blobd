@@ -1,7 +1,7 @@
 # Turbostore
 
 - Decentralised
-- Distributed
+- Peer-to-peer replication
 - Direct I/O
 - Self-healing
-- Optimised for mass reads
+- Optimised for mass random concurrent reads over trillions of small objects with constant low latency

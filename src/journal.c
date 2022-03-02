@@ -3,10 +3,11 @@
 #include <sys/mman.h>
 #include "device.h"
 #include "journal.h"
+#include "../ext/xxHash/xxhash.h"
 
 struct journal_s {
   device_t* dev;
-  cursor_t mmap;
+  cursor_t* mmap;
   cursor_t* cursor_next;
   uint32_t entry_count;
   uint64_t xxhash_u32_0;

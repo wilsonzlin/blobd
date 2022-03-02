@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
     worker_count = v;
   }
 
-  journal_t* journal = journal_create(0);
+  journal_t* journal = journal_create(dev, 0);
 
   freelist_t* freelist = freelist_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE);
 

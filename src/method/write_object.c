@@ -138,7 +138,7 @@ svr_client_result_t method_write_object(
   res = SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;
 
   final:
-  if (pthread_rwlock_unlock(&bkt->lock)) {
+  if (acquired_lock && pthread_rwlock_unlock(&bkt->lock)) {
     perror("Failed to release read lock on bucket");
     exit(EXIT_INTERNAL);
   }

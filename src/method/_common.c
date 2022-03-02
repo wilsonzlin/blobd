@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include "../bucket.h"
 #include "../cursor.h"
 #include "../device.h"
@@ -5,8 +7,11 @@
 #include "../log.h"
 #include "../server.h"
 #include "../tile.h"
+#include "../util.h"
 #include "_common.h"
 #include "../../ext/xxHash/xxhash.h"
+
+LOGGER("method_common");
 
 method_error_t method_common_key_parse(
   svr_method_args_parser_t* parser,

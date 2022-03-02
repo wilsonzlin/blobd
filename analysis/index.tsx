@@ -251,44 +251,6 @@ const BucketPointers = ({ diskSize }: { diskSize: number }) => {
   );
 };
 
-const MICROTILE_METADATA_OVERHEAD = 8;
-
-// We use an absolute disk size to make aware of the actual physical impact.
-const Microtiles = ({ diskSize }: { diskSize: number }) => {
-  const MICROTILE_PROPORTIONS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 0.9];
-  const calcYVal = (microtileProportion: number, tileSize: number) => {
-    const allTiles = Math.ceil(diskSize / tileSize);
-    const microtiles = Math.round(allTiles * microtileProportion);
-    const microtileAddrBytes = Math.max(1, Math.ceil(Math.log2(tileSize) / 8));
-    return microtiles * (microtileAddrBytes + MICROTILE_METADATA_OVERHEAD);
-  };
-  const yTickVals = TILE_SIZES.map((tileSize) =>
-    calcYVal(MICROTILE_PROPORTIONS[3], tileSize)
-  );
-  return (
-    <Plot
-      data={MICROTILE_PROPORTIONS.map((microtileProportion) => ({
-        x: TILE_SIZES,
-        y: TILE_SIZES.map((tileSize) =>
-          calcYVal(microtileProportion, tileSize)
-        ),
-        name: `${microtileProportion * 100}% of tiles are microtiles`,
-      }))}
-      layout={tilesChartLayout({
-        yTitle: "Storage required to track microtiles",
-        marginLeft: 150,
-        yTickVals,
-        yTickText: yTickVals.map(
-          (usage) =>
-            `${formatBytes(usage)} (${
-              Math.round((usage / diskSize) * 10000) / 100
-            })%`
-        ),
-      })}
-    />
-  );
-};
-
 // We use an absolute disk size to make aware of the actual physical impact.
 const Inodes = ({ diskSize }: { diskSize: number }) => {
   const OBJECTS = [1e6, 1e7, 1e8, 1e9, 1e10];
@@ -419,10 +381,6 @@ const App = () => (
     <section>
       <h1>Bucket pointers, 16 TiB disk</h1>
       <BucketPointers diskSize={16 * 1024 * 1024 * 1024 * 1024} />
-    </section>
-    <section>
-      <h1>Microtile data structure overhead, 16 TiB disk</h1>
-      <Microtiles diskSize={16 * 1024 * 1024 * 1024 * 1024} />
     </section>
     <section>
       <h1>Inodes, 16 TiB disk</h1>

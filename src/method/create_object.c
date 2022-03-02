@@ -120,7 +120,7 @@ svr_client_result_t method_create_object(
   cursor_t* inode_cur = ctx->dev->mmap + (ino_addr_tile * TILE_SIZE) + ino_addr_tile_byte_offset;
   write_u24(inode_cur + 8, ino_size_checksummed);
   cursor_t* cur = inode_cur + 8 + 3 + 3 + 3;
-  produce_u8(&cur, INO_STATE_OK);
+  produce_u8(&cur, INO_STATE_INCOMPLETE);
   produce_u40(&cur, args->size);
   produce_u8(&cur, args->key.len);
   produce_n(&cur, args->key.data.bytes, args->key.len);
