@@ -51,3 +51,19 @@ int maybe_read(int fd, uint8_t* out_buf, size_t n) {
   }
   return readno;
 }
+
+// `n` must be nonzero.
+// Returns -1 on error or close, 0 on not ready, and nonzero on (partial) read.
+int maybe_write(int fd, uint8_t* in_buf, size_t n) {
+  int writeno = write(fd, in_buf, n);
+  if (writeno == -1) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return 0;
+    }
+    return -1;
+  }
+  if (!writeno) {
+    return -1;
+  }
+  return writeno;
+}

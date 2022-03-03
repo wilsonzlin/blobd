@@ -79,7 +79,7 @@ svr_client_result_t method_write_object(
   method_write_object_state_t* args,
   int client_fd
 ) {
-  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd);
+  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
   ts_log(DEBUG, "write_object(key=%s, start=%ld)", args->key, args->start);
 
@@ -87,7 +87,6 @@ svr_client_result_t method_write_object(
   svr_client_result_t res;
   // We must look up again each time in case it has been deleted since we last held the lock.
   // This may seem inefficient but it's better than holding the lock the entire time.
-  // Note that this means we cannot cache any inode values.
   bucket_t* bkt = &ctx->bkts->buckets[args->key.bucket];
   if (pthread_rwlock_rdlock(&bkt->lock)) {
     perror("Failed to acquire read lock on bucket");
@@ -97,12 +96,13 @@ svr_client_result_t method_write_object(
 
   cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_INCOMPLETE, args->obj_no);
 
+  if (inode_cur == NULL) {
+    ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
+  }
+
   uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
   if (args->start >= size) {
-    args->response[0] = METHOD_ERROR_INVALID_START;
-    args->response_written = 0;
-    res = SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
-    goto final;
+    ERROR_RESPONSE(METHOD_ERROR_INVALID_START);
   }
 
   uint8_t ltm = inode_cur[INO_OFFSETOF_LAST_TILE_MODE];
@@ -121,12 +121,9 @@ svr_client_result_t method_write_object(
     write_max_len = TILE_SIZE;
   }
 
-  // It's possible for args->written to be greater than write_max_len if the object has changed.
-  if (args->written >= write_max_len) {
-    args->response[0] = METHOD_ERROR_OK;
-    args->response_written = 0;
-    res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
-    goto final;
+  // TODO Assert not greater than.
+  if (args->written == write_max_len) {
+    ERROR_RESPONSE(METHOD_ERROR_OK);
   }
 
   int readno = maybe_read(client_fd, write_offset, write_max_len - args->written);
@@ -135,11 +132,9 @@ svr_client_result_t method_write_object(
     goto final;
   }
   args->written += readno;
+  // TODO Assert not greater than.
   if (args->written == write_max_len) {
-    args->response[0] = METHOD_ERROR_OK;
-    args->response_written = 0;
-    res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
-    goto final;
+    ERROR_RESPONSE(METHOD_ERROR_OK);
   }
   res = SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;
 

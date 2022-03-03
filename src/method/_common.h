@@ -7,6 +7,7 @@
 #include "../cursor.h"
 #include "../device.h"
 #include "../server.h"
+#include "../util.h"
 
 typedef enum {
   METHOD_ERROR_OK,
@@ -15,6 +16,7 @@ typedef enum {
   METHOD_ERROR_TOO_MANY_ARGS,
   METHOD_ERROR_NOT_FOUND,
   METHOD_ERROR_INVALID_START,
+  METHOD_ERROR_INVALID_END,
 } method_error_t;
 
 #define INIT_STATE_RESPONSE(state, response_len) \
@@ -26,20 +28,27 @@ typedef enum {
   state->response[0] = error; \
   return state;
 
-#define MAYBE_HANDLE_RESPONSE(state, response_len, client_fd) \
-  if (state->response_written >= 0) { \
-    int maybehandleresponsewriteresult = write(client_fd, state->response + state->response_written, response_len - state->response_written); \
-    if (-1 == maybehandleresponsewriteresult && (errno == EAGAIN || errno == EWOULDBLOCK)) { \
+#define ERROR_RESPONSE(error) \
+  args->response[0] = error; \
+  args->response_written = 0; \
+  res = SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE; \
+  goto final
+
+#define MAYBE_HANDLE_RESPONSE(state, response_len, client_fd, return_on_end) \
+  if (state->response_written >= 0 && state->response_written < response_len) { \
+    int maybehandleresponsewriteresult = maybe_write(client_fd, state->response + state->response_written, response_len - state->response_written); \
+    if (-1 == maybehandleresponsewriteresult) { \
+      return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR; \
+    } \
+    if (0 == maybehandleresponsewriteresult) { \
       return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE; \
     } \
-    if (maybehandleresponsewriteresult > 0) { \
-      if ((state->response_written += maybehandleresponsewriteresult) == RESPONSE_LEN) { \
-        return SVR_CLIENT_RESULT_END; \
-      } else { \
-        return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE; \
-      } \
+    if ((state->response_written += maybehandleresponsewriteresult) < RESPONSE_LEN) { \
+      return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE; \
     } \
-    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR; \
+    if (return_on_end) { \
+      return SVR_CLIENT_RESULT_END; \
+    } \
   }
 
 typedef union {

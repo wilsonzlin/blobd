@@ -37,8 +37,8 @@ u8[] last_tile_data_if_mode_is_inline
 
 typedef enum {
   INO_STATE_INCOMPLETE = 1,
-  INO_STATE_READY = 2,
-  INO_STATE_CORRUPT = 3,
+  INO_STATE_COMMITTED = 2,
+  INO_STATE_READY = 3,
   INO_STATE_DELETED = 4,
 } ino_state_t;
 

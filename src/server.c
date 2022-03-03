@@ -16,6 +16,8 @@
 #include "util.h"
 #include "method/create_object.h"
 #include "method/inspect_object.h"
+#include "method/read_object.h"
+#include "method/write_object.h"
 #include "../ext/klib/khash.h"
 
 #define SVR_SOCK_PATH "/tmp/turbostore.sock"
@@ -134,9 +136,11 @@ static inline void worker_handle_client_ready(
             client->method_state = method_inspect_object_state_create(state->ctx, ap);
             client->method_state_destructor = method_inspect_object_state_destroy;
           } else if (client->method == SVR_METHOD_READ_OBJECT) {
-            // TODO
+            client->method_state = method_read_object_state_create(state->ctx, ap);
+            client->method_state_destructor = method_read_object_state_destroy;
           } else if (client->method == SVR_METHOD_WRITE_OBJECT) {
-            // TODO
+            client->method_state = method_write_object_state_create(state->ctx, ap);
+            client->method_state_destructor = method_write_object_state_destroy;
           } else if (client->method == SVR_METHOD_DELETE_OBJECT) {
             // TODO
           } else {
@@ -154,9 +158,9 @@ static inline void worker_handle_client_ready(
       } else if (client->method == SVR_METHOD_INSPECT_OBJECT) {
         res = method_inspect_object(state->ctx, client->method_state, client->fd);
       } else if (client->method == SVR_METHOD_READ_OBJECT) {
-        // TODO
+        res = method_read_object(state->ctx, client->method_state, client->fd);
       } else if (client->method == SVR_METHOD_WRITE_OBJECT) {
-        // TODO
+        res = method_write_object(state->ctx, client->method_state, client->fd);
       } else if (client->method == SVR_METHOD_DELETE_OBJECT) {
         // TODO
       } else {
