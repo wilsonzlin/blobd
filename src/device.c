@@ -78,7 +78,7 @@ void device_format(device_t* dev, uint8_t bucket_count_log2) {
 
   // Write empty buckets.
   ts_log(DEBUG, "Writing buckets");
-  cursor_t* bkt_cur = dev->mmap + jnl_size + freelist_size;
+  cursor_t* bkt_cur = dev->mmap + jnl_size + stream_size + freelist_size;
   produce_u8(&bkt_cur, bucket_count_log2);
   memset(bkt_cur, 0, bkt_cnt * 6);
 

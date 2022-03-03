@@ -105,7 +105,8 @@ svr_client_result_t method_read_object(
       ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
     }
     // The object has been deleted while we were reading it.
-    res = SVR_CLIENT_RESULT_END;
+    // TODO Should we use some framing protocol or format so we don't have to close the connection? Or can we use UDP where there is a fixed length per write?
+    res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
     goto final;
   }
   if (!args->obj_no) {

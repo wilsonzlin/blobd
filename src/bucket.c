@@ -38,7 +38,7 @@ buckets_t* buckets_create_from_disk_state(
   buckets_t* bkts = malloc(sizeof(buckets_t));
   uint8_t count_log2 = dev->mmap[dev_offset];
   bkts->count = 1llu << count_log2;
-  bkts->key_mask = (1llu << count_log2) - 1;
+  bkts->key_mask = bkts->count - 1;
   bkts->dev_offset_pointers = dev_offset + 1;
 
   uint8_t dirty_layer_count = 1;
