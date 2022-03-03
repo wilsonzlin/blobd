@@ -26,10 +26,7 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
   freelist_t* fl = aligned_alloc(64, sizeof(freelist_t));
   memset(fl, 0, sizeof(freelist_t));
   fl->dev_offset = dev_offset;
-  if (pthread_rwlock_init(&fl->rwlock, NULL)) {
-    perror("Failed to initialise lock on freelist");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&fl->rwlock, NULL), "initialise lock on freelist");
 
   ts_log(DEBUG, "Loading %zu tiles", dev->tile_count);
   for (uint64_t tile_no = 0; tile_no < dev->tile_count; tile_no++) {
@@ -187,10 +184,7 @@ void freelist_replenish_tiles_of_inode(freelist_t* fl, cursor_t* inode_cur) {
 
 // tiles_needed must be nonzero.
 void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out) {
-  if (pthread_rwlock_wrlock(&fl->rwlock)) {
-    perror("Failed to acquire write lock on freelist");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&fl->rwlock), "acquire write lock on freelist");
 
   uint64_t tiles_needed_orig = tiles_needed;
 
@@ -222,35 +216,23 @@ void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out
     exit(EXIT_NO_SPACE);
   }
 
-  if (pthread_rwlock_unlock(&fl->rwlock)) {
-    perror("Failed to release write lock on freelist");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&fl->rwlock), "release write lock on freelist");
 
   ts_log(DEBUG, "Allocated %zu tiles", tiles_needed_orig);
 }
 
 uint32_t freelist_consume_one_tile(freelist_t* fl) {
-  if (pthread_rwlock_wrlock(&fl->rwlock)) {
-    perror("Failed to acquire write lock on freelist");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&fl->rwlock), "acquire write lock on freelist");
 
   uint32_t tile = fast_allocate_one_tile(fl);
 
-  if (pthread_rwlock_unlock(&fl->rwlock)) {
-    perror("Failed to release write lock on freelist");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&fl->rwlock), "release write lock on freelist");
 
   return tile;
 }
 
 freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint64_t bytes_needed) {
-  if (pthread_rwlock_wrlock(&fl->rwlock)) {
-    perror("Failed to acquire write lock on freelist");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&fl->rwlock), "acquire write lock on freelist");
 
   __m512i y512 = _mm512_set1_epi32(bytes_needed << 8);
 
@@ -316,10 +298,7 @@ freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint64
   fl->microtile_free_map_2[i1].elems[i2] = (_mm512_reduce_max_epu32(fl->microtile_free_map_3[i1][i2].vec) & ~15) | i3;
   fl->microtile_free_map_1.elems[i1] = (_mm512_reduce_max_epu32(fl->microtile_free_map_2[i1].vec) & ~15) | i2;
 
-  if (pthread_rwlock_unlock(&fl->rwlock)) {
-    perror("Failed to release write lock on freelist");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&fl->rwlock), "release write lock on freelist");
 
   return out;
 }

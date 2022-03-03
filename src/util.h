@@ -1,8 +1,20 @@
 #pragma once
 
+#include "exit.h"
+#include "log.h"
 #include <immintrin.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
+
+#define ASSERT_ERROR_RETVAL_OK(x, msg, ...) \
+  { \
+    int __xresult = x; \
+    if (__xresult) { \
+      ts_log(CRIT, "Failed to %s with error %d", msg, ##__VA_ARGS__, __xresult); \
+      exit(EXIT_INTERNAL); \
+    } \
+  }
 
 uint64_t min(uint64_t a, uint64_t b);
 

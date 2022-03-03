@@ -51,10 +51,7 @@ buckets_t* buckets_create_from_disk_state(
   for (uint64_t i = 0, l = 1; i < dirty_layer_count; i++, l *= 64) {
     bkts->dirty_pointers[i] = calloc(l, sizeof(uint64_t));
   }
-  if (pthread_rwlock_init(&bkts->dirty_pointers_rwlock, NULL)) {
-    perror("Failed to initialise buckets lock");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&bkts->dirty_pointers_rwlock, NULL), "initialise buckets lock");
 
   ts_log(DEBUG, "Loading %zu buckets", bkts->count);
   cursor_t* cur = dev->mmap + bkts->dev_offset_pointers;
@@ -64,18 +61,12 @@ buckets_t* buckets_create_from_disk_state(
     // TODO Check tile address is less than tile_count.
     bkt->tile = consume_u24(&cur);
     bkt->tile_offset = consume_u24(&cur);
-    if (pthread_rwlock_init(&bkt->lock, NULL)) {
-      perror("Failed to initialise bucket lock");
-      exit(EXIT_INTERNAL);
-    }
+    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&bkt->lock, NULL), "initialise bucket lock");
     bkt->pending_flush_changes = 0;
   }
 
   bkts->pending_delete_or_commit = kh_init_buckets_pending_delete_or_commit();
-  if (pthread_mutex_init(&bkts->pending_delete_or_commit_lock, NULL)) {
-    perror("Failed to initialise buckets pending delete or commit lock");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_init(&bkts->pending_delete_or_commit_lock, NULL), "initialise buckets pending delete or commit lock");
 
   ts_log(DEBUG, "Loaded buckets");
 
@@ -109,15 +100,9 @@ void buckets_mark_bucket_as_dirty_without_locking(buckets_t* bkts, uint64_t bkt_
 }
 
 void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id) {
-  if (pthread_rwlock_wrlock(&bkts->dirty_pointers_rwlock)) {
-    perror("Failed to acquire write lock on buckets");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&bkts->dirty_pointers_rwlock), "acquire write lock on buckets");
   buckets_mark_bucket_as_dirty_without_locking(bkts, bkt_id);
-  if (pthread_rwlock_unlock(&bkts->dirty_pointers_rwlock)) {
-    perror("Failed to release write lock on buckets");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkts->dirty_pointers_rwlock), "release write lock on buckets");
 }
 
 uint32_t buckets_pending_delete_or_commit_iterator_end(buckets_t* bkts) {
@@ -132,17 +117,11 @@ uint64_t buckets_pending_delete_or_commit_iterator_get(buckets_t* bkts, uint32_t
 }
 
 void buckets_pending_delete_or_commit_lock(buckets_t* bkts) {
-  if (pthread_mutex_lock(&bkts->pending_delete_or_commit_lock)) {
-    perror("Failed to acquire lock on buckets pending delete or commit");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_lock(&bkts->pending_delete_or_commit_lock), "acquire lock on buckets pending delete or commit");
 }
 
 void buckets_pending_delete_or_commit_unlock(buckets_t* bkts) {
-  if (pthread_mutex_unlock(&bkts->pending_delete_or_commit_lock)) {
-    perror("Failed to release lock on buckets pending delete or commit");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&bkts->pending_delete_or_commit_lock), "release lock on buckets pending delete or commit");
 }
 
 void buckets_mark_bucket_as_pending_delete_or_commit(buckets_t* bkts, uint64_t bkt_id) {

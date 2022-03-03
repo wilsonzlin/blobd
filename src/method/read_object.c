@@ -72,6 +72,8 @@ method_read_object_state_t* method_read_object_state_create(
     PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
 
+  ts_log(DEBUG, "read_object(key=%s, start=%ld, end=%ld)", args->key.data.bytes, args->arg_start, args->arg_end);
+
   return args;
 }
 
@@ -86,17 +88,12 @@ svr_client_result_t method_read_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, false);
 
-  ts_log(DEBUG, "read_object(key=%s)", args->key.data.bytes);
-
   bool acquired_lock = false;
   svr_client_result_t res;
   // We must look up again each time in case it has been deleted since we last held the lock.
   // This may seem inefficient but it's better than holding the lock the entire time.
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  if (pthread_rwlock_rdlock(&bkt->lock)) {
-    perror("Failed to acquire read lock on bucket");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&bkt->lock), "acquire read lock on bucket");
   acquired_lock = true;
 
   cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_READY, args->obj_no);

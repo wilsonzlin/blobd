@@ -54,6 +54,8 @@ method_delete_object_state_t* method_delete_object_state_create(
     PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
 
+  ts_log(DEBUG, "delete_object(key=%s, obj_no=%lu)", args->key.data.bytes, args->obj_no_or_zero);
+
   return args;
 }
 
@@ -68,16 +70,11 @@ svr_client_result_t method_delete_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
-  ts_log(DEBUG, "delete_object(key=%s)", args->key.data.bytes);
-
   // We must acquire a bucket write lock in case someone else tries to commit the object or write to it, or the flusher is currently modifying the list of inodes by processing deletes/commits.
   bool acquired_bkt_lock = false;
   svr_client_result_t res;
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  if (pthread_rwlock_wrlock(&bkt->lock)) {
-    perror("Failed to acquire write lock on bucket");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&bkt->lock), "acquire write lock on bucket");
   acquired_bkt_lock = true;
 
   ino_state_t allowed_states = (args->obj_no_or_zero ? (INO_STATE_INCOMPLETE | INO_STATE_COMMITTED) : 0) | INO_STATE_READY;
@@ -90,6 +87,10 @@ svr_client_result_t method_delete_object(
   inode_cur[INO_OFFSETOF_STATE] = INO_STATE_DELETED;
 
   buckets_mark_bucket_as_pending_delete_or_commit(ctx->bkts, args->key.bucket);
+
+  args->response[0] = METHOD_ERROR_OK;
+  args->response_written = 0;
+  res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
 
   final:
   if (acquired_bkt_lock && pthread_rwlock_unlock(&bkt->lock)) {

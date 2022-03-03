@@ -56,6 +56,8 @@ method_create_object_state_t* method_create_object_state_create(
     PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
 
+  ts_log(DEBUG, "create_object(key=%s, size=%zu)", args->key.data.bytes, args->size);
+  
   return args;
 }
 
@@ -76,7 +78,6 @@ svr_client_result_t method_create_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
-  ts_log(DEBUG, "create_object(key=%s, size=%zu)", args->key.data.bytes, args->size);
   uint64_t full_tiles = args->size / TILE_SIZE;
   uint64_t last_tile_size = args->size % TILE_SIZE;
 
@@ -90,6 +91,7 @@ svr_client_result_t method_create_object(
     ino_size = ino_size_excluding_last_tile + 11;
     ltm = INO_LAST_TILE_MODE_TILE;
   } else if (ino_size_if_inline + INO_OFFSETOF_LAST_TILE_INLINE_DATA(128, 1) >= TILE_SIZE) {
+    // Our inode is close to or exactly one tile sized, so directly reserve a tile instead of part of a microtile.
     alloc_strategy = ALLOC_FULL_TILE;
     ino_size = ino_size_if_inline;
     ltm = INO_LAST_TILE_MODE_INLINE;
@@ -99,10 +101,7 @@ svr_client_result_t method_create_object(
     ltm = INO_LAST_TILE_MODE_INLINE;
   }
 
-  if (pthread_rwlock_rdlock(&ctx->flush->rwlock)) {
-    perror("Failed to acquire read lock on flushing");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&ctx->flush->rwlock), "acquire read lock on flushing");
   // Use 64-bit values as we'll multiply these to get device offset.
   uint64_t ino_addr_tile;
   uint64_t ino_addr_tile_offset;
@@ -117,6 +116,7 @@ svr_client_result_t method_create_object(
 
   // We can use relaxed memory ordering as we have a lock on flushing.
   uint64_t obj_no = atomic_fetch_add_explicit(&ctx->stream->next_obj_no, 1, memory_order_relaxed);
+  ts_log(DEBUG, "New object number is %lu", obj_no);
 
   cursor_t* inode_cur = ctx->dev->mmap + (ino_addr_tile * TILE_SIZE) + ino_addr_tile_offset;
   write_u64(inode_cur + INO_OFFSETOF_OBJ_NO, obj_no);
@@ -137,25 +137,16 @@ svr_client_result_t method_create_object(
   buckets_mark_bucket_as_dirty(ctx->bkts, args->key.bucket);
 
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  if (pthread_rwlock_wrlock(&bkt->lock)) {
-    perror("Failed to acquire write lock on bucket");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&bkt->lock), "acquire write lock on bucket");
   ts_log(DEBUG, "Next inode is at tile %u and offset %u", bkt->tile, bkt->tile_offset);
   write_u24(inode_cur + INO_OFFSETOF_NEXT_INODE_TILE, bkt->tile);
   write_u24(inode_cur + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET, bkt->tile_offset);
   ts_log(DEBUG, "Wrote inode");
   bkt->tile = ino_addr_tile;
   bkt->tile_offset = ino_addr_tile_offset;
-  if (pthread_rwlock_unlock(&bkt->lock)) {
-    perror("Failed to release write lock on bucket");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release write lock on bucket");
 
-  if (pthread_rwlock_unlock(&ctx->flush->rwlock)) {
-    perror("Failed to release read lock on flushing");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&ctx->flush->rwlock), "release read lock on flushing");
 
   args->response[0] = METHOD_ERROR_OK;
   write_u64(args->response + 1, obj_no);

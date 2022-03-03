@@ -49,6 +49,8 @@ method_inspect_object_state_t* method_inspect_object_state_create(
     PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
 
+  ts_log(DEBUG, "inspect_object(key=%s)", args->key.data.bytes);
+
   return args;
 }
 
@@ -63,13 +65,8 @@ svr_client_result_t method_inspect_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
-  ts_log(DEBUG, "inspect_object(key=%s)", args->key.data.bytes);
-
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  if (pthread_rwlock_rdlock(&bkt->lock)) {
-    perror("Failed to acquire read lock on bucket");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&bkt->lock), "acquire read lock on bucket");
 
   cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_READY, 0);
 
@@ -85,10 +82,7 @@ svr_client_result_t method_inspect_object(
     produce_u64(&res_cur, read_u40(inode_cur + INO_OFFSETOF_SIZE));
   }
 
-  if (pthread_rwlock_unlock(&bkt->lock)) {
-    perror("Failed to release read lock on bucket");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release read lock on bucket");
 
   return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
 }

@@ -66,6 +66,8 @@ method_write_object_state_t* method_write_object_state_create(
     PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
 
+  ts_log(DEBUG, "write_object(key=%s, obj_no=%lu, start=%ld)", args->key.data.bytes, args->obj_no, args->start);
+
   return args;
 }
 
@@ -80,17 +82,12 @@ svr_client_result_t method_write_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
-  ts_log(DEBUG, "write_object(key=%s, start=%ld)", args->key.data.bytes, args->start);
-
   bool acquired_lock = false;
   svr_client_result_t res;
   // We must look up again each time in case it has been deleted since we last held the lock.
   // This may seem inefficient but it's better than holding the lock the entire time.
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  if (pthread_rwlock_rdlock(&bkt->lock)) {
-    perror("Failed to acquire read lock on bucket");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&bkt->lock), "acquire read lock on bucket");
   acquired_lock = true;
 
   cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_INCOMPLETE, args->obj_no);
@@ -122,7 +119,10 @@ svr_client_result_t method_write_object(
 
   // TODO Assert not greater than.
   if (args->written == write_max_len) {
-    ERROR_RESPONSE(METHOD_ERROR_OK);
+    res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
+    args->response_written = 0;
+    args->response[0] = METHOD_ERROR_OK;
+    goto final;
   }
 
   int readno = maybe_read(client_fd, write_offset, write_max_len - args->written);
@@ -133,14 +133,16 @@ svr_client_result_t method_write_object(
   args->written += readno;
   // TODO Assert not greater than.
   if (args->written == write_max_len) {
-    ERROR_RESPONSE(METHOD_ERROR_OK);
+    res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
+    args->response_written = 0;
+    args->response[0] = METHOD_ERROR_OK;
+    goto final;
   }
   res = SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;
 
   final:
-  if (acquired_lock && pthread_rwlock_unlock(&bkt->lock)) {
-    perror("Failed to release read lock on bucket");
-    exit(EXIT_INTERNAL);
+  if (acquired_lock) {
+    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release read lock on bucket");
   }
 
   return res;

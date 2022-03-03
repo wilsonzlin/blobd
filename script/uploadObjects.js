@@ -66,6 +66,7 @@ const uploadFiles = async () => {
       const objNo = chunk.readBigUInt64BE(1);
       resolve(objNo);
     }));
+    console.log(`create_object => ${objNo}`);
     conn.write(write_object(k, objNo, 0));
     conn.write(randomData.slice(no * FILE_SIZE, (no + 1) * FILE_SIZE));
     await new Promise(resolve => conn.once("data", chunk => {

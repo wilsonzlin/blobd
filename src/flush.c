@@ -20,6 +20,7 @@
 #include "server.h"
 #include "stream.h"
 #include "tile.h"
+#include "util.h"
 #include "vec.h"
 #include "../ext/xxHash/xxhash.h"
 #include "../ext/klib/khash.h"
@@ -194,10 +195,7 @@ void* thread(void* state_raw) {
     }
 
     ts_log(DEBUG, "Starting flush");
-    if (pthread_rwlock_wrlock(&state->flush->rwlock)) {
-      perror("Failed to acquire write lock on flushing");
-      exit(EXIT_INTERNAL);
-    }
+    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&state->flush->rwlock), "acquire write lock on flushing");
 
     // We acquire a flushing lock first to ensure all inodes have been completely written to mmap with valid "next" and "hash" field values.
     msync(state->dev->mmap, state->dev->size, MS_SYNC);
@@ -238,10 +236,7 @@ void* thread(void* state_raw) {
       bucket_t* bkt = buckets_get_bucket(state->buckets, bkt_id);
       // For performance, we only take a read lock here when collecting changes, and then a write lock later to apply them to the mmap. This means we'll need to track how many changes there are for a bucket so we know how long to hold a write lock for later. This is what we use bucket_t->pending_flush_changes for, which allows us to avoid having to create a separate map data structure.
       // At this point, bucket_t->pending_flush_changes should already be zero.
-      if (pthread_rwlock_rdlock(&bkt->lock)) {
-        perror("Failed to acquire read lock on bucket");
-        exit(EXIT_INTERNAL);
-      }
+      ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&bkt->lock), "acquire read lock on bucket");
       uint64_t head_inode_dev_offset = 0;
       uint64_t previous_inode_dev_offset = 0;
       uint32_t ino_tile = bkt->tile;
@@ -342,10 +337,7 @@ void* thread(void* state_raw) {
           original_head_inode_dev_offset % TILE_SIZE
         );
       }
-      if (pthread_rwlock_unlock(&bkt->lock)) {
-        perror("Failed to release read lock on bucket");
-        exit(EXIT_INTERNAL);
-      }
+      ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release read lock on bucket");
     }
     state->bucket_id_pool->len = 0;
 
@@ -442,17 +434,13 @@ void* thread(void* state_raw) {
         bkt = buckets_get_bucket(state->buckets, c.requires_write_lock_on_bucket_id);
         int lock_error = pthread_rwlock_wrlock(&bkt->lock);
         if (EDEADLK != lock_error) {
-          perror("Failed to acquire write lock on bucket");
-          exit(EXIT_INTERNAL);
+          ASSERT_ERROR_RETVAL_OK(lock_error, "acquire write lock on bucket");
         }
       }
       memcpy(state->dev->mmap + c.device_offset, state->change_data_pool + c.offset_in_change_data_pool, c.len);
       if (bkt != NULL) {
         if (--bkt->pending_flush_changes == 0) {
-          if (pthread_rwlock_unlock(&bkt->lock)) {
-            perror("Failed to release write lock on bucket");
-            exit(EXIT_INTERNAL);
-          }
+          ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release write lock on bucket");
         }
       }
     }
@@ -468,14 +456,12 @@ void* thread(void* state_raw) {
     memset(state->fl->dirty_tiles_bitmap_2, 0, 64 * sizeof(uint64_t));
     memset(state->fl->dirty_tiles_bitmap_3, 0, 64 * 64 * sizeof(uint64_t));
     memset(state->fl->dirty_tiles_bitmap_4, 0, 64 * 64 * 64 * sizeof(uint64_t));
-    for (uint8_t i = 0, l = 1; i < buckets_get_dirty_bitmap_layer_count(state->buckets); i++, l *= 64) {
+    // Use uint64_t for `l`.
+    for (uint64_t i = 0, l = 1; i < buckets_get_dirty_bitmap_layer_count(state->buckets); i++, l *= 64) {
       memset(buckets_get_dirty_bitmap_layer(state->buckets, i), 0, l * sizeof(uint64_t));
     }
 
-    if (pthread_rwlock_unlock(&state->flush->rwlock)) {
-      perror("Failed to release write lock on flushing");
-      exit(EXIT_INTERNAL);
-    }
+    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&state->flush->rwlock), "release write lock on flushing");
 
     server_on_flush_end(state->svr);
     ts_log(DEBUG, "Flush ended");
@@ -509,8 +495,5 @@ void flush_worker_start(
   state->xxhash_u32_0 = XXH3_64bits(u32_0, 4);
 
   pthread_t t;
-  if (pthread_create(&t, NULL, thread, state)) {
-    perror("Failed to start flush worker thread");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_create(&t, NULL, thread, state), "start flush worker thread");
 }

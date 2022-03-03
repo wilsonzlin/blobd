@@ -189,15 +189,9 @@ static inline void worker_handle_client_ready(
       exit(EXIT_INTERNAL);
     }
   } else if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH) {
-    if (pthread_mutex_lock(&state->awaiting_flush_lock)) {
-      perror("Failed to acquire lock on awaiting flush list");
-      exit(EXIT_INTERNAL);
-    }
+    ASSERT_ERROR_RETVAL_OK(pthread_mutex_lock(&state->awaiting_flush_lock), "acquire lock on awaiting flush list");
     client_list_append(state->awaiting_flush, client);
-    if (pthread_mutex_unlock(&state->awaiting_flush_lock)) {
-      perror("Failed to acquire unlock on awaiting flush list");
-      exit(EXIT_INTERNAL);
-    }
+    ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&state->awaiting_flush_lock), "acquire unlock on awaiting flush list");
   } else if (res == SVR_CLIENT_RESULT_END) {
     res = SVR_CLIENT_RESULT__UNKNOWN;
     client->method = SVR_METHOD__UNKNOWN;
@@ -212,10 +206,7 @@ static inline void worker_handle_client_ready(
     }
     goto loop;
   } else if (res == SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR) {
-    if (pthread_rwlock_wrlock(&state->fd_to_client_lock)) {
-      perror("Failed to acquire write lock on FD map");
-      exit(EXIT_INTERNAL);
-    }
+    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&state->fd_to_client_lock), "acquire write lock on FD map");
     // Close before removing from map as otherwise an epoll event might still emit,
     // but acquire lock before closing in case FD is reused immediately.
     if (-1 == close(client->fd)) {
@@ -228,10 +219,7 @@ static inline void worker_handle_client_ready(
       exit(EXIT_INTERNAL);
     }
     kh_del_svr_fd_to_client(state->fd_to_client, k);
-    if (pthread_rwlock_unlock(&state->fd_to_client_lock)) {
-      perror("Failed to release write lock on FD map");
-      exit(EXIT_INTERNAL);
-    }
+    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&state->fd_to_client_lock), "release write lock on FD map");
     // Destroy the client.
     if (client->args_parser != NULL) {
       args_parser_destroy(client->args_parser);
@@ -289,10 +277,7 @@ void* worker_start(void* state_raw) {
         client->method_state_destructor = NULL;
 
         // Map FD to client ID.
-        if (pthread_rwlock_wrlock(&state->fd_to_client_lock)) {
-          perror("Failed to acquire write lock on FD map");
-          exit(EXIT_INTERNAL);
-        }
+        ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&state->fd_to_client_lock), "acquire write lock on FD map");
         int kh_res;
         khint_t kh_it = kh_put_svr_fd_to_client(state->fd_to_client, peer, &kh_res);
         if (-1 == kh_res) {
@@ -300,28 +285,19 @@ void* worker_start(void* state_raw) {
           exit(EXIT_INTERNAL);
         }
         kh_val(state->fd_to_client, kh_it) = client;
-        if (pthread_rwlock_unlock(&state->fd_to_client_lock)) {
-          perror("Failed to release write lock on FD map");
-          exit(EXIT_INTERNAL);
-        }
+        ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&state->fd_to_client_lock), "release write lock on FD map");
       } else {
         // A client has new I/O event.
         // TODO Check event type.
         int peer = svr_epoll_events[n].data.fd;
-        if (pthread_rwlock_rdlock(&state->fd_to_client_lock)) {
-          perror("Failed to acquire read lock on FD map");
-          exit(EXIT_INTERNAL);
-        }
+        ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&state->fd_to_client_lock), "acquire read lock on FD map");
         khint_t k = kh_get_svr_fd_to_client(state->fd_to_client, peer);
         if (k == kh_end(state->fd_to_client)) {
           fprintf(stderr, "Client does not exist\n");
           exit(EXIT_INTERNAL);
         }
         svr_client_t* client = kh_val(state->fd_to_client, k);
-        if (pthread_rwlock_unlock(&state->fd_to_client_lock)) {
-          perror("Failed to release read lock on FD map");
-          exit(EXIT_INTERNAL);
-        }
+        ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&state->fd_to_client_lock), "release read lock on FD map");
         worker_handle_client_ready(state, client);
       }
     }
@@ -381,15 +357,9 @@ server_t* server_create(
 
   server_t* svr = malloc(sizeof(server_t));
   svr->fd_to_client = kh_init_svr_fd_to_client();
-  if (pthread_rwlock_init(&svr->fd_to_client_lock, NULL)) {
-    perror("Failed to create lock for FD map");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&svr->fd_to_client_lock, NULL), "create lock for FD map");
   svr->awaiting_flush = client_list_create();
-  if (pthread_mutex_init(&svr->awaiting_flush_lock, NULL)) {
-    perror("Failed to create lock for awaiting flush list");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_init(&svr->awaiting_flush_lock, NULL), "create lock for awaiting flush list");
   svr->flushing = client_list_create();
   svr->svr_epoll_fd = svr_epoll_fd;
   svr->svr_socket_fd = svr_socket;
@@ -403,10 +373,7 @@ server_t* server_create(
 }
 
 bool server_on_flush_start(server_t* clients) {
-  if (pthread_mutex_lock(&clients->awaiting_flush_lock)) {
-    perror("Failed to acquire lock on awaiting flush list");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_lock(&clients->awaiting_flush_lock), "acquire lock on awaiting flush list");
   bool has_awaiting = !!clients->awaiting_flush->len;
   if (has_awaiting) {
     if (clients->flushing->cap < clients->awaiting_flush->len) {
@@ -419,10 +386,7 @@ bool server_on_flush_start(server_t* clients) {
     clients->flushing->len = clients->awaiting_flush->len;
     clients->awaiting_flush->len = 0;
   }
-  if (pthread_mutex_unlock(&clients->awaiting_flush_lock)) {
-    perror("Failed to release lock on awaiting flush list");
-    exit(EXIT_INTERNAL);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&clients->awaiting_flush_lock), "release lock on awaiting flush list");
   return has_awaiting;
 }
 
@@ -446,17 +410,11 @@ void server_start_loop(
 ) {
   pthread_t* threads = malloc(sizeof(pthread_t) * worker_count);
   for (uint64_t i = 0; i < worker_count; i++) {
-    if (pthread_create(&threads[i], NULL, worker_start, svr)) {
-      perror("Failed to create server worker");
-      exit(EXIT_INTERNAL);
-    }
+    ASSERT_ERROR_RETVAL_OK(pthread_create(&threads[i], NULL, worker_start, svr), "create server worker");
   }
 
   for (uint64_t i = 0; i < worker_count; i++) {
-    if (pthread_join(threads[i], NULL)) {
-      perror("Failed to join server worker");
-      exit(EXIT_INTERNAL);
-    }
+    ASSERT_ERROR_RETVAL_OK(pthread_join(threads[i], NULL), "join server worker");
   }
 
   fprintf(stderr, "Reached end of server loop\n");
