@@ -48,4 +48,4 @@ void produce_u48(cursor_t** cur, uint64_t v);
 
 void produce_u64(cursor_t** cur, uint64_t v);
 
-void produce_n(cursor_t** cur, uint8_t* src, size_t n);
+void produce_n(cursor_t** cur, uint8_t* src, uint64_t n);

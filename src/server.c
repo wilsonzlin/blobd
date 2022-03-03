@@ -35,7 +35,7 @@ struct svr_method_args_parser_s {
   uint8_t raw[];
 };
 
-svr_method_args_parser_t* args_parser_create(size_t raw_len) {
+svr_method_args_parser_t* args_parser_create(uint64_t raw_len) {
   svr_method_args_parser_t* p = malloc(sizeof(svr_method_args_parser_t) + raw_len);
   p->read_next = 0;
   p->write_next = 0;
@@ -47,7 +47,7 @@ void args_parser_destroy(svr_method_args_parser_t* p) {
   free(p);
 }
 
-uint8_t* svr_method_args_parser_parse(svr_method_args_parser_t* parser, size_t want_bytes) {
+uint8_t* svr_method_args_parser_parse(svr_method_args_parser_t* parser, uint64_t want_bytes) {
   if (parser->read_next + want_bytes > parser->raw_len) {
     return NULL;
   }
@@ -419,7 +419,7 @@ bool server_on_flush_start(server_t* clients) {
 }
 
 void server_on_flush_end(server_t* clients) {
-  for (size_t i = 0; i < clients->flushing->len; i++) {
+  for (uint64_t i = 0; i < clients->flushing->len; i++) {
     svr_client_t* client = clients->flushing->elems[i];
     struct epoll_event ev;
     ev.events = EPOLLET | EPOLLONESHOT | EPOLLOUT;
@@ -434,17 +434,17 @@ void server_on_flush_end(server_t* clients) {
 
 void server_start_loop(
   server_t* svr,
-  size_t worker_count
+  uint64_t worker_count
 ) {
   pthread_t* threads = malloc(sizeof(pthread_t) * worker_count);
-  for (size_t i = 0; i < worker_count; i++) {
+  for (uint64_t i = 0; i < worker_count; i++) {
     if (pthread_create(&threads[i], NULL, worker_start, svr)) {
       perror("Failed to create server worker");
       exit(EXIT_INTERNAL);
     }
   }
 
-  for (size_t i = 0; i < worker_count; i++) {
+  for (uint64_t i = 0; i < worker_count; i++) {
     if (pthread_join(threads[i], NULL)) {
       perror("Failed to join server worker");
       exit(EXIT_INTERNAL);

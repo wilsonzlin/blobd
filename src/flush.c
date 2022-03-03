@@ -42,11 +42,11 @@ typedef struct {
   stream_t* stream;
   changes_t* changes;
   uint8_t* change_data_pool;
-  size_t change_data_pool_cap;
+  uint64_t change_data_pool_cap;
   uint64_t xxhash_u32_0;
 } thread_state_t;
 
-static inline void ensure_change_data_pool_cap(thread_state_t* state, size_t cap) {
+static inline void ensure_change_data_pool_cap(thread_state_t* state, uint64_t cap) {
   if (cap >= state->change_data_pool_cap) {
     while (state->change_data_pool_cap < cap) {
       state->change_data_pool_cap *= 2;
@@ -58,7 +58,7 @@ static inline void ensure_change_data_pool_cap(thread_state_t* state, size_t cap
 // TODO Assert total bytes does not exceed journal space.
 static inline void append_change(
   changes_t* changes,
-  size_t* change_data_next,
+  uint64_t* change_data_next,
   uint64_t device_offset,
   uint32_t len
 ) {
@@ -79,7 +79,7 @@ static inline void append_change(
 
 void visit_bucket_dirty_bitmap(
   thread_state_t* state,
-  size_t* change_data_next,
+  uint64_t* change_data_next,
   uint64_t bitmap,
   uint64_t base,
   uint8_t layer
@@ -87,9 +87,9 @@ void visit_bucket_dirty_bitmap(
   buckets_t* bkts = state->buckets;
   vec_512i_u8_t candidates = vec_find_indices_of_nonzero_bits_64(bitmap);
   if (layer == buckets_get_dirty_bitmap_layer_count(bkts) - 1) {
-    for (size_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
-      size_t bkt_id = base + i1;
-      size_t len = 6;
+    for (uint64_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
+      uint64_t bkt_id = base + i1;
+      uint64_t len = 6;
       uint64_t dev_offset = buckets_get_device_offset_of_bucket(bkts, bkt_id);
       ensure_change_data_pool_cap(state, *change_data_next + len);
       cursor_t* cur = state->change_data_pool + *change_data_next;
@@ -99,8 +99,8 @@ void visit_bucket_dirty_bitmap(
       append_change(state->changes, change_data_next, dev_offset, len);
     }
   } else {
-    for (size_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
-      size_t offset = base + i1;
+    for (uint64_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
+      uint64_t offset = base + i1;
       visit_bucket_dirty_bitmap(state, change_data_next, buckets_get_dirty_bitmap_layer(bkts, layer + 1)[offset], offset * 64, layer + 1);
     }
   }
@@ -137,32 +137,32 @@ void* thread(void* state_raw) {
     // - Compacting contiguous change list entries, before committing final list to journal.
     // TODO Should we validate existing checksums on device when reading to store into journal? It's most likely cached in memory, so we wouldn't actually be checking for device corruption.
 
-    size_t change_data_next = 0;
+    uint64_t change_data_next = 0;
 
     if (state->fl->dirty_tiles_bitmap_1) {
       vec_512i_u8_t i1_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_1);
-      for (size_t o1 = 0, i1; (i1 = i1_candidates.elems[o1]) != 64; o1++) {
+      for (uint64_t o1 = 0, i1; (i1 = i1_candidates.elems[o1]) != 64; o1++) {
         vec_512i_u8_t i2_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_2[i1]);
-        for (size_t o2 = 0, i2; (i2 = i2_candidates.elems[o2]) != 64; o2++) {
+        for (uint64_t o2 = 0, i2; (i2 = i2_candidates.elems[o2]) != 64; o2++) {
           vec_512i_u8_t i3_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_3[i1 * 64 + i2]);
-          for (size_t o3 = 0, i3; (i3 = i3_candidates.elems[o3]) != 64; o3++) {
+          for (uint64_t o3 = 0, i3; (i3 = i3_candidates.elems[o3]) != 64; o3++) {
             vec_512i_u8_t i4_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_4[(((i1 * 64) + i2) * 64) + i3]);
-            for (size_t o4 = 0, i4; (i4 = i4_candidates.elems[o4]) != 64; o4++) {
-              size_t tile_no = ((((i1 * 64) + i2) * 64) + i3) * 64 + i4;
-              size_t len = 3;
-              size_t dev_offset = state->fl->dev_offset + tile_no * len;
+            for (uint64_t o4 = 0, i4; (i4 = i4_candidates.elems[o4]) != 64; o4++) {
+              uint64_t tile_no = ((((i1 * 64) + i2) * 64) + i3) * 64 + i4;
+              uint64_t len = 3;
+              uint64_t dev_offset = state->fl->dev_offset + tile_no * len;
 
               ensure_change_data_pool_cap(state, change_data_next + len);
               cursor_t* start = state->change_data_pool + change_data_next;
               cursor_t* cur = start;
 
-              size_t atmp = tile_no;
-              size_t a6 = atmp % 16; atmp /= 16;
-              size_t a5 = atmp % 16; atmp /= 16;
-              size_t a4 = atmp % 16; atmp /= 16;
-              size_t a3 = atmp % 16; atmp /= 16;
-              size_t a2 = atmp % 16; atmp /= 16;
-              size_t a1 = atmp % 16;
+              uint64_t atmp = tile_no;
+              uint64_t a6 = atmp % 16; atmp /= 16;
+              uint64_t a5 = atmp % 16; atmp /= 16;
+              uint64_t a4 = atmp % 16; atmp /= 16;
+              uint64_t a3 = atmp % 16; atmp /= 16;
+              uint64_t a2 = atmp % 16; atmp /= 16;
+              uint64_t a1 = atmp % 16;
 
               uint32_t microtile_state = state->fl->microtile_free_map_6[a1][a2][a3][a4][a5].elems[a6];
               if (microtile_state == 16) {
@@ -202,7 +202,7 @@ void* thread(void* state_raw) {
       produce_u64(&cur, atomic_load_explicit(&state->stream->next_obj_no, memory_order_relaxed));
       produce_u64(&cur, atomic_load_explicit(&state->stream->next_seq_no, memory_order_relaxed));
       append_change(state->changes, &change_data_next, state->stream->dev_offset, 8);
-      for (size_t i = 0; i < state->stream->pending_flush->len; i++) {
+      for (uint64_t i = 0; i < state->stream->pending_flush->len; i++) {
         stream_event_t* ev = state->stream->pending_flush->elems + i;
         uint64_t ring_idx = ev->seq_no % STREAM_EVENTS_BUF_LEN;
         produce_u8(&cur, ev->typ);
@@ -219,7 +219,7 @@ void* thread(void* state_raw) {
     }
 
     // Write and flush journal.
-    for (size_t i = 0; i < state->changes->len; i++) {
+    for (uint64_t i = 0; i < state->changes->len; i++) {
       change_t c = state->changes->elems[i];
       journal_append(state->journal, c.device_offset, c.len);
     }
@@ -227,7 +227,7 @@ void* thread(void* state_raw) {
     journal_flush(state->journal);
 
     // Write changes to mmap and flush.
-    for (size_t i = 0; i < state->changes->len; i++) {
+    for (uint64_t i = 0; i < state->changes->len; i++) {
       change_t c = state->changes->elems[i];
       memcpy(state->dev->mmap + c.device_offset, state->change_data_pool + c.offset_in_change_data_pool, c.len);
     }

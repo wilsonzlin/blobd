@@ -2,7 +2,6 @@
 
 #include <errno.h>
 #include <pthread.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,14 +76,14 @@ svr_client_result_t method_create_object(
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
   ts_log(DEBUG, "create_object(key=%s, size=%zu)", args->key, args->size);
-  size_t full_tiles = args->size / TILE_SIZE;
-  size_t last_tile_size = args->size % TILE_SIZE;
+  uint64_t full_tiles = args->size / TILE_SIZE;
+  uint64_t last_tile_size = args->size % TILE_SIZE;
 
   ino_last_tile_mode_t ltm;
   alloc_strategy_t alloc_strategy;
-  size_t ino_size_excluding_last_tile = INO_OFFSETOF_LAST_TILE_INLINE_DATA(args->key.len, full_tiles);
-  size_t ino_size_if_inline = ino_size_excluding_last_tile + last_tile_size;
-  size_t ino_size;
+  uint64_t ino_size_excluding_last_tile = INO_OFFSETOF_LAST_TILE_INLINE_DATA(args->key.len, full_tiles);
+  uint64_t ino_size_if_inline = ino_size_excluding_last_tile + last_tile_size;
+  uint64_t ino_size;
   if (ino_size_if_inline >= TILE_SIZE) {
     alloc_strategy = ALLOC_MICROTILE_WITH_FULL_LAST_TILE;
     ino_size = ino_size_excluding_last_tile + 11;

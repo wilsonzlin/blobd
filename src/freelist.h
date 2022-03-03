@@ -47,7 +47,7 @@ u24[16777216] microtile_free_space_in_bytes_or_16777215_if_free_tile_or_16777214
 #define FREELIST_RESERVED_SPACE (3 * 16777216)
 
 typedef struct {
-  size_t dev_offset;
+  uint64_t dev_offset;
   pthread_rwlock_t rwlock;
   // Bits are set if they're free.
   uint64_t tile_bitmap_1;
@@ -74,10 +74,10 @@ typedef struct {
   uint32_t microtile_offset;
 } freelist_consumed_microtile_t;
 
-freelist_t* freelist_create_from_disk_state(device_t* dev, size_t dev_offset);
+freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset);
 
-void freelist_consume_tiles(freelist_t* fl, size_t tiles_needed, cursor_t* out);
+void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out);
 
 uint32_t freelist_consume_one_tile(freelist_t* fl);
 
-freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, size_t bytes_needed);
+freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint64_t bytes_needed);

@@ -1,6 +1,5 @@
 #define _GNU_SOURCE
 
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +19,7 @@
 
 LOGGER("device");
 
-device_t* device_create(void* mmap, size_t size) {
+device_t* device_create(void* mmap, uint64_t size) {
   device_t* dev = malloc(sizeof(device_t));
   dev->mmap = mmap;
   dev->size = size;
@@ -29,12 +28,12 @@ device_t* device_create(void* mmap, size_t size) {
 }
 
 // Repeat the `entry_size` bytes at `dest` `entries - 1` times.
-static inline void memcpy_repeat(void* dest, size_t entry_size, size_t entries) {
+static inline void memcpy_repeat(void* dest, uint64_t entry_size, uint64_t entries) {
   for (
-    size_t copies = 1, remaining = entries - 1;
+    uint64_t copies = 1, remaining = entries - 1;
     remaining;
   ) {
-    size_t n = min(remaining, copies);
+    uint64_t n = min(remaining, copies);
     memcpy(dest + (copies * entry_size), dest, n * entry_size);
     remaining -= n;
     copies += n;
@@ -42,12 +41,12 @@ static inline void memcpy_repeat(void* dest, size_t entry_size, size_t entries) 
 }
 
 void device_format(device_t* dev, uint8_t bucket_count_log2) {
-  size_t jnl_size = JOURNAL_RESERVED_SPACE;
-  size_t stream_size = STREAM_RESERVED_SPACE;
-  size_t freelist_size = FREELIST_RESERVED_SPACE;
-  size_t bkt_cnt = 1llu << bucket_count_log2;
-  size_t bkts_size = BUCKETS_RESERVED_SPACE(bkt_cnt);
-  size_t total_size = jnl_size + stream_size + freelist_size + bkts_size;
+  uint64_t jnl_size = JOURNAL_RESERVED_SPACE;
+  uint64_t stream_size = STREAM_RESERVED_SPACE;
+  uint64_t freelist_size = FREELIST_RESERVED_SPACE;
+  uint64_t bkt_cnt = 1llu << bucket_count_log2;
+  uint64_t bkts_size = BUCKETS_RESERVED_SPACE(bkt_cnt);
+  uint64_t total_size = jnl_size + stream_size + freelist_size + bkts_size;
 
   // Write empty journal.
   ts_log(DEBUG, "Writing journal");
@@ -64,7 +63,7 @@ void device_format(device_t* dev, uint8_t bucket_count_log2) {
 
   // Calculate freelist usage by metadata.
   cursor_t* freelist_cur = dev->mmap + jnl_size + stream_size;
-  size_t used_tiles = uint_divide_ceil(total_size, TILE_SIZE);
+  uint64_t used_tiles = uint_divide_ceil(total_size, TILE_SIZE);
 
   // Write fully-used freelist bitmaps.
   ts_log(DEBUG, "Writing used freelist");

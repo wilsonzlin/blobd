@@ -2,7 +2,6 @@
 
 #include <endian.h>
 #include <stdint.h>
-#include <stddef.h>
 #include <string.h>
 #include "cursor.h"
 
@@ -143,7 +142,7 @@ void produce_u64(cursor_t** cur, uint64_t v) {
   *cur += 8;
 }
 
-void produce_n(cursor_t** cur, uint8_t* src, size_t n) {
+void produce_n(cursor_t** cur, uint8_t* src, uint64_t n) {
   memcpy(*cur, src, n);
   *cur += n;
 }

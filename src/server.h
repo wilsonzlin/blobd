@@ -36,7 +36,7 @@ typedef enum {
 typedef struct svr_method_args_parser_s svr_method_args_parser_t;
 
 // Returns NULL if not enough bytes.
-uint8_t* svr_method_args_parser_parse(svr_method_args_parser_t* parser, size_t want_bytes);
+uint8_t* svr_method_args_parser_parse(svr_method_args_parser_t* parser, uint64_t want_bytes);
 
 // Returns false if not all argument bytes were used.
 bool svr_method_args_parser_end(svr_method_args_parser_t* parser);
@@ -76,5 +76,5 @@ void server_on_flush_end(server_t* server);
 // This never returns.
 void server_start_loop(
   server_t* server,
-  size_t worker_count
+  uint64_t worker_count
 );

@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
     exit(EXIT_CONF);
   }
 
-  size_t dev_size;
+  uint64_t dev_size;
   if (-1 == ioctl(dev_fd, BLKGETSIZE64, &dev_size)) {
     perror("Failed to get block device size");
     exit(EXIT_INTERNAL);
@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
 
   if (!strcmp("format", arg_action)) {
     errno = 0;
-    size_t bucket_count = strtoull(arg_worker_or_bucket_count, NULL, 10);
+    uint64_t bucket_count = strtoull(arg_worker_or_bucket_count, NULL, 10);
     if (errno != 0) {
       perror("Failed to parse bucket count argument");
       exit(EXIT_CONF);
@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
       exit(EXIT_CONF);
     }
 
-    size_t bucket_count_log2 = _tzcnt_u64(bucket_count);
+    uint64_t bucket_count_log2 = _tzcnt_u64(bucket_count);
 
     device_format(dev, bucket_count_log2);
 
@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
   }
 
   errno = 0;
-  size_t worker_count = strtoull(arg_worker_or_bucket_count, NULL, 10);
+  uint64_t worker_count = strtoull(arg_worker_or_bucket_count, NULL, 10);
   if (errno != 0) {
     perror("Failed to parse worker count argument");
     exit(EXIT_CONF);
