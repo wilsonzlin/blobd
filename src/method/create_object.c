@@ -74,7 +74,7 @@ svr_client_result_t method_create_object(
   method_create_object_state_t* args,
   int client_fd
 ) {
-  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd);
+  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
   ts_log(DEBUG, "create_object(key=%s, size=%zu)", args->key, args->size);
   size_t full_tiles = args->size / TILE_SIZE;

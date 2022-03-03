@@ -61,7 +61,7 @@ svr_client_result_t method_inspect_object(
   method_inspect_object_state_t* args,
   int client_fd
 ) {
-  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd);
+  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
   ts_log(DEBUG, "inspect_object(key=%s)", args->key.data.bytes);
 

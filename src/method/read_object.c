@@ -37,7 +37,7 @@ struct method_read_object_state_s {
   int64_t arg_end;
   // These are undefiend if not found yet.
   uint64_t actual_start;
-  uint64_t actual_end;
+  uint64_t actual_length;
   uint64_t object_size;
 };
 
@@ -49,6 +49,7 @@ method_read_object_state_t* method_read_object_state_create(
 ) {
   method_read_object_state_t* args = aligned_alloc(64, sizeof(method_read_object_state_t));
   uint8_t* p = NULL;
+  args->read_count = 0;
   args->obj_no = 0;
   INIT_STATE_RESPONSE(args, RESPONSE_LEN);
 
@@ -109,14 +110,14 @@ svr_client_result_t method_read_object(
   }
   if (!args->obj_no) {
     args->obj_no = read_u64(inode_cur + INO_OFFSETOF_OBJ_NO);
-    uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
+    int64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
     uint64_t actual_start;
-    uint64_t actual_end;
+    uint64_t actual_end_excl;
     if (args->arg_start < 0) {
       if (-args->arg_start >= size) {
         ERROR_RESPONSE(METHOD_ERROR_INVALID_START);
       }
-      actual_start = ((int64_t) size) + args->arg_start;
+      actual_start = size + args->arg_start;
     } else {
       if (args->arg_start >= size) {
         ERROR_RESPONSE(METHOD_ERROR_INVALID_START);
@@ -127,27 +128,28 @@ svr_client_result_t method_read_object(
       if (-args->arg_end >= size) {
         ERROR_RESPONSE(METHOD_ERROR_INVALID_END);
       }
-      actual_end = ((int64_t) size) + args->arg_end;
+      actual_end_excl = size + args->arg_end;
+    } else if (args->arg_end == 0) {
+      actual_end_excl = size;
     } else {
       if (args->arg_end >= size) {
         ERROR_RESPONSE(METHOD_ERROR_INVALID_END);
       }
-      actual_end = args->arg_end;
+      actual_end_excl = args->arg_end;
     }
-    if (actual_end <= actual_start) {
+    // Range cannot be empty.
+    if (actual_end_excl <= actual_start) {
       ERROR_RESPONSE(METHOD_ERROR_INVALID_END);
     }
     args->actual_start = actual_start;
-    args->actual_end = actual_end;
+    args->actual_length = actual_end_excl - actual_start;
     args->object_size = size;
     args->response_written = 0;
     args->response[0] = METHOD_ERROR_OK;
     write_u64(args->response + 1, actual_start);
-    write_u64(args->response + 9, actual_end);
+    write_u64(args->response + 9, args->actual_length);
     goto final;
   }
-
-  uint64_t actual_len = args->actual_end + 1 - args->actual_start;
 
   uint8_t ltm = inode_cur[INO_OFFSETOF_LAST_TILE_MODE];
 
@@ -174,7 +176,7 @@ svr_client_result_t method_read_object(
   }
   args->read_count += writeno;
   // TODO Assert not greater than.
-  if (args->read_count == actual_len) {
+  if (args->read_count == args->actual_length) {
     res = SVR_CLIENT_RESULT_END;
     goto final;
   }
