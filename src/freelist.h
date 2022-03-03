@@ -44,26 +44,29 @@ u24[16777216] microtile_free_space_in_bytes_or_16777215_if_free_tile_or_16777214
 
 **/
 
+#define FREELIST_RESERVED_SPACE (3 * 16777216)
+
 typedef struct {
   size_t dev_offset;
   pthread_rwlock_t rwlock;
+  // Bits are set if they're free.
   uint64_t tile_bitmap_1;
   uint64_t tile_bitmap_2[64];
   uint64_t tile_bitmap_3[64][64];
   uint64_t tile_bitmap_4[64][64][64];
-  // Note that we store free amount, which is opposite to device representation. This allows us to initialise these in-memory structures to empty and not available by default, which is faster and more importantly, ensures that all elements including out-of-bound ones that map to invalid tiles are unavailable by default.
+  // Storing free amount (instead of used) allows us to initialise these in-memory structures to empty and not available by default, which is faster and more importantly, ensures that all elements including out-of-bound ones that map to invalid tiles are unavailable by default.
+  // For each element, bits [31:8] represent the maximum free amount of all elements in the next layer, and [7:0] the corresponding index of the maximum in the next layer (although only 4 bits are used as there are only 16 elements per vector).
   vec_512i_u32_t microtile_free_map_1;
   vec_512i_u32_t microtile_free_map_2[16];
   vec_512i_u32_t microtile_free_map_3[16][16];
   vec_512i_u32_t microtile_free_map_4[16][16][16];
   vec_512i_u32_t microtile_free_map_5[16][16][16][16];
   vec_512i_u32_t microtile_free_map_6[16][16][16][16][16];
-  // Since we checksum both tile and microtile metadata, we only need one dirty bitmap for both tile and microtile changes.
-  uint8_t dirty_eight_tiles_bitmap_1;
+  uint64_t dirty_tiles_bitmap_1;
   // Use one-dimensional arrays instead of multidimensional so we can quickly clear using memset.
-  uint64_t dirty_eight_tiles_bitmap_2[8];
-  uint64_t dirty_eight_tiles_bitmap_3[64 * 8];
-  uint64_t dirty_eight_tiles_bitmap_4[64 * 64 * 8];
+  uint64_t dirty_tiles_bitmap_2[64];
+  uint64_t dirty_tiles_bitmap_3[64 * 64];
+  uint64_t dirty_tiles_bitmap_4[64 * 64 * 64];
 } freelist_t;
 
 typedef struct {
@@ -73,7 +76,7 @@ typedef struct {
 
 freelist_t* freelist_create_from_disk_state(device_t* dev, size_t dev_offset);
 
-void freelist_consume_tiles(freelist_t* fl, size_t tiles_needed, cursor_t** out);
+void freelist_consume_tiles(freelist_t* fl, size_t tiles_needed, cursor_t* out);
 
 uint32_t freelist_consume_one_tile(freelist_t* fl);
 

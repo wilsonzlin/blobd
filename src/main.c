@@ -106,9 +106,11 @@ int main(int argc, char** argv) {
 
   journal_t* journal = journal_create(dev, 0);
 
-  freelist_t* freelist = freelist_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE);
+  stream_t* stream = stream_create_from_device(dev, JOURNAL_RESERVED_SPACE);
 
-  buckets_t* buckets = buckets_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE + 2097152 * (1 + 3 * 8 + 8));
+  freelist_t* freelist = freelist_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE + STREAM_RESERVED_SPACE);
+
+  buckets_t* buckets = buckets_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE + STREAM_RESERVED_SPACE + FREELIST_RESERVED_SPACE);
 
   flush_state_t* flush = flush_state_create();
 
@@ -125,7 +127,8 @@ int main(int argc, char** argv) {
     dev,
     journal,
     freelist,
-    buckets
+    buckets,
+    stream
   );
 
   server_start_loop(

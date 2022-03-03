@@ -29,6 +29,8 @@ u64 next_seq_no
 
 #define STREAM_EVENTS_BUF_LEN 16777216
 
+#define STREAM_RESERVED_SPACE (8 + 8 + (STREAM_EVENTS_BUF_LEN) * (1 + 5 + 8))
+
 typedef enum {
   STREAM_EVENT__NONE = 0,
   STREAM_EVENT_OBJECT_COMMIT = 1,

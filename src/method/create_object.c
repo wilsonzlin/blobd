@@ -119,10 +119,10 @@ svr_client_result_t method_create_object(
 
   cursor_t* inode_cur = ctx->dev->mmap + (ino_addr_tile * TILE_SIZE) + ino_addr_tile_byte_offset;
   write_u64(inode_cur + INO_OFFSETOF_OBJ_NO, obj_no);
-  write_u8(inode_cur + INO_OFFSETOF_STATE, INO_STATE_INCOMPLETE);
+  inode_cur[INO_OFFSETOF_STATE] = INO_STATE_INCOMPLETE;
   write_u40(inode_cur + INO_OFFSETOF_SIZE, args->size);
-  write_u8(inode_cur + INO_OFFSETOF_LAST_TILE_MODE, ltm);
-  write_u8(inode_cur + INO_OFFSETOF_KEY_LEN, args->key.len);
+  inode_cur[INO_OFFSETOF_LAST_TILE_MODE] = ltm;
+  inode_cur[INO_OFFSETOF_KEY_LEN] = args->key.len;
   memcpy(inode_cur + INO_OFFSETOF_KEY, args->key.data.bytes, args->key.len);
   if (full_tiles) {
     freelist_consume_tiles(ctx->fl, full_tiles + ((ltm == INO_LAST_TILE_MODE_TILE) ? 1 : 0), inode_cur + INO_OFFSETOF_TILES(args->key.len));
@@ -132,18 +132,18 @@ svr_client_result_t method_create_object(
   }
   ts_log(DEBUG, "Using %zu tiles and last tile mode %d", full_tiles, ltm);
 
-  if (pthread_rwlock_wrlock(&ctx->bkts->dirty_sixteen_pointers_rwlock)) {
+  if (pthread_rwlock_wrlock(&ctx->bkts->dirty_pointers_rwlock)) {
     perror("Failed to acquire write lock on buckets");
     exit(EXIT_INTERNAL);
   }
   for (
-    size_t o = args->key.bucket / 16, i = ctx->bkts->dirty_sixteen_pointers_layer_count;
+    uint64_t o = args->key.bucket, i = ctx->bkts->dirty_pointers_layer_count;
     i > 0;
     o /= 64, i--
   ) {
-    ctx->bkts->dirty_sixteen_pointers[i - 1][o / 64] |= (1llu << (o % 64));
+    ctx->bkts->dirty_pointers[i - 1][o / 64] |= (1llu << (o % 64));
   }
-  if (pthread_rwlock_unlock(&ctx->bkts->dirty_sixteen_pointers_rwlock)) {
+  if (pthread_rwlock_unlock(&ctx->bkts->dirty_pointers_rwlock)) {
     perror("Failed to release write lock on buckets");
     exit(EXIT_INTERNAL);
   }

@@ -27,6 +27,8 @@ u8 count_log2_between_12_and_40_inclusive
 
 **/
 
+#define BUCKETS_RESERVED_SPACE(bkt_cnt) (1 + (bkt_cnt) * 6)
+
 typedef struct {
   pthread_rwlock_t lock;
   uint32_t microtile;
@@ -36,9 +38,10 @@ typedef struct {
 typedef struct {
   size_t dev_offset_pointers;
   bucket_t* buckets;
-  uint64_t** dirty_sixteen_pointers;
-  size_t dirty_sixteen_pointers_layer_count;
-  pthread_rwlock_t dirty_sixteen_pointers_rwlock;
+  uint64_t** dirty_pointers;
+  // Must be at least 1.
+  size_t dirty_pointers_layer_count;
+  pthread_rwlock_t dirty_pointers_rwlock;
   uint8_t count_log2;
 } buckets_t;
 

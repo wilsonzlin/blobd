@@ -86,28 +86,22 @@ void visit_bucket_dirty_bitmap(
 ) {
   buckets_t* bkts = state->buckets;
   vec_512i_u8_t candidates = vec_find_indices_of_nonzero_bits_64(bitmap);
-  if (layer == bkts->dirty_sixteen_pointers_layer_count - 1) {
+  if (layer == bkts->dirty_pointers_layer_count - 1) {
     for (size_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
-      size_t offset = base + i1;
-      size_t len = 6 * 16 + 8;
-      size_t dev_offset = bkts->dev_offset_pointers + (offset * len);
+      size_t bkt_id = base + i1;
+      size_t len = 6;
+      size_t dev_offset = bkts->dev_offset_pointers + (bkt_id * len);
       ensure_change_data_pool_cap(state, *change_data_next + len);
-      cursor_t* start = state->change_data_pool + *change_data_next;
-      cursor_t* cur = start;
-      for (size_t j = 0; j < 16; j++) {
-        size_t bkt_id = offset * 16 + j;
-        bucket_t* v = &state->buckets->buckets[bkt_id];
-        produce_u24(&cur, v->microtile);
-        produce_u24(&cur, v->microtile_byte_offset);
-      }
-      uint64_t checksum = XXH3_64bits(start, len - 8);
-      produce_u64(&cur, checksum);
+      cursor_t* cur = state->change_data_pool + *change_data_next;
+      bucket_t* v = &state->buckets->buckets[bkt_id];
+      produce_u24(&cur, v->microtile);
+      produce_u24(&cur, v->microtile_byte_offset);
       append_change(state->changes, change_data_next, dev_offset, len);
     }
   } else {
     for (size_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
       size_t offset = base + i1;
-      visit_bucket_dirty_bitmap(state, change_data_next, bkts->dirty_sixteen_pointers[layer + 1][offset], offset * 64, layer + 1);
+      visit_bucket_dirty_bitmap(state, change_data_next, bkts->dirty_pointers[layer + 1][offset], offset * 64, layer + 1);
     }
   }
 }
@@ -145,46 +139,51 @@ void* thread(void* state_raw) {
 
     size_t change_data_next = 0;
 
-    if (state->fl->dirty_eight_tiles_bitmap_1) {
-      vec_128i_u8_t i1_candidates = vec_find_indices_of_nonzero_bits_16(state->fl->dirty_eight_tiles_bitmap_1);
-      for (size_t o1 = 0, i1; (i1 = i1_candidates.elems[o1]) != 16; o1++) {
-        vec_512i_u8_t i2_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_eight_tiles_bitmap_2[i1]);
+    if (state->fl->dirty_tiles_bitmap_1) {
+      vec_512i_u8_t i1_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_1);
+      for (size_t o1 = 0, i1; (i1 = i1_candidates.elems[o1]) != 64; o1++) {
+        vec_512i_u8_t i2_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_2[i1]);
         for (size_t o2 = 0, i2; (i2 = i2_candidates.elems[o2]) != 64; o2++) {
-          vec_512i_u8_t i3_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_eight_tiles_bitmap_3[i1 * 64 + i2]);
+          vec_512i_u8_t i3_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_3[i1 * 64 + i2]);
           for (size_t o3 = 0, i3; (i3 = i3_candidates.elems[o3]) != 64; o3++) {
-            vec_512i_u8_t i4_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_eight_tiles_bitmap_4[(((i1 * 64) + i2) * 64) + i3]);
+            vec_512i_u8_t i4_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_4[(((i1 * 64) + i2) * 64) + i3]);
             for (size_t o4 = 0, i4; (i4 = i4_candidates.elems[o4]) != 64; o4++) {
-              size_t eight_tiles = ((((i1 * 64) + i2) * 64) + i3) * 64 + i4;
-              size_t len = 8 + 1 + 3 * 8;
-              size_t dev_offset = state->fl->dev_offset + eight_tiles * len;
+              size_t tile_no = ((((i1 * 64) + i2) * 64) + i3) * 64 + i4;
+              size_t len = 3;
+              size_t dev_offset = state->fl->dev_offset + tile_no * len;
 
               ensure_change_data_pool_cap(state, change_data_next + len);
               cursor_t* start = state->change_data_pool + change_data_next;
               cursor_t* cur = start;
-              produce_u8(&cur, (state->fl->tile_bitmap_4[i1][i2][i3] >> (i4 * 8)) & 0xff);
-              for (size_t k = 0; k < 8; k++) {
-                size_t atmp = eight_tiles * 8 + k;
-                size_t a6 = atmp % 16; atmp /= 16;
-                size_t a5 = atmp % 16; atmp /= 16;
-                size_t a4 = atmp % 16; atmp /= 16;
-                size_t a3 = atmp % 16; atmp /= 16;
-                size_t a2 = atmp % 16; atmp /= 16;
-                size_t a1 = atmp % 16;
-                uint32_t elem = state->fl->microtile_free_map_6[a1][a2][a3][a4][a5].elems[a6];
-                if (elem != 16) {
-                  uint32_t free = elem >> 8;
-                  // Avoid underflow.
-                  if (free >= TILE_SIZE) {
-                    fprintf(stderr, "Microtile %zu has free space of %u bytes\n", atmp, free);
-                    exit(EXIT_INTERNAL);
-                  }
-                  produce_u24(&cur, TILE_SIZE - free - 1);
+
+              size_t atmp = tile_no;
+              size_t a6 = atmp % 16; atmp /= 16;
+              size_t a5 = atmp % 16; atmp /= 16;
+              size_t a4 = atmp % 16; atmp /= 16;
+              size_t a3 = atmp % 16; atmp /= 16;
+              size_t a2 = atmp % 16; atmp /= 16;
+              size_t a1 = atmp % 16;
+
+              uint32_t microtile_state = state->fl->microtile_free_map_6[a1][a2][a3][a4][a5].elems[a6];
+              if (microtile_state == 16) {
+                // This tile is NOT a microtile.
+                bool is_free = state->fl->tile_bitmap_4[i1][i2][i3] & (1llu << i4);
+                if (is_free) {
+                  produce_u24(&cur, 16777215);
                 } else {
-                  produce_u24(&cur, 0);
+                  produce_u24(&cur, 16777214);
                 }
+              } else {
+                // This tile is a microtile.
+                uint32_t free = microtile_state >> 8;
+                // Avoid invalid special values. Note that microtiles cannot have usages of 0, 1, or 2 bytes, because they must have at least one inode which are at least 29 bytes.
+                if (free >= 16777214) {
+                  fprintf(stderr, "Microtile %zu has free space of %u bytes\n", atmp, free);
+                  exit(EXIT_INTERNAL);
+                }
+                produce_u24(&cur, free);
               }
-              uint64_t checksum = XXH3_64bits(start, len - 8);
-              produce_u64(&cur, checksum);
+
               append_change(state->changes, &change_data_next, dev_offset, len);
             }
           }
@@ -192,9 +191,9 @@ void* thread(void* state_raw) {
       }
     }
 
-    if (state->buckets->dirty_sixteen_pointers[0][0]) {
+    if (state->buckets->dirty_pointers[0][0]) {
       ts_log(DEBUG, "Bucket pointers have changed");
-      visit_bucket_dirty_bitmap(state, &change_data_next, state->buckets->dirty_sixteen_pointers[0][0], 0, 0);
+      visit_bucket_dirty_bitmap(state, &change_data_next, state->buckets->dirty_pointers[0][0], 0, 0);
     }
 
     if (state->stream->pending_flush->len) {
@@ -240,12 +239,12 @@ void* thread(void* state_raw) {
     journal_clear(state->journal);
 
     // Clear dirty bitmaps.
-    state->fl->dirty_eight_tiles_bitmap_1 = 0;
-    memset(state->fl->dirty_eight_tiles_bitmap_2, 0, 64 * sizeof(uint64_t));
-    memset(state->fl->dirty_eight_tiles_bitmap_3, 0, 64 * 64 * sizeof(uint64_t));
-    memset(state->fl->dirty_eight_tiles_bitmap_4, 0, 64 * 64 * 8 * sizeof(uint64_t));
-    for (size_t i = 0, l = 1; i < state->buckets->dirty_sixteen_pointers_layer_count; i++, l *= 64) {
-      memset(state->buckets->dirty_sixteen_pointers[i], 0, l * sizeof(uint64_t));
+    state->fl->dirty_tiles_bitmap_1 = 0;
+    memset(state->fl->dirty_tiles_bitmap_2, 0, 64 * sizeof(uint64_t));
+    memset(state->fl->dirty_tiles_bitmap_3, 0, 64 * 64 * sizeof(uint64_t));
+    memset(state->fl->dirty_tiles_bitmap_4, 0, 64 * 64 * 64 * sizeof(uint64_t));
+    for (size_t i = 0, l = 1; i < state->buckets->dirty_pointers_layer_count; i++, l *= 64) {
+      memset(state->buckets->dirty_pointers[i], 0, l * sizeof(uint64_t));
     }
 
     if (pthread_rwlock_unlock(&state->flush->rwlock)) {

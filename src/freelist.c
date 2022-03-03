@@ -31,36 +31,28 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, size_t dev_offset) {
   }
 
   ts_log(DEBUG, "Loading %zu tiles", dev->tile_count);
-  for (size_t tile_no = 0; tile_no < dev->tile_count; ) {
-    XXH64_hash_t xxhash_actual = XXH3_64bits(cur, 1 + 3 * 8);
-    uint64_t tile8_bitmap = *cur++;
+  for (size_t tile_no = 0; tile_no < dev->tile_count; tile_no++) {
+    uint32_t raw = consume_u24(&cur);
     size_t itmp = tile_no;
-    size_t i4 = itmp % 64; itmp /= 64;
-    size_t i3 = itmp % 64; itmp /= 64;
-    size_t i2 = itmp % 64; itmp /= 64;
-    size_t i1 = itmp;
-    fl->tile_bitmap_4[i1][i2][i3] |= (tile8_bitmap << i4);
-    for (size_t i = 0; tile_no < dev->tile_count && i < 8; i++, tile_no++) {
-      size_t itmp = tile_no;
-      size_t i6 = itmp % 16; itmp /= 16;
-      size_t i5 = itmp % 16; itmp /= 16;
-      size_t i4 = itmp % 16; itmp /= 16;
-      size_t i3 = itmp % 16; itmp /= 16;
-      size_t i2 = itmp % 16; itmp /= 16;
-      size_t i1 = itmp;
-      uint32_t raw = consume_u24(&cur);
-      if (raw) {
-        uint32_t usage = raw + 1;
-        uint32_t free = TILE_SIZE - usage;
-        fl->microtile_free_map_6[i1][i2][i3][i4][i5].elems[i6] = (free << 8) | i6;
-      } else {
-        // Special marking to show that the tile is not a microtile, so we don't write its used size when flushing.
-        fl->microtile_free_map_6[i1][i2][i3][i4][i5].elems[i6] = 16;
+    size_t m6 = itmp % 16; itmp /= 16;
+    size_t m5 = itmp % 16; itmp /= 16;
+    size_t m4 = itmp % 16; itmp /= 16;
+    size_t m3 = itmp % 16; itmp /= 16;
+    size_t m2 = itmp % 16; itmp /= 16;
+    size_t m1 = itmp;
+    if (raw >= 16777214) {
+      if (raw == 16777215) {
+        size_t itmp = tile_no;
+        size_t i4 = itmp % 64; itmp /= 64;
+        size_t i3 = itmp % 64; itmp /= 64;
+        size_t i2 = itmp % 64; itmp /= 64;
+        size_t i1 = itmp;
+        fl->tile_bitmap_4[i1][i2][i3] |= (1llu << i4);
       }
-    }
-    uint64_t xxhash_recorded = consume_u64(&cur);
-    if (xxhash_actual != xxhash_recorded) {
-      CORRUPT("invalid freelist data hash at tile %zu, recorded hash is %"PRIx64" but recorded data hashes to %"PRIx64, tile_no, xxhash_recorded, xxhash_actual);
+      // Special marking to show that the tile is not a microtile, so we don't write its used size when flushing.
+      fl->microtile_free_map_6[m1][m2][m3][m4][m5].elems[m6] = 16;
+    } else {
+      fl->microtile_free_map_6[m1][m2][m3][m4][m5].elems[m6] = (raw << 8) | m6;
     }
   }
 
@@ -136,11 +128,11 @@ static inline free_tiles_t find_free_tiles_in_region(uint64_t region_tile_bitmap
 }
 
 static inline void mark_tile_as_dirty(freelist_t* fl, uint32_t tile) {
-  size_t itmp = tile / 8;
-  fl->dirty_eight_tiles_bitmap_4[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
-  fl->dirty_eight_tiles_bitmap_3[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
-  fl->dirty_eight_tiles_bitmap_2[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
-  fl->dirty_eight_tiles_bitmap_1 |= (1llu << itmp);
+  size_t itmp = tile;
+  fl->dirty_tiles_bitmap_4[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
+  fl->dirty_tiles_bitmap_3[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
+  fl->dirty_tiles_bitmap_2[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
+  fl->dirty_tiles_bitmap_1 |= (1llu << itmp);
 }
 
 static inline void propagate_tile_bitmap_change(freelist_t* fl, uint64_t new_bitmap, size_t i1, size_t i2, size_t i3) {

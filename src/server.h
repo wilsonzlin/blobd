@@ -6,6 +6,7 @@
 #include "flushstate.h"
 #include "freelist.h"
 #include "list.h"
+#include "stream.h"
 #include "../ext/klib/khash.h"
 
 /**

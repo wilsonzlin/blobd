@@ -6,6 +6,7 @@
 #include "freelist.h"
 #include "journal.h"
 #include "server.h"
+#include "stream.h"
 
 void flush_worker_start(
   flush_state_t* flush,
@@ -13,5 +14,6 @@ void flush_worker_start(
   device_t* dev,
   journal_t* journal,
   freelist_t* fl,
-  buckets_t* buckets
+  buckets_t* buckets,
+  stream_t* stream
 );
