@@ -5,6 +5,8 @@
 INODE
 =====
 
+We use a null terminator after the key so that we can use it directly from mmap'ed memory without having to allocate memory, copy the key, and then add a null terminator. This is useful for printing, khash sets, and other libraries and APIs that except C-style strings.
+
 Structure
 ---------
 
@@ -17,6 +19,7 @@ u40 size
 u8 last_tile_mode
 u8 key_len
 u8[] key
+u8 key_null_terminator
 u24[] tiles
 u8[] last_tile_data_if_mode_is_inline
 
@@ -31,7 +34,8 @@ u8[] last_tile_data_if_mode_is_inline
 #define INO_OFFSETOF_LAST_TILE_MODE (INO_OFFSETOF_SIZE + 5)
 #define INO_OFFSETOF_KEY_LEN (INO_OFFSETOF_LAST_TILE_MODE + 1)
 #define INO_OFFSETOF_KEY (INO_OFFSETOF_KEY_LEN + 1)
-#define INO_OFFSETOF_TILES(key_len) (INO_OFFSETOF_KEY + (key_len))
+#define INO_OFFSETOF_KEY_NULL_TERM(key_len) (INO_OFFSETOF_KEY + (key_len))
+#define INO_OFFSETOF_TILES(key_len) (INO_OFFSETOF_KEY_NULL_TERM(key_len) + 1)
 #define INO_OFFSETOF_TILE_NO(key_len, tile) (INO_OFFSETOF_KEY + (key_len) + 3 * (tile))
 #define INO_OFFSETOF_LAST_TILE_INLINE_DATA(key_len, full_tile_count) (INO_OFFSETOF_TILE_NO(key_len, full_tile_count))
 

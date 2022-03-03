@@ -11,6 +11,7 @@
 #include "device.h"
 #include "exit.h"
 #include "freelist.h"
+#include "inode.h"
 #include "log.h"
 #include "tile.h"
 #include "util.h"
@@ -163,6 +164,25 @@ uint32_t fast_allocate_one_tile(freelist_t* fl) {
   mark_tile_as_dirty(fl, tile);
 
   return tile;
+}
+
+// Lock must be already acquired.
+void freelist_replenish_tiles_of_inode(freelist_t* fl, cursor_t* inode_cur) {
+  uint8_t key_len = inode_cur[INO_OFFSETOF_KEY_LEN];
+  uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
+  ino_last_tile_mode_t ltm = inode_cur[INO_OFFSETOF_LAST_TILE_MODE];
+  uint64_t tile_count = size / TILE_SIZE + (ltm == INO_LAST_TILE_MODE_TILE ? 1 : 0);
+  cursor_t* tiles_cur = inode_cur + INO_OFFSETOF_TILES(key_len);
+  for (uint64_t i = 0; i < tile_count; i++) {
+    uint32_t tile_no = consume_u24(&tiles_cur);
+    uint64_t itmp = tile_no;
+    uint64_t i4 = itmp % 64; itmp /= 64;
+    uint64_t i3 = itmp % 64; itmp /= 64;
+    uint64_t i2 = itmp % 64; itmp /= 64;
+    uint64_t i1 = itmp % 64;
+    fl->tile_bitmap_4[i1][i2][i3] |= 1llu << i4;
+    mark_tile_as_dirty(fl, tile_no);
+  }
 }
 
 // tiles_needed must be nonzero.

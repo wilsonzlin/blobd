@@ -11,6 +11,7 @@
 #include "exit.h"
 #include "log.h"
 #include "util.h"
+#include "../ext/klib/khash.h"
 #include "../ext/xxHash/xxhash.h"
 
 LOGGER("bucket");
@@ -66,6 +67,7 @@ buckets_t* buckets_create_from_disk_state(
       perror("Failed to initialise bucket lock");
       exit(EXIT_INTERNAL);
     }
+    bkt->pending_flush_changes = 0;
   }
 
   bkts->pending_delete_or_commit = kh_init_buckets_pending_delete_or_commit();
@@ -95,11 +97,7 @@ uint64_t* buckets_get_dirty_bitmap_layer(buckets_t* bkts, uint8_t layer) {
   return bkts->dirty_pointers[layer];
 }
 
-void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id) {
-  if (pthread_rwlock_wrlock(&bkts->dirty_pointers_rwlock)) {
-    perror("Failed to acquire write lock on buckets");
-    exit(EXIT_INTERNAL);
-  }
+void buckets_mark_bucket_as_dirty_without_locking(buckets_t* bkts, uint64_t bkt_id) {
   for (
     uint64_t o = bkt_id, i = bkts->dirty_pointers_layer_count;
     i > 0;
@@ -107,27 +105,58 @@ void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id) {
   ) {
     bkts->dirty_pointers[i - 1][o / 64] |= (1llu << (o % 64));
   }
+}
+
+void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id) {
+  if (pthread_rwlock_wrlock(&bkts->dirty_pointers_rwlock)) {
+    perror("Failed to acquire write lock on buckets");
+    exit(EXIT_INTERNAL);
+  }
+  buckets_mark_bucket_as_dirty_without_locking(bkts, bkt_id);
   if (pthread_rwlock_unlock(&bkts->dirty_pointers_rwlock)) {
     perror("Failed to release write lock on buckets");
     exit(EXIT_INTERNAL);
   }
 }
 
-void buckets_mark_bucket_as_pending_delete_or_commit(buckets_t* bkts, uint64_t bkt_id) {
+uint32_t buckets_pending_delete_or_commit_iterator_end(buckets_t* bkts) {
+  return kh_end(bkts->pending_delete_or_commit);
+}
+
+uint64_t buckets_pending_delete_or_commit_iterator_get(buckets_t* bkts, uint32_t it) {
+  if (!kh_exist(bkts->pending_delete_or_commit, it)) {
+    return 0;
+  }
+  return kh_key(bkts->pending_delete_or_commit, it);
+}
+
+void buckets_pending_delete_or_commit_lock(buckets_t* bkts) {
   if (pthread_mutex_lock(&bkts->pending_delete_or_commit_lock)) {
     perror("Failed to acquire lock on buckets pending delete or commit");
     exit(EXIT_INTERNAL);
   }
+}
+
+void buckets_pending_delete_or_commit_unlock(buckets_t* bkts) {
+  if (pthread_mutex_unlock(&bkts->pending_delete_or_commit_lock)) {
+    perror("Failed to release lock on buckets pending delete or commit");
+    exit(EXIT_INTERNAL);
+  }
+}
+
+void buckets_mark_bucket_as_pending_delete_or_commit(buckets_t* bkts, uint64_t bkt_id) {
+  buckets_pending_delete_or_commit_lock(bkts);
   int kh_ret;
   kh_put_buckets_pending_delete_or_commit(bkts->pending_delete_or_commit, bkt_id, &kh_ret);
   if (kh_ret == -1) {
     fprintf(stderr, "Failed to add to buckets pending delete or commit\n");
     exit(EXIT_INTERNAL);
   }
-  if (pthread_mutex_unlock(&bkts->pending_delete_or_commit_lock)) {
-    perror("Failed to release lock on buckets pending delete or commit");
-    exit(EXIT_INTERNAL);
-  }
+  buckets_pending_delete_or_commit_unlock(bkts);
+}
+
+void buckets_clear_pending_delete_or_commit(buckets_t* bkts) {
+  kh_clear_buckets_pending_delete_or_commit(bkts->pending_delete_or_commit);
 }
 
 uint64_t buckets_get_device_offset_of_bucket(buckets_t* bkts, uint64_t bkt_id) {

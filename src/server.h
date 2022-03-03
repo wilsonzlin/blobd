@@ -56,7 +56,8 @@ typedef enum {
   SVR_METHOD_INSPECT_OBJECT = 2,
   SVR_METHOD_READ_OBJECT = 3,
   SVR_METHOD_WRITE_OBJECT = 4,
-  SVR_METHOD_DELETE_OBJECT = 5,
+  SVR_METHOD_COMMIT_OBJECT = 5,
+  SVR_METHOD_DELETE_OBJECT = 6,
 } svr_method_t;
 
 typedef struct server_s server_t;

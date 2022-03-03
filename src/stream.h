@@ -55,14 +55,3 @@ typedef struct {
 } stream_t;
 
 stream_t* stream_create_from_device(device_t* dev, uint64_t dev_offset);
-
-uint64_t stream_acquire_obj_no(
-  stream_t* stream
-);
-
-uint64_t stream_acquire_seq_no(
-  stream_t* stream,
-  stream_event_type_t typ,
-  uint64_t bkt_id,
-  uint64_t obj_seq_no
-);

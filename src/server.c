@@ -14,6 +14,7 @@
 #include "log.h"
 #include "server.h"
 #include "util.h"
+#include "method/commit_object.h"
 #include "method/create_object.h"
 #include "method/delete_object.h"
 #include "method/inspect_object.h"
@@ -142,6 +143,9 @@ static inline void worker_handle_client_ready(
           } else if (client->method == SVR_METHOD_WRITE_OBJECT) {
             client->method_state = method_write_object_state_create(state->ctx, ap);
             client->method_state_destructor = method_write_object_state_destroy;
+          } else if (client->method == SVR_METHOD_COMMIT_OBJECT) {
+            client->method_state = method_commit_object_state_create(state->ctx, ap);
+            client->method_state_destructor = method_commit_object_state_destroy;
           } else if (client->method == SVR_METHOD_DELETE_OBJECT) {
             client->method_state = method_delete_object_state_create(state->ctx, ap);
             client->method_state_destructor = method_delete_object_state_destroy;
@@ -163,6 +167,8 @@ static inline void worker_handle_client_ready(
         res = method_read_object(state->ctx, client->method_state, client->fd);
       } else if (client->method == SVR_METHOD_WRITE_OBJECT) {
         res = method_write_object(state->ctx, client->method_state, client->fd);
+      } else if (client->method == SVR_METHOD_COMMIT_OBJECT) {
+        res = method_commit_object(state->ctx, client->method_state, client->fd);
       } else if (client->method == SVR_METHOD_DELETE_OBJECT) {
         res = method_delete_object(state->ctx, client->method_state, client->fd);
       } else {

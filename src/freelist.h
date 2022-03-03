@@ -76,6 +76,8 @@ typedef struct {
 
 freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset);
 
+void freelist_replenish_tiles_of_inode(freelist_t* fl, cursor_t* inode_cur);
+
 void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out);
 
 uint32_t freelist_consume_one_tile(freelist_t* fl);

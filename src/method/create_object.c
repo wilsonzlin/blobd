@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,7 +115,8 @@ svr_client_result_t method_create_object(
     ino_addr_tile_offset = c.microtile_offset;
   }
 
-  uint64_t obj_no = stream_acquire_obj_no(ctx->stream);
+  // We can use relaxed memory ordering as we have a lock on flushing.
+  uint64_t obj_no = atomic_fetch_add_explicit(&ctx->stream->next_obj_no, 1, memory_order_relaxed);;
 
   cursor_t* inode_cur = ctx->dev->mmap + (ino_addr_tile * TILE_SIZE) + ino_addr_tile_offset;
   write_u64(inode_cur + INO_OFFSETOF_OBJ_NO, obj_no);
@@ -123,6 +125,7 @@ svr_client_result_t method_create_object(
   inode_cur[INO_OFFSETOF_LAST_TILE_MODE] = ltm;
   inode_cur[INO_OFFSETOF_KEY_LEN] = args->key.len;
   memcpy(inode_cur + INO_OFFSETOF_KEY, args->key.data.bytes, args->key.len);
+  inode_cur[INO_OFFSETOF_KEY_NULL_TERM(args->key.len)] = 0;
   if (full_tiles) {
     freelist_consume_tiles(ctx->fl, full_tiles + ((ltm == INO_LAST_TILE_MODE_TILE) ? 1 : 0), inode_cur + INO_OFFSETOF_TILES(args->key.len));
   }

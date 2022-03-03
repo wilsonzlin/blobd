@@ -4,14 +4,11 @@
 #include "../cursor.h"
 #include "../device.h"
 #include "../inode.h"
-#include "../log.h"
 #include "../server.h"
 #include "../tile.h"
 #include "../util.h"
 #include "_common.h"
 #include "../../ext/xxHash/xxhash.h"
-
-LOGGER("method_common");
 
 method_error_t method_common_key_parse(
   svr_method_args_parser_t* parser,
@@ -42,12 +39,6 @@ cursor_t* method_common_find_inode_in_bucket(
   uint32_t bkt_tile_offset = bkt->tile_offset;
   while (bkt_tile) {
     cursor_t* cur = dev->mmap + (TILE_SIZE * bkt_tile) + bkt_tile_offset;
-    uint64_t checksum_recorded = read_u64(cur);
-    uint32_t inode_size_checksummed = read_u24(cur + 8);
-    uint64_t checksum_actual = XXH3_64bits(cur + 8, inode_size_checksummed);
-    if (checksum_recorded != checksum_actual) {
-      CORRUPT("inode at tile %u offset %u has recorded checksum %x but data checksums to %x", bkt_tile, bkt_tile_offset, checksum_recorded, checksum_actual);
-    }
     bkt_tile = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE);
     bkt_tile_offset = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET);
     ino_state_t ino_state = cur[INO_OFFSETOF_STATE];
@@ -64,25 +55,7 @@ cursor_t* method_common_find_inode_in_bucket(
     if (ino_key_len != key->len) {
       continue;
     }
-    uint8_t ino_key[64];
-    memcpy(ino_key, cur + INO_OFFSETOF_KEY, min(ino_key_len, 64));
-    if (ino_key_len < 64) {
-      memset(ino_key, 0, 64 - ino_key_len);
-    }
-    __m512i ino_key_lower = _mm512_loadu_epi8(ino_key);
-    // WARNING: Both __m512i arguments must be filled with the same character.
-    if (_mm512_cmpneq_epi8_mask(ino_key_lower, key->data.vecs[0])) {
-      continue;
-    }
-    if (ino_key_len > 64) {
-      memcpy(ino_key, cur + INO_OFFSETOF_KEY + 64, ino_key_len - 64);
-      memset(ino_key, 0, 128 - (ino_key_len - 64));
-      __m512i ino_key_upper = _mm512_loadu_epi8(ino_key);
-      // WARNING: Both __m512i arguments must be filled with the same character.
-      if (_mm512_cmpneq_epi8_mask(ino_key_upper, key->data.vecs[1])) {
-        continue;
-      }
-    }
+    compare_raw_key_with_vec_key(cur + INO_OFFSETOF_KEY, key->len, key->data.vecs[0], key->data.vecs[1]);
     return cur;
   }
   return NULL;

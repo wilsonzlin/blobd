@@ -32,6 +32,8 @@ typedef struct {
   pthread_rwlock_t lock;
   uint32_t tile;
   uint32_t tile_offset;
+  // For use by flush.c only.
+  uint64_t pending_flush_changes;
 } bucket_t;
 
 typedef struct buckets_s buckets_t;
@@ -46,8 +48,23 @@ uint8_t buckets_get_dirty_bitmap_layer_count(buckets_t* bkts);
 
 uint64_t* buckets_get_dirty_bitmap_layer(buckets_t* bkts, uint8_t layer);
 
+void buckets_mark_bucket_as_dirty_without_locking(buckets_t* bkts, uint64_t bkt_id);
+
 void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id);
 
+uint32_t buckets_pending_delete_or_commit_iterator_end(buckets_t* bkts);
+
+// Returns 0 if no value is at this iterator position.
+uint64_t buckets_pending_delete_or_commit_iterator_get(buckets_t* bkts, uint32_t it);
+
+void buckets_pending_delete_or_commit_lock(buckets_t* bkts);
+
+void buckets_pending_delete_or_commit_unlock(buckets_t* bkts);
+
+// Lock will be acquired.
 void buckets_mark_bucket_as_pending_delete_or_commit(buckets_t* bkts, uint64_t bkt_id);
+
+// Lock must already be acquired.
+void buckets_clear_pending_delete_or_commit(buckets_t* bkts);
 
 uint64_t buckets_get_device_offset_of_bucket(buckets_t* bkts, uint64_t bkt_id);
