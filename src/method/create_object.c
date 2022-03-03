@@ -38,7 +38,7 @@ method_create_object_state_t* method_create_object_state_create(
   svr_method_handler_ctx_t* ctx,
   svr_method_args_parser_t* parser
 ) {
-  method_create_object_state_t* args = malloc(sizeof(method_create_object_state_t));
+  method_create_object_state_t* args = aligned_alloc(64, sizeof(method_create_object_state_t));
   INIT_STATE_RESPONSE(args, RESPONSE_LEN);
   uint8_t* p = NULL;
 
@@ -76,7 +76,7 @@ svr_client_result_t method_create_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
-  ts_log(DEBUG, "create_object(key=%s, size=%zu)", args->key, args->size);
+  ts_log(DEBUG, "create_object(key=%s, size=%zu)", args->key.data.bytes, args->size);
   uint64_t full_tiles = args->size / TILE_SIZE;
   uint64_t last_tile_size = args->size % TILE_SIZE;
 
@@ -116,7 +116,7 @@ svr_client_result_t method_create_object(
   }
 
   // We can use relaxed memory ordering as we have a lock on flushing.
-  uint64_t obj_no = atomic_fetch_add_explicit(&ctx->stream->next_obj_no, 1, memory_order_relaxed);;
+  uint64_t obj_no = atomic_fetch_add_explicit(&ctx->stream->next_obj_no, 1, memory_order_relaxed);
 
   cursor_t* inode_cur = ctx->dev->mmap + (ino_addr_tile * TILE_SIZE) + ino_addr_tile_offset;
   write_u64(inode_cur + INO_OFFSETOF_OBJ_NO, obj_no);

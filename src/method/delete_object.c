@@ -36,7 +36,7 @@ method_delete_object_state_t* method_delete_object_state_create(
   svr_method_handler_ctx_t* ctx,
   svr_method_args_parser_t* parser
 ) {
-  method_delete_object_state_t* args = malloc(sizeof(method_delete_object_state_t));
+  method_delete_object_state_t* args = aligned_alloc(64, sizeof(method_delete_object_state_t));
   INIT_STATE_RESPONSE(args, RESPONSE_LEN);
   uint8_t* p = NULL;
 
@@ -68,7 +68,7 @@ svr_client_result_t method_delete_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
-  ts_log(DEBUG, "delete_object(key=%s)", args->key);
+  ts_log(DEBUG, "delete_object(key=%s)", args->key.data.bytes);
 
   // We must acquire a bucket write lock in case someone else tries to commit the object or write to it, or the flusher is currently modifying the list of inodes by processing deletes/commits.
   bool acquired_bkt_lock = false;

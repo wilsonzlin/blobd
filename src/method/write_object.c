@@ -39,7 +39,7 @@ method_write_object_state_t* method_write_object_state_create(
   svr_method_handler_ctx_t* ctx,
   svr_method_args_parser_t* parser
 ) {
-  method_write_object_state_t* args = malloc(sizeof(method_write_object_state_t));
+  method_write_object_state_t* args = aligned_alloc(64, sizeof(method_write_object_state_t));
   args->written = 0;
   INIT_STATE_RESPONSE(args, RESPONSE_LEN);
   uint8_t* p = NULL;
@@ -80,7 +80,7 @@ svr_client_result_t method_write_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
-  ts_log(DEBUG, "write_object(key=%s, start=%ld)", args->key, args->start);
+  ts_log(DEBUG, "write_object(key=%s, start=%ld)", args->key.data.bytes, args->start);
 
   bool acquired_lock = false;
   svr_client_result_t res;

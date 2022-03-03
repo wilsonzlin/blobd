@@ -334,7 +334,8 @@ server_t* server_create(
   device_t* dev,
   flush_state_t* flush,
   freelist_t* fl,
-  buckets_t* bkts
+  buckets_t* bkts,
+  stream_t* stream
 ) {
   int svr_socket = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
   if (-1 == svr_socket) {
@@ -397,6 +398,7 @@ server_t* server_create(
   svr->ctx->dev = dev;
   svr->ctx->fl = fl;
   svr->ctx->flush = flush;
+  svr->ctx->stream = stream;
   return svr;
 }
 

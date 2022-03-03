@@ -118,7 +118,8 @@ int main(int argc, char** argv) {
     dev,
     flush,
     freelist,
-    buckets
+    buckets,
+    stream
   );
 
   flush_worker_start(

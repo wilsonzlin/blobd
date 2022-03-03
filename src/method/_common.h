@@ -10,13 +10,13 @@
 #include "../util.h"
 
 typedef enum {
-  METHOD_ERROR_OK,
-  METHOD_ERROR_NOT_ENOUGH_ARGS,
-  METHOD_ERROR_KEY_TOO_LONG,
-  METHOD_ERROR_TOO_MANY_ARGS,
-  METHOD_ERROR_NOT_FOUND,
-  METHOD_ERROR_INVALID_START,
-  METHOD_ERROR_INVALID_END,
+  METHOD_ERROR_OK = 0,
+  METHOD_ERROR_NOT_ENOUGH_ARGS = 1,
+  METHOD_ERROR_KEY_TOO_LONG = 2,
+  METHOD_ERROR_TOO_MANY_ARGS = 3,
+  METHOD_ERROR_NOT_FOUND = 4,
+  METHOD_ERROR_INVALID_START = 5,
+  METHOD_ERROR_INVALID_END = 6,
 } method_error_t;
 
 #define INIT_STATE_RESPONSE(state, response_len) \
@@ -57,7 +57,7 @@ typedef union {
 } method_common_key_data_t;
 
 typedef struct {
-  method_common_key_data_t data;
+  method_common_key_data_t data __attribute__((aligned (64)));
   uint8_t len;
   uint64_t bucket;
 } method_common_key_t;

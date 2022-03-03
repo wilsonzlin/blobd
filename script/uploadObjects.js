@@ -2,11 +2,11 @@ const net = require("net");
 const fs = require("fs");
 
 const FILES = 1_000_000;
-const FILE_SIZE = 1024n;
+const FILE_SIZE = 1024;
 
 const buf = Buffer.alloc(8);
 const encodeU64 = (val) => {
-  buf.writeBigUInt64BE(val);
+  buf.writeBigUInt64BE(BigInt(val));
   return [...buf];
 };
 
@@ -66,7 +66,7 @@ const uploadFiles = async () => {
       const objNo = chunk.readBigUInt64BE(1);
       resolve(objNo);
     }));
-    conn.write(write_object(k, objNo, 0n));
+    conn.write(write_object(k, objNo, 0));
     conn.write(randomData.slice(no * FILE_SIZE, (no + 1) * FILE_SIZE));
     await new Promise(resolve => conn.once("data", chunk => {
       if (chunk.length != 1) throw new Error(`Invalid write_object response: ${chunk}`);

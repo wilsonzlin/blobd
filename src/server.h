@@ -66,7 +66,8 @@ server_t* server_create(
   device_t* dev,
   flush_state_t* flush,
   freelist_t* fl,
-  buckets_t* bkts
+  buckets_t* bkts,
+  stream_t* stream
 );
 
 // Returns false if no clients are awaiting flush.

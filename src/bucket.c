@@ -47,7 +47,8 @@ buckets_t* buckets_create_from_disk_state(
   }
   bkts->dirty_pointers_layer_count = dirty_layer_count;
   bkts->dirty_pointers = malloc(sizeof(uint64_t*) * dirty_layer_count);
-  for (uint8_t i = 0, l = 1; i < dirty_layer_count; i++, l *= 64) {
+  // Use uint64_t for `l`.
+  for (uint64_t i = 0, l = 1; i < dirty_layer_count; i++, l *= 64) {
     bkts->dirty_pointers[i] = calloc(l, sizeof(uint64_t));
   }
   if (pthread_rwlock_init(&bkts->dirty_pointers_rwlock, NULL)) {

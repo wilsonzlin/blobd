@@ -49,8 +49,8 @@ LIST_DEF(events_pending_flush, stream_event_t);
 typedef struct {
   device_t* dev;
   uint64_t dev_offset;
-  _Atomic uint64_t next_obj_no;
-  _Atomic uint64_t next_seq_no;
+  atomic_uint_least64_t next_obj_no __attribute__((aligned (16)));
+  atomic_uint_least64_t next_seq_no __attribute__((aligned (16)));
   events_pending_flush_t* pending_flush;
 } stream_t;
 
