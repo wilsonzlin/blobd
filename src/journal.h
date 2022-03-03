@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stddef.h>
+#include <stdint.h>
 #include "cursor.h"
 
 /**
@@ -27,9 +27,9 @@ u32 count
 
 typedef struct journal_s journal_t;
 
-journal_t* journal_create(device_t* dev, size_t dev_offset);
+journal_t* journal_create(device_t* dev, uint64_t dev_offset);
 
-void journal_append(journal_t* jnl, size_t dev_offset, uint32_t len);
+void journal_append(journal_t* jnl, uint64_t dev_offset, uint32_t len);
 
 void journal_flush(journal_t* jnl);
 

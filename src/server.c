@@ -15,6 +15,7 @@
 #include "server.h"
 #include "util.h"
 #include "method/create_object.h"
+#include "method/delete_object.h"
 #include "method/inspect_object.h"
 #include "method/read_object.h"
 #include "method/write_object.h"
@@ -142,7 +143,8 @@ static inline void worker_handle_client_ready(
             client->method_state = method_write_object_state_create(state->ctx, ap);
             client->method_state_destructor = method_write_object_state_destroy;
           } else if (client->method == SVR_METHOD_DELETE_OBJECT) {
-            // TODO
+            client->method_state = method_delete_object_state_create(state->ctx, ap);
+            client->method_state_destructor = method_delete_object_state_destroy;
           } else {
             fprintf(stderr, "Unknown client method %u\n", client->method);
             exit(EXIT_INTERNAL);
@@ -162,7 +164,7 @@ static inline void worker_handle_client_ready(
       } else if (client->method == SVR_METHOD_WRITE_OBJECT) {
         res = method_write_object(state->ctx, client->method_state, client->fd);
       } else if (client->method == SVR_METHOD_DELETE_OBJECT) {
-        // TODO
+        res = method_delete_object(state->ctx, client->method_state, client->fd);
       } else {
         fprintf(stderr, "Unknown client method %u\n", client->method);
         exit(EXIT_INTERNAL);

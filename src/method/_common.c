@@ -15,7 +15,7 @@ LOGGER("method_common");
 
 method_error_t method_common_key_parse(
   svr_method_args_parser_t* parser,
-  uint8_t bucket_count_log2,
+  buckets_t* bkts,
   method_common_key_t* out
 ) {
   uint8_t* p = NULL;
@@ -25,7 +25,7 @@ method_error_t method_common_key_parse(
   if ((p = svr_method_args_parser_parse(parser, out->len)) == NULL) return METHOD_ERROR_NOT_ENOUGH_ARGS;
   memcpy(out->data.bytes, p, out->len);
   memset(out->data.bytes + out->len, 0, 129 - out->len);
-  out->bucket = XXH3_64bits(out->data.bytes, out->len) & ((1llu << bucket_count_log2) - 1);
+  out->bucket = buckets_get_bucket_id_for_key(bkts, out->data.bytes, out->len);
 
   return METHOD_ERROR_OK;
 }
@@ -35,23 +35,23 @@ cursor_t* method_common_find_inode_in_bucket(
   bucket_t* bkt,
   method_common_key_t* key,
   device_t* dev,
-  ino_state_t required_state,
+  ino_state_t allowed_states,
   uint64_t required_obj_no_or_zero
 ) {
-  uint32_t bkt_microtile = bkt->microtile;
-  uint32_t bkt_microtile_offset = bkt->microtile_byte_offset;
-  while (bkt_microtile) {
-    cursor_t* cur = dev->mmap + (TILE_SIZE * bkt_microtile) + bkt_microtile_offset;
+  uint32_t bkt_tile = bkt->tile;
+  uint32_t bkt_tile_offset = bkt->tile_offset;
+  while (bkt_tile) {
+    cursor_t* cur = dev->mmap + (TILE_SIZE * bkt_tile) + bkt_tile_offset;
     uint64_t checksum_recorded = read_u64(cur);
     uint32_t inode_size_checksummed = read_u24(cur + 8);
     uint64_t checksum_actual = XXH3_64bits(cur + 8, inode_size_checksummed);
     if (checksum_recorded != checksum_actual) {
-      CORRUPT("inode at tile %u offset %u has recorded checksum %x but data checksums to %x", bkt_microtile, bkt_microtile_offset, checksum_recorded, checksum_actual);
+      CORRUPT("inode at tile %u offset %u has recorded checksum %x but data checksums to %x", bkt_tile, bkt_tile_offset, checksum_recorded, checksum_actual);
     }
-    bkt_microtile = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE);
-    bkt_microtile_offset = read_u24(cur + INO_OFFSETOF_NEXT_INODE_OFFSET);
+    bkt_tile = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE);
+    bkt_tile_offset = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET);
     ino_state_t ino_state = cur[INO_OFFSETOF_STATE];
-    if (ino_state != required_state) {
+    if (!(ino_state & allowed_states)) {
       continue;
     }
     if (required_obj_no_or_zero) {

@@ -1,4 +1,4 @@
-#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include "device.h"
@@ -13,7 +13,7 @@ struct journal_s {
   uint64_t xxhash_u32_0;
 };
 
-journal_t* journal_create(device_t* dev, size_t dev_offset) {
+journal_t* journal_create(device_t* dev, uint64_t dev_offset) {
   journal_t* journal = malloc(sizeof(journal_t));
   journal->dev = dev;
   journal->mmap = dev->mmap + dev_offset;
@@ -22,7 +22,7 @@ journal_t* journal_create(device_t* dev, size_t dev_offset) {
   return journal;
 }
 
-void journal_append(journal_t* jnl, size_t dev_offset, uint32_t len) {
+void journal_append(journal_t* jnl, uint64_t dev_offset, uint32_t len) {
   produce_u48(&jnl->cursor_next, dev_offset);
   produce_u32(&jnl->cursor_next, len);
   produce_n(&jnl->cursor_next, jnl->dev->mmap + dev_offset, len);

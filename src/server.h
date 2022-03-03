@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <pthread.h>
 #include "bucket.h"
 #include "device.h"
@@ -55,7 +56,6 @@ typedef enum {
   SVR_METHOD_INSPECT_OBJECT = 2,
   SVR_METHOD_READ_OBJECT = 3,
   SVR_METHOD_WRITE_OBJECT = 4,
-  // (u8 key_len, char[] key, u64 obj_no_or_zero).
   SVR_METHOD_DELETE_OBJECT = 5,
 } svr_method_t;
 

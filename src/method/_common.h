@@ -64,7 +64,7 @@ typedef struct {
 
 method_error_t method_common_key_parse(
   svr_method_args_parser_t* parser,
-  uint8_t bucket_count_log2,
+  buckets_t* bkts,
   method_common_key_t* out
 );
 
@@ -72,6 +72,7 @@ cursor_t* method_common_find_inode_in_bucket(
   bucket_t* bkt,
   method_common_key_t* key,
   device_t* dev,
-  ino_state_t required_state,
+  // Bitwise OR of all allowed states.
+  ino_state_t allowed_states,
   uint64_t required_obj_no_or_zero
 );

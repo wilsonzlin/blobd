@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <immintrin.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -53,7 +54,7 @@ method_read_object_state_t* method_read_object_state_create(
   args->obj_no = 0;
   INIT_STATE_RESPONSE(args, RESPONSE_LEN);
 
-  method_error_t key_parse_error = method_common_key_parse(parser, ctx->bkts->count_log2, &args->key);
+  method_error_t key_parse_error = method_common_key_parse(parser, ctx->bkts, &args->key);
   if (key_parse_error != METHOD_ERROR_OK) {
     PARSE_ERROR(args, key_parse_error);
   }
@@ -92,7 +93,7 @@ svr_client_result_t method_read_object(
   svr_client_result_t res;
   // We must look up again each time in case it has been deleted since we last held the lock.
   // This may seem inefficient but it's better than holding the lock the entire time.
-  bucket_t* bkt = &ctx->bkts->buckets[args->key.bucket];
+  bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
   if (pthread_rwlock_rdlock(&bkt->lock)) {
     perror("Failed to acquire read lock on bucket");
     exit(EXIT_INTERNAL);
@@ -148,6 +149,7 @@ svr_client_result_t method_read_object(
     args->response[0] = METHOD_ERROR_OK;
     write_u64(args->response + 1, actual_start);
     write_u64(args->response + 9, args->actual_length);
+    res = SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
     goto final;
   }
 

@@ -24,7 +24,7 @@
 LOGGER("flush");
 
 typedef struct {
-  size_t device_offset;
+  uint64_t device_offset;
   uint32_t len;
   uint32_t offset_in_change_data_pool;
 } change_t;
@@ -59,7 +59,7 @@ static inline void ensure_change_data_pool_cap(thread_state_t* state, size_t cap
 static inline void append_change(
   changes_t* changes,
   size_t* change_data_next,
-  size_t device_offset,
+  uint64_t device_offset,
   uint32_t len
 ) {
   change_t* last = changes_last_mut(changes);
@@ -81,27 +81,27 @@ void visit_bucket_dirty_bitmap(
   thread_state_t* state,
   size_t* change_data_next,
   uint64_t bitmap,
-  size_t base,
-  size_t layer
+  uint64_t base,
+  uint8_t layer
 ) {
   buckets_t* bkts = state->buckets;
   vec_512i_u8_t candidates = vec_find_indices_of_nonzero_bits_64(bitmap);
-  if (layer == bkts->dirty_pointers_layer_count - 1) {
+  if (layer == buckets_get_dirty_bitmap_layer_count(bkts) - 1) {
     for (size_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
       size_t bkt_id = base + i1;
       size_t len = 6;
-      size_t dev_offset = bkts->dev_offset_pointers + (bkt_id * len);
+      uint64_t dev_offset = buckets_get_device_offset_of_bucket(bkts, bkt_id);
       ensure_change_data_pool_cap(state, *change_data_next + len);
       cursor_t* cur = state->change_data_pool + *change_data_next;
-      bucket_t* v = &state->buckets->buckets[bkt_id];
-      produce_u24(&cur, v->microtile);
-      produce_u24(&cur, v->microtile_byte_offset);
+      bucket_t* v = buckets_get_bucket(state->buckets, bkt_id);
+      produce_u24(&cur, v->tile);
+      produce_u24(&cur, v->tile_offset);
       append_change(state->changes, change_data_next, dev_offset, len);
     }
   } else {
     for (size_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
       size_t offset = base + i1;
-      visit_bucket_dirty_bitmap(state, change_data_next, bkts->dirty_pointers[layer + 1][offset], offset * 64, layer + 1);
+      visit_bucket_dirty_bitmap(state, change_data_next, buckets_get_dirty_bitmap_layer(bkts, layer + 1)[offset], offset * 64, layer + 1);
     }
   }
 }
@@ -191,9 +191,9 @@ void* thread(void* state_raw) {
       }
     }
 
-    if (state->buckets->dirty_pointers[0][0]) {
+    if (buckets_get_dirty_bitmap_layer(state->buckets, 0)[0]) {
       ts_log(DEBUG, "Bucket pointers have changed");
-      visit_bucket_dirty_bitmap(state, &change_data_next, state->buckets->dirty_pointers[0][0], 0, 0);
+      visit_bucket_dirty_bitmap(state, &change_data_next, buckets_get_dirty_bitmap_layer(state->buckets, 0)[0], 0, 0);
     }
 
     if (state->stream->pending_flush->len) {
@@ -243,8 +243,8 @@ void* thread(void* state_raw) {
     memset(state->fl->dirty_tiles_bitmap_2, 0, 64 * sizeof(uint64_t));
     memset(state->fl->dirty_tiles_bitmap_3, 0, 64 * 64 * sizeof(uint64_t));
     memset(state->fl->dirty_tiles_bitmap_4, 0, 64 * 64 * 64 * sizeof(uint64_t));
-    for (size_t i = 0, l = 1; i < state->buckets->dirty_pointers_layer_count; i++, l *= 64) {
-      memset(state->buckets->dirty_pointers[i], 0, l * sizeof(uint64_t));
+    for (uint8_t i = 0, l = 1; i < buckets_get_dirty_bitmap_layer_count(state->buckets); i++, l *= 64) {
+      memset(buckets_get_dirty_bitmap_layer(state->buckets, i), 0, l * sizeof(uint64_t));
     }
 
     if (pthread_rwlock_unlock(&state->flush->rwlock)) {

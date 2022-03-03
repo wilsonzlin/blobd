@@ -1,9 +1,8 @@
 #pragma once
 
-#include <pthread.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include "device.h"
+#include "../ext/klib/khash.h"
 
 /**
 
@@ -31,18 +30,24 @@ u8 count_log2_between_12_and_40_inclusive
 
 typedef struct {
   pthread_rwlock_t lock;
-  uint32_t microtile;
-  uint32_t microtile_byte_offset;
+  uint32_t tile;
+  uint32_t tile_offset;
 } bucket_t;
 
-typedef struct {
-  size_t dev_offset_pointers;
-  bucket_t* buckets;
-  uint64_t** dirty_pointers;
-  // Must be at least 1.
-  size_t dirty_pointers_layer_count;
-  pthread_rwlock_t dirty_pointers_rwlock;
-  uint8_t count_log2;
-} buckets_t;
+typedef struct buckets_s buckets_t;
 
-buckets_t* buckets_create_from_disk_state(device_t* dev, size_t dev_offset);
+buckets_t* buckets_create_from_disk_state(device_t* dev, uint64_t dev_offset);
+
+uint64_t buckets_get_bucket_id_for_key(buckets_t* bkts, uint8_t* key, uint8_t key_len);
+
+bucket_t* buckets_get_bucket(buckets_t* bkts, uint64_t bkt_id);
+
+uint8_t buckets_get_dirty_bitmap_layer_count(buckets_t* bkts);
+
+uint64_t* buckets_get_dirty_bitmap_layer(buckets_t* bkts, uint8_t layer);
+
+void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id);
+
+void buckets_mark_bucket_as_pending_delete_or_commit(buckets_t* bkts, uint64_t bkt_id);
+
+uint64_t buckets_get_device_offset_of_bucket(buckets_t* bkts, uint64_t bkt_id);
