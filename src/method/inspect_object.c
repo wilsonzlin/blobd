@@ -49,7 +49,7 @@ method_inspect_object_state_t* method_inspect_object_state_create(
     PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
 
-  ts_log(DEBUG, "inspect_object(key=%s)", args->key.data.bytes);
+  DEBUG_TS_LOG("inspect_object(key=%s)", args->key.data.bytes);
 
   return args;
 }

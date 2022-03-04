@@ -55,7 +55,7 @@ typedef struct {
   uint64_t tile_bitmap_3[64][64];
   uint64_t tile_bitmap_4[64][64][64];
   // Storing free amount (instead of used) allows us to initialise these in-memory structures to empty and not available by default, which is faster and more importantly, ensures that all elements including out-of-bound ones that map to invalid tiles are unavailable by default.
-  // For each element, bits [31:8] represent the maximum free amount of all elements in the next layer, and [7:0] the corresponding index of the maximum in the next layer (although only 4 bits are used as there are only 16 elements per vector).
+  // For each element, bits [31:8] represent the maximum free amount of all elements in the next layer, [7:7] if the tile is not a microtile, and [6:0] the corresponding index of the maximum in the next layer (although only 4 bits are used as there are only 16 elements per vector).
   vec_512i_u32_t microtile_free_map_1;
   vec_512i_u32_t microtile_free_map_2[16];
   vec_512i_u32_t microtile_free_map_3[16][16];
@@ -82,4 +82,4 @@ void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out
 
 uint32_t freelist_consume_one_tile(freelist_t* fl);
 
-freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint64_t bytes_needed);
+freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed);

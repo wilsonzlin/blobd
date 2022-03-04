@@ -28,7 +28,7 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
   fl->dev_offset = dev_offset;
   ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&fl->rwlock, NULL), "initialise lock on freelist");
 
-  ts_log(DEBUG, "Loading %zu tiles", dev->tile_count);
+  ts_log(INFO, "Loading %zu tiles", dev->tile_count);
   for (uint64_t tile_no = 0; tile_no < dev->tile_count; tile_no++) {
     uint32_t raw = consume_u24(&cur);
     uint64_t itmp = tile_no;
@@ -48,13 +48,14 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
         fl->tile_bitmap_4[i1][i2][i3] |= (1llu << i4);
       }
       // Special marking to show that the tile is not a microtile, so we don't write its used size when flushing.
-      fl->microtile_free_map_6[m1][m2][m3][m4][m5].elems[m6] = 16;
+      // NOTE: For out-of-range tiles, we don't touch them, so they may have weird values in the range [0, 15].
+      fl->microtile_free_map_6[m1][m2][m3][m4][m5].elems[m6] = (1 << 7) | m6;
     } else {
       fl->microtile_free_map_6[m1][m2][m3][m4][m5].elems[m6] = (raw << 8) | m6;
     }
   }
 
-  ts_log(DEBUG, "Creating tile bitmaps");
+  ts_log(INFO, "Creating tile bitmaps");
   __m512i zeroes = _mm512_setzero_si512();
   for (uint64_t i1 = 0; i1 < 64; i1 += 8) {
     for (uint64_t i2 = 0; i2 < 64; i2 += 8) {
@@ -69,14 +70,14 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
     fl->tile_bitmap_1 |= m << i1;
   }
 
-  ts_log(DEBUG, "Creating microtile data structures");
-  for (uint64_t i1 = 0; i1 < 16; i1++) {
-    for (uint64_t i2 = 0; i2 < 16; i2++) {
-      for (uint64_t i3 = 0; i3 < 16; i3++) {
-        for (uint64_t i4 = 0; i4 < 16; i4++) {
-          for (uint64_t i5 = 0; i5 < 16; i5++) {
+  ts_log(INFO, "Creating microtile data structures");
+  for (uint32_t i1 = 0; i1 < 16; i1++) {
+    for (uint32_t i2 = 0; i2 < 16; i2++) {
+      for (uint32_t i3 = 0; i3 < 16; i3++) {
+        for (uint32_t i4 = 0; i4 < 16; i4++) {
+          for (uint32_t i5 = 0; i5 < 16; i5++) {
             uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_6[i1][i2][i3][i4][i5].vec);
-            fl->microtile_free_map_5[i1][i2][i3][i4].elems[i5] = m;
+            fl->microtile_free_map_5[i1][i2][i3][i4].elems[i5] = (m & ~15) | i5;
           }
           uint32_t m = _mm512_reduce_max_epu32(fl->microtile_free_map_5[i1][i2][i3][i4].vec);
           fl->microtile_free_map_4[i1][i2][i3].elems[i4] = (m & ~15) | i4;
@@ -91,7 +92,7 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
     fl->microtile_free_map_1.elems[i1] = (m & ~15) | i1;
   }
 
-  ts_log(DEBUG, "Loaded freelist");
+  ts_log(INFO, "Loaded freelist");
 
   return fl;
 }
@@ -218,7 +219,7 @@ void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out
 
   ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&fl->rwlock), "release write lock on freelist");
 
-  ts_log(DEBUG, "Allocated %zu tiles", tiles_needed_orig);
+  DEBUG_TS_LOG("Allocated %zu tiles", tiles_needed_orig);
 }
 
 uint32_t freelist_consume_one_tile(freelist_t* fl) {
@@ -231,7 +232,7 @@ uint32_t freelist_consume_one_tile(freelist_t* fl) {
   return tile;
 }
 
-freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint64_t bytes_needed) {
+freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed) {
   ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&fl->rwlock), "acquire write lock on freelist");
 
   __m512i y512 = _mm512_set1_epi32(bytes_needed << 8);
@@ -240,13 +241,14 @@ freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint64
   uint32_t p1 = _tzcnt_u32(m1);
   uint32_t microtile_addr;
   uint32_t cur_free;
-  uint64_t i1, i2, i3, i4, i5, i6;
+  // Use uint32_t as we'll multiply these.
+  uint32_t i1, i2, i3, i4, i5, i6;
   if (p1 == 32) {
     // There are no microtiles, so allocate a new one.
     microtile_addr = fast_allocate_one_tile(fl);
-    ts_log(DEBUG, "Created a new microtile at %u", microtile_addr);
+    DEBUG_TS_LOG("No existing microtile available, so converting tile %u", microtile_addr);
     cur_free = TILE_SIZE;
-    uint64_t itmp = microtile_addr;
+    uint32_t itmp = microtile_addr;
     i6 = itmp % 16; itmp /= 16;
     i5 = itmp % 16; itmp /= 16;
     i4 = itmp % 16; itmp /= 16;
@@ -254,35 +256,44 @@ freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint64
     i2 = itmp % 16; itmp /= 16;
     i1 = itmp % 16;
   } else {
-    i1 = fl->microtile_free_map_1.elems[p1] & 255;
-    uint8_t m2 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_2[i1].vec, y512);
-    // TODO Assert p2 <= 15
+    DEBUG_ASSERT_STATE(p1 <= 15, "invalid microtile free map p1 %u", p1);
+    i1 = fl->microtile_free_map_1.elems[p1] & 127;
+    DEBUG_ASSERT_STATE(i1 <= 15, "invalid microtile free map i1 %u", i1);
+    uint16_t m2 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_2[i1].vec, y512);
     uint32_t p2 = _tzcnt_u32(m2);
+    DEBUG_ASSERT_STATE(p2 <= 15, "invalid microtile free map p2 %u", p2);
 
-    i2 = fl->microtile_free_map_2[i1].elems[p2] & 255;
-    uint8_t m3 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_3[i1][i2].vec, y512);
-    // TODO Assert p3 <= 15
+    i2 = fl->microtile_free_map_2[i1].elems[p2] & 127;
+    DEBUG_ASSERT_STATE(i2 <= 15, "invalid microtile free map i2 %u", i2);
+    uint16_t m3 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_3[i1][i2].vec, y512);
     uint32_t p3 = _tzcnt_u32(m3);
+    DEBUG_ASSERT_STATE(p3 <= 15, "invalid microtile free map p3 %u", p3);
 
-    i3 = fl->microtile_free_map_3[i1][i2].elems[p3] & 255;
-    uint8_t m4 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_4[i1][i2][i3].vec, y512);
-    // TODO Assert p4 <= 15
+    i3 = fl->microtile_free_map_3[i1][i2].elems[p3] & 127;
+    DEBUG_ASSERT_STATE(i3 <= 15, "invalid microtile free map i3 %u", i3);
+    uint16_t m4 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_4[i1][i2][i3].vec, y512);
     uint32_t p4 = _tzcnt_u32(m4);
+    DEBUG_ASSERT_STATE(p4 <= 15, "invalid microtile free map p4 %u", p4);
 
-    i4 = fl->microtile_free_map_4[i1][i2][i3].elems[p4] & 255;
-    uint8_t m5 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_5[i1][i2][i3][i4].vec, y512);
-    // TODO Assert p5 <= 15
+    i4 = fl->microtile_free_map_4[i1][i2][i3].elems[p4] & 127;
+    DEBUG_ASSERT_STATE(i4 <= 15, "invalid microtile free map i4 %u", i4);
+    uint16_t m5 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_5[i1][i2][i3][i4].vec, y512);
     uint32_t p5 = _tzcnt_u32(m5);
+    DEBUG_ASSERT_STATE(p5 <= 15, "invalid microtile free map p5 %u", p5);
 
-    i5 = fl->microtile_free_map_5[i1][i2][i3][i4].elems[p5] & 255;
-    uint8_t m6 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_6[i1][i2][i3][i4][i5].vec, y512);
-    // TODO Assert p6 <= 15
+    i5 = fl->microtile_free_map_5[i1][i2][i3][i4].elems[p5] & 127;
+    DEBUG_ASSERT_STATE(i5 <= 15, "invalid microtile free map i5 %u", i4);
+    uint16_t m6 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_6[i1][i2][i3][i4][i5].vec, y512);
     uint32_t p6 = _tzcnt_u32(m6);
+    DEBUG_ASSERT_STATE(p6 <= 15, "invalid microtile free map p6 %u", p6);
 
     uint32_t meta = fl->microtile_free_map_6[i1][i2][i3][i4][i5].elems[p6];
     cur_free = meta >> 8;
-    i6 = meta & 255;
+    i6 = meta & 127;
+    DEBUG_ASSERT_STATE(i6 <= 15, "invalid microtile free map i6 %u", i4);
     microtile_addr = (((((((((i1 * 16) + i2) * 16) + i3) * 16) + i4) * 16) + i5) * 16) + i6;
+    mark_tile_as_dirty(fl, microtile_addr);
+    DEBUG_TS_LOG("Found microtile %u with %u free space", microtile_addr, cur_free);
   }
 
   freelist_consumed_microtile_t out;
@@ -292,11 +303,11 @@ freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint64
   // TODO assert cur_usage >= bytes_needed.
   uint32_t new_free = cur_free - bytes_needed;
   fl->microtile_free_map_6[i1][i2][i3][i4][i5].elems[i6] = (new_free << 8) | i6;
-  fl->microtile_free_map_5[i1][i2][i3][i4].elems[i5] = _mm512_reduce_max_epu32(fl->microtile_free_map_6[i1][i2][i3][i4][i5].vec);
-  fl->microtile_free_map_4[i1][i2][i3].elems[i4] = (_mm512_reduce_max_epu32(fl->microtile_free_map_5[i1][i2][i3][i4].vec) & ~15) | i5;
-  fl->microtile_free_map_3[i1][i2].elems[i3] = (_mm512_reduce_max_epu32(fl->microtile_free_map_4[i1][i2][i3].vec) & ~15) | i4;
-  fl->microtile_free_map_2[i1].elems[i2] = (_mm512_reduce_max_epu32(fl->microtile_free_map_3[i1][i2].vec) & ~15) | i3;
-  fl->microtile_free_map_1.elems[i1] = (_mm512_reduce_max_epu32(fl->microtile_free_map_2[i1].vec) & ~15) | i2;
+  fl->microtile_free_map_5[i1][i2][i3][i4].elems[i5] = (_mm512_reduce_max_epu32(fl->microtile_free_map_6[i1][i2][i3][i4][i5].vec) & ~15) | i5;
+  fl->microtile_free_map_4[i1][i2][i3].elems[i4] = (_mm512_reduce_max_epu32(fl->microtile_free_map_5[i1][i2][i3][i4].vec) & ~15) | i4;
+  fl->microtile_free_map_3[i1][i2].elems[i3] = (_mm512_reduce_max_epu32(fl->microtile_free_map_4[i1][i2][i3].vec) & ~15) | i3;
+  fl->microtile_free_map_2[i1].elems[i2] = (_mm512_reduce_max_epu32(fl->microtile_free_map_3[i1][i2].vec) & ~15) | i2;
+  fl->microtile_free_map_1.elems[i1] = (_mm512_reduce_max_epu32(fl->microtile_free_map_2[i1].vec) & ~15) | i1;
 
   ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&fl->rwlock), "release write lock on freelist");
 

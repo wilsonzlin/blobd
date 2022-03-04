@@ -100,11 +100,9 @@ static inline void worker_handle_client_ready(
   server_t* state,
   svr_client_t* client
 ) {
-  ts_log(DEBUG, "Worker handling client with FD=%d", client->fd);
   svr_client_result_t res = SVR_CLIENT_RESULT__UNKNOWN;
   loop: while (true) {
     if (client->method == SVR_METHOD__UNKNOWN) {
-      ts_log(DEBUG, "Parsing method of client with FD=%d", client->fd);
       // We haven't parsed the method yet.
       uint8_t buf[1];
       int readlen;
@@ -115,7 +113,6 @@ static inline void worker_handle_client_ready(
       // NOTE: args_parser may be NULL if we've freed it after parsing and creating method_state.
       if (client->args_parser == NULL) {
         // We haven't got the args length.
-        ts_log(DEBUG, "Creating args parser for client with FD=%d", client->fd);
         uint8_t buf[1];
         int readlen;
         READ_OR_RELEASE(readlen, client->fd, buf, 1);
@@ -124,13 +121,11 @@ static inline void worker_handle_client_ready(
         svr_method_args_parser_t* ap = client->args_parser;
         if (ap->write_next < ap->raw_len) {
           // We haven't received all args.
-          ts_log(DEBUG, "Reading arg bytes for client with FD=%d", client->fd);
           int readlen;
           READ_OR_RELEASE(readlen, client->fd, ap->raw + ap->write_next, ap->raw_len - ap->write_next);
           ap->write_next += readlen;
         } else {
           // We haven't parsed the args.
-          ts_log(DEBUG, "Parsing args for client with FD=%d", client->fd);
           if (client->method == SVR_METHOD_CREATE_OBJECT) {
             client->method_state = method_create_object_state_create(state->ctx, ap);
             client->method_state_destructor = method_create_object_state_destroy;
@@ -158,7 +153,6 @@ static inline void worker_handle_client_ready(
         }
       }
     } else {
-      ts_log(DEBUG, "Calling method handler for client with FD=%d", client->fd);
       if (client->method == SVR_METHOD_CREATE_OBJECT) {
         res = method_create_object(state->ctx, client->method_state, client->fd);
       } else if (client->method == SVR_METHOD_INSPECT_OBJECT) {
@@ -179,7 +173,6 @@ static inline void worker_handle_client_ready(
     }
   }
 
-  ts_log(DEBUG, "Client resulted in state %d with FD=%d", res, client->fd);
   if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE || res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
     struct epoll_event ev;
     ev.events = EPOLLET | EPOLLONESHOT | (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE ? EPOLLIN : EPOLLOUT);
@@ -339,7 +332,7 @@ server_t* server_create(
     perror("Failed to listen on socket");
     exit(EXIT_INTERNAL);
   }
-  ts_log(DEBUG, "Listening");
+  DEBUG_TS_LOG("Listening");
 
   int svr_epoll_fd = epoll_create1(0);
   if (-1 == svr_epoll_fd) {

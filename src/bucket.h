@@ -40,6 +40,8 @@ typedef struct buckets_s buckets_t;
 
 buckets_t* buckets_create_from_disk_state(device_t* dev, uint64_t dev_offset);
 
+uint64_t buckets_get_count(buckets_t* bkts);
+
 uint64_t buckets_get_bucket_id_for_key(buckets_t* bkts, uint8_t* key, uint8_t key_len);
 
 bucket_t* buckets_get_bucket(buckets_t* bkts, uint64_t bkt_id);

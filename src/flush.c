@@ -139,6 +139,31 @@ static inline uint32_t change_data_pool_append_u64(change_data_pool_writer_t* wr
 
 #define RECORD_CHANGE3(dev_offset, c1, c2, c3) RECORD_CHANGE3_BUCKET(dev_offset, 0, c1, c2, c3)
 
+static inline void ts_log_debug_writing_change(change_t c, buckets_t* buckets) {
+  uint64_t offset = 0;
+  if (c.device_offset < offset + JOURNAL_RESERVED_SPACE) {
+    DEBUG_TS_LOG("Writing journal area change: %lu, %u bytes", c.device_offset - offset, c.len);
+    return;
+  }
+  offset += JOURNAL_RESERVED_SPACE;
+  if (c.device_offset < offset + STREAM_RESERVED_SPACE) {
+    DEBUG_TS_LOG("Writing stream area change: %lu, %u bytes", c.device_offset - offset, c.len);
+    return;
+  }
+  offset += STREAM_RESERVED_SPACE;
+  if (c.device_offset < offset + FREELIST_RESERVED_SPACE) {
+    DEBUG_TS_LOG("Writing freelist area change: %lu, %u bytes", c.device_offset - offset, c.len);
+    return;
+  }
+  uint64_t buckets_space = BUCKETS_RESERVED_SPACE(buckets_get_count(buckets));
+  if (c.device_offset < offset + buckets_space) {
+    DEBUG_TS_LOG("Writing buckets area change: %lu, %u bytes", c.device_offset - offset, c.len);
+    return;
+  }
+  offset += buckets_space;
+  DEBUG_TS_LOG("Writing heap area change: %lu, %u bytes", c.device_offset - offset, c.len);
+}
+
 static inline void record_bucket_pointer_change(
   thread_state_t* state,
   change_data_pool_writer_t* change_data_writer,
@@ -167,6 +192,7 @@ void visit_bucket_dirty_bitmap(
     for (uint64_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
       uint64_t bkt_id = base + i1;
       bucket_t* v = buckets_get_bucket(state->buckets, bkt_id);
+      DEBUG_TS_LOG("Bucket %lu head has changed to tile %u offset %u", bkt_id, v->tile, v->tile_offset);
       record_bucket_pointer_change(state, change_data_writer, bkt_id, v->tile, v->tile_offset);
     }
   } else {
@@ -179,7 +205,7 @@ void visit_bucket_dirty_bitmap(
 
 void* thread(void* state_raw) {
   thread_state_t* state = (thread_state_t*) state_raw;
-  ts_log(DEBUG, "Started flush worker");
+  ts_log(INFO, "Started flush worker");
 
   while (true) {
     struct timespec sleep_req;
@@ -194,7 +220,7 @@ void* thread(void* state_raw) {
       continue;
     }
 
-    ts_log(DEBUG, "Starting flush");
+    DEBUG_TS_LOG("Starting flush");
     ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&state->flush->rwlock), "acquire write lock on flushing");
 
     // We acquire a flushing lock first to ensure all inodes have been completely written to mmap with valid "next" and "hash" field values.
@@ -245,8 +271,8 @@ void* thread(void* state_raw) {
       while (ino_tile) {
         uint64_t ino_dev_offset = (TILE_SIZE * ino_tile) + ino_tile_offset;
         cursor_t* cur = state->dev->mmap + ino_dev_offset;
-        ino_tile = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE);
-        ino_tile_offset = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET);
+        uint32_t next_ino_tile = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE);
+        uint32_t next_ino_tile_offset = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET);
         ino_state_t ino_state = cur[INO_OFFSETOF_STATE];
         uint64_t ino_obj_no = read_u64(cur + INO_OFFSETOF_OBJ_NO);
         bool skip_inode = false;
@@ -254,6 +280,7 @@ void* thread(void* state_raw) {
           ino_state == INO_STATE_DELETED ||
           (ino_state == INO_STATE_READY && kh_get_str_set(state->key_pool, (char*) (cur + INO_OFFSETOF_KEY)) != kh_end(state->key_pool))
         ) {
+          DEBUG_TS_LOG("Will delete inode with key %s, object number %lu, and state %d", cur + INO_OFFSETOF_KEY, ino_obj_no, ino_state);
           skip_inode = true;
           // We can safely modify the freelist because no create_object methods can be running right now. Also, since no create_object can run during the entire flush, we can be sure the freed tiles won't be immediately used, causing readers to read overwritten data.
           freelist_replenish_tiles_of_inode(state->fl, cur);
@@ -270,6 +297,7 @@ void* thread(void* state_raw) {
           };
           events_pending_flush_append(state->stream->pending_flush, ev);
         } else if (ino_state == INO_STATE_COMMITTED) {
+          DEBUG_TS_LOG("Will commit inode with key %s, object number %lu, and state %d", cur + INO_OFFSETOF_KEY, ino_obj_no, ino_state);
           // Delete other objects with same key.
           // Because newer objects are prepended (not appended) to a bucket's inode list, and newer objects have higher object numbers than older ones, we assume that any existing object with the same key will come further down the list (and we haven't already past them).
           int kh_res;
@@ -312,6 +340,8 @@ void* thread(void* state_raw) {
           }
           previous_inode_dev_offset = ino_dev_offset;
         }
+        ino_tile = next_ino_tile;
+        ino_tile_offset = next_ino_tile_offset;
       }
       // Update tail inode.
       if (previous_inode_dev_offset) {
@@ -326,18 +356,20 @@ void* thread(void* state_raw) {
           change_data_pool_append_u24(change_data_writer, 0)
         );
       }
-      if (head_inode_dev_offset != original_head_inode_dev_offset) {
-        // NOTE: We don't actually modify the real in-memory bucket pointer, as we haven't committed the changes to the inodes list on the heap yet.
-        // TODO This might be duplicated with dirty bucket updates.
-        record_bucket_pointer_change(
-          state,
-          change_data_writer,
-          bkt_id,
-          original_head_inode_dev_offset / TILE_SIZE,
-          original_head_inode_dev_offset % TILE_SIZE
-        );
-      }
       ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release read lock on bucket");
+      // Update bucket head.
+      if (head_inode_dev_offset != original_head_inode_dev_offset) {
+        // NOTE: We modify the real in-memory bucket pointer, even though we haven't committed the changes to the inodes list on the heap yet, to avoid having to track and apply this separately for later.
+        uint32_t new_head_tile = head_inode_dev_offset / TILE_SIZE;
+        uint32_t new_head_tile_offset = head_inode_dev_offset % TILE_SIZE;
+        DEBUG_TS_LOG("Updating head of bucket %lu to tile %u offset %u", bkt_id, new_head_tile, new_head_tile_offset);
+        buckets_mark_bucket_as_dirty_without_locking(state->buckets, bkt_id);
+
+        ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&bkt->lock), "acquire write lock on bucket");
+        bkt->tile = new_head_tile;
+        bkt->tile_offset = new_head_tile_offset;
+        ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release write lock on bucket");
+      }
     }
     state->bucket_id_pool->len = 0;
 
@@ -414,7 +446,6 @@ void* thread(void* state_raw) {
 
     // Record bucket pointer changes.
     if (buckets_get_dirty_bitmap_layer(state->buckets, 0)[0]) {
-      ts_log(DEBUG, "Bucket pointers have changed");
       visit_bucket_dirty_bitmap(state, change_data_writer, buckets_get_dirty_bitmap_layer(state->buckets, 0)[0], 0, 0);
     }
 
@@ -437,6 +468,7 @@ void* thread(void* state_raw) {
           ASSERT_ERROR_RETVAL_OK(lock_error, "acquire write lock on bucket");
         }
       }
+      ts_log_debug_writing_change(c, state->buckets);
       memcpy(state->dev->mmap + c.device_offset, state->change_data_pool + c.offset_in_change_data_pool, c.len);
       if (bkt != NULL) {
         if (--bkt->pending_flush_changes == 0) {
@@ -464,7 +496,7 @@ void* thread(void* state_raw) {
     ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&state->flush->rwlock), "release write lock on flushing");
 
     server_on_flush_end(state->svr);
-    ts_log(DEBUG, "Flush ended");
+    DEBUG_TS_LOG("Flush ended");
   }
 }
 

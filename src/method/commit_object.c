@@ -54,7 +54,7 @@ method_commit_object_state_t* method_commit_object_state_create(
     PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
 
-  ts_log(DEBUG, "commit_object(key=%s, obj_no=%lu)", args->key.data.bytes, args->obj_no);
+  DEBUG_TS_LOG("commit_object(key=%s, obj_no=%lu)", args->key.data.bytes, args->obj_no);
 
   return args;
 }

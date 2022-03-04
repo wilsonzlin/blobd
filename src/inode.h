@@ -35,15 +35,15 @@ u8[] last_tile_data_if_mode_is_inline
 #define INO_OFFSETOF_KEY_LEN (INO_OFFSETOF_LAST_TILE_MODE + 1)
 #define INO_OFFSETOF_KEY (INO_OFFSETOF_KEY_LEN + 1)
 #define INO_OFFSETOF_KEY_NULL_TERM(key_len) (INO_OFFSETOF_KEY + (key_len))
-#define INO_OFFSETOF_TILE_NO(key_len, tile) (INO_OFFSETOF_KEY_NULL_TERM(key_len) + 3 * (tile))
+#define INO_OFFSETOF_TILE_NO(key_len, tile) ((INO_OFFSETOF_KEY_NULL_TERM(key_len)) + 1 + 3 * (tile))
 #define INO_OFFSETOF_TILES(key_len) (INO_OFFSETOF_TILE_NO(key_len, 0))
 #define INO_OFFSETOF_LAST_TILE_INLINE_DATA(key_len, full_tile_count) (INO_OFFSETOF_TILE_NO(key_len, full_tile_count))
 
 typedef enum {
-  INO_STATE_INCOMPLETE = 1 << 1,
-  INO_STATE_COMMITTED = 1 << 2,
-  INO_STATE_READY = 1 << 3,
-  INO_STATE_DELETED = 1 << 4,
+  INO_STATE_INCOMPLETE = 1 << 0,
+  INO_STATE_COMMITTED = 1 << 1,
+  INO_STATE_READY = 1 << 2,
+  INO_STATE_DELETED = 1 << 3,
 } ino_state_t;
 
 typedef enum {

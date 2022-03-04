@@ -72,7 +72,7 @@ method_read_object_state_t* method_read_object_state_create(
     PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
 
-  ts_log(DEBUG, "read_object(key=%s, start=%ld, end=%ld)", args->key.data.bytes, args->arg_start, args->arg_end);
+  DEBUG_TS_LOG("read_object(key=%s, start=%ld, end=%ld)", args->key.data.bytes, args->arg_start, args->arg_end);
 
   return args;
 }

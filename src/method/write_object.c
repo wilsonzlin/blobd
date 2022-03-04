@@ -66,7 +66,7 @@ method_write_object_state_t* method_write_object_state_create(
     PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
 
-  ts_log(DEBUG, "write_object(key=%s, obj_no=%lu, start=%ld)", args->key.data.bytes, args->obj_no, args->start);
+  DEBUG_TS_LOG("write_object(key=%s, obj_no=%lu, start=%ld)", args->key.data.bytes, args->obj_no, args->start);
 
   return args;
 }
@@ -125,7 +125,7 @@ svr_client_result_t method_write_object(
     goto final;
   }
 
-  int readno = maybe_read(client_fd, write_offset, write_max_len - args->written);
+  int readno = maybe_read(client_fd, write_offset + args->written, write_max_len - args->written);
   if (-1 == readno) {
     res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
     goto final;

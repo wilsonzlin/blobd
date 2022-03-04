@@ -53,7 +53,7 @@ buckets_t* buckets_create_from_disk_state(
   }
   ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&bkts->dirty_pointers_rwlock, NULL), "initialise buckets lock");
 
-  ts_log(DEBUG, "Loading %zu buckets", bkts->count);
+  ts_log(INFO, "Loading %zu buckets", bkts->count);
   cursor_t* cur = dev->mmap + bkts->dev_offset_pointers;
   bkts->buckets = malloc(sizeof(bucket_t) * bkts->count);
   for (uint64_t bkt_id = 0; bkt_id < bkts->count; bkt_id++) {
@@ -68,9 +68,13 @@ buckets_t* buckets_create_from_disk_state(
   bkts->pending_delete_or_commit = kh_init_buckets_pending_delete_or_commit();
   ASSERT_ERROR_RETVAL_OK(pthread_mutex_init(&bkts->pending_delete_or_commit_lock, NULL), "initialise buckets pending delete or commit lock");
 
-  ts_log(DEBUG, "Loaded buckets");
+  ts_log(INFO, "Loaded buckets");
 
   return bkts;
+}
+
+uint64_t buckets_get_count(buckets_t* bkts) {
+  return bkts->count;
 }
 
 uint64_t buckets_get_bucket_id_for_key(buckets_t* bkts, uint8_t* key, uint8_t key_len) {

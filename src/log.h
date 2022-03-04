@@ -20,6 +20,7 @@ void log_direct(char const* subsystem, log_level_t lvl, char const* format, va_l
 
 // Avoid conflicting with builtin "log" function.
 #define LOGGER(subsystem) \
+  static void ts_log(log_level_t lvl, char const* format, ...) __attribute__((unused)); \
   static void ts_log(log_level_t lvl, char const* format, ...) { \
     va_list args; \
     va_start(args, format); \

@@ -54,7 +54,7 @@ method_delete_object_state_t* method_delete_object_state_create(
     PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
   }
 
-  ts_log(DEBUG, "delete_object(key=%s, obj_no=%lu)", args->key.data.bytes, args->obj_no_or_zero);
+  DEBUG_TS_LOG("delete_object(key=%s, obj_no=%lu)", args->key.data.bytes, args->obj_no_or_zero);
 
   return args;
 }

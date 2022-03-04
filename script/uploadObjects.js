@@ -53,7 +53,7 @@ const conn = net.createConnection({
   path: "/tmp/turbostore.sock",
 });
 
-const randomData = fs.readFileSync(`${__dirname}/random-data.bin`);
+const DATA = Buffer.from("DEADBEEF".repeat(1024 / 8));
 
 const uploadFiles = async () => {
   for (let no = 0; no < FILES; no++) {
@@ -68,7 +68,7 @@ const uploadFiles = async () => {
     }));
     console.log(`create_object => ${objNo}`);
     conn.write(write_object(k, objNo, 0));
-    conn.write(randomData.slice(no * FILE_SIZE, (no + 1) * FILE_SIZE));
+    conn.write(DATA);
     await new Promise(resolve => conn.once("data", chunk => {
       if (chunk.length != 1) throw new Error(`Invalid write_object response: ${chunk}`);
       const err = chunk[0];
