@@ -29,4 +29,6 @@ typedef struct {
 
 device_t* device_create(void* mmap, uint64_t size);
 
+void device_sync(device_t* dev);
+
 void device_format(device_t* dev, uint8_t bucket_count_log2);

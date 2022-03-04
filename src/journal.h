@@ -34,3 +34,5 @@ void journal_append(journal_t* jnl, uint64_t dev_offset, uint32_t len);
 void journal_flush(journal_t* jnl);
 
 void journal_clear(journal_t* jnl);
+
+void journal_apply_or_clear(journal_t* jnl);

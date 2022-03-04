@@ -230,7 +230,7 @@ void* thread(void* state_raw) {
     ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&state->flush->rwlock), "acquire write lock on flushing");
 
     // We acquire a flushing lock first to ensure all inodes have been completely written to mmap with valid "next" and "hash" field values.
-    msync(state->dev->mmap, state->dev->size, MS_SYNC);
+    device_sync(state->dev);
 
     // We collect changes to make first, and then write to journal. This allows two optimisations:
     // - Avoiding paging in the journal until we need to.
@@ -486,7 +486,7 @@ void* thread(void* state_raw) {
       }
     }
     // We must ensure changes have been written successfully BEFORE erasing journal.
-    msync(state->dev->mmap, state->dev->size, MS_SYNC);
+    device_sync(state->dev);
     state->changes->len = 0;
 
     // Erase and flush journal.

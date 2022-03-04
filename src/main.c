@@ -111,6 +111,8 @@ int main(int argc, char** argv) {
 
   journal_t* journal = journal_create(dev, 0);
 
+  journal_apply_or_clear(journal);
+
   stream_t* stream = stream_create_from_device(dev, JOURNAL_RESERVED_SPACE);
 
   freelist_t* freelist = freelist_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE + STREAM_RESERVED_SPACE);

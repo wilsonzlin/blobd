@@ -27,6 +27,13 @@ device_t* device_create(void* mmap, uint64_t size) {
   return dev;
 }
 
+void device_sync(device_t* dev) {
+  if (-1 == msync(dev->mmap, dev->size, MS_SYNC)) {
+    perror("Failed to sync mmap to device");
+    exit(EXIT_INTERNAL);
+  }
+}
+
 // Repeat the `entry_size` bytes at `dest` `entries - 1` times.
 static inline void memcpy_repeat(void* dest, uint64_t entry_size, uint64_t entries) {
   for (
@@ -83,10 +90,7 @@ void device_format(device_t* dev, uint8_t bucket_count_log2) {
   memset(bkt_cur, 0, bkt_cnt * 6);
 
   ts_log(INFO, "Synchronising");
-  if (-1 == msync(dev->mmap, dev->size, MS_SYNC)) {
-    perror("Failed to sync mmap to device");
-    exit(EXIT_INTERNAL);
-  }
+  device_sync(dev);
 
   ts_log(INFO, "All done!");
 }

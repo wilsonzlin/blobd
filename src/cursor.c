@@ -33,6 +33,16 @@ uint64_t read_u40(cursor_t* cur) {
   return v;
 }
 
+uint64_t read_u48(cursor_t* cur) {
+  uint64_t v = cur[0];
+  v = (v << 8) | cur[1];
+  v = (v << 8) | cur[2];
+  v = (v << 8) | cur[3];
+  v = (v << 8) | cur[4];
+  v = (v << 8) | cur[5];
+  return v;
+}
+
 int64_t read_i64(cursor_t* cur) {
   int64_t v;
   memcpy(&v, cur, 8);
@@ -60,6 +70,12 @@ uint32_t consume_u24(cursor_t** cur) {
 uint32_t consume_u32(cursor_t** cur) {
   uint32_t v = read_u32(*cur);
   *cur += 4;
+  return v;
+}
+
+uint64_t consume_u48(cursor_t** cur) {
+  uint64_t v = read_u48(*cur);
+  *cur += 6;
   return v;
 }
 
