@@ -27,6 +27,7 @@ sacli.Command.new("uploadObjects")
     await wg;
     const effectiveSec = Number(process.hrtime.bigint() - startTime) / 1e9;
     console.log(`Effective time: ${effectiveSec} seconds`);
+    console.log(`Effective processing rate: ${args.count / effectiveSec} per second`);
     console.log(`Effective bandwidth: ${data.length * args.count / 1024 / 1024 / effectiveSec} MiB/s`);
     await Promise.all(pool.map(conn => conn.close()));
   })
