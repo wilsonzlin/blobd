@@ -34,7 +34,7 @@
   void name##_append(name##_t* list, type_t elem) { \
     if (list->len == list->cap) { \
       uint64_t new_cap = list->cap * 2; \
-      list->elems = realloc(list->elems, new_cap); \
+      list->elems = realloc(list->elems, sizeof(type_t) * new_cap); \
       list->cap = new_cap; \
     } \
     list->elems[list->len++] = elem; \

@@ -70,6 +70,16 @@ const write_object = (key, objNo, start) => {
   return buildArgs(4, argsRaw);
 };
 
+const awaitRead = async (stream, n) => {
+  while (true) {
+    const chunk = stream.read(n);
+    if (chunk) {
+      return chunk;
+    }
+    await new Promise(resolve => stream.once("readable", resolve));
+  }
+};
+
 class Connection {
   constructor() {
     this.socket = net.createConnection({
@@ -86,9 +96,8 @@ class Connection {
 
   commitObject(key, objNo) {
     return this._enqueue(async () => {
-      console.log("commit_object", key);
       this.socket.write(commit_object(key, objNo));
-      const chunk = await new Promise(resolve => this.socket.once("data", resolve));
+      const chunk = await awaitRead(this.socket, 1);
       if (chunk.length != 1) throw new Error(`Invalid commit_object response: ${chunk}`);
       const err = chunk[0];
       if (err != 0) throw new Error(`commit_object error: ${err}`);
@@ -97,9 +106,8 @@ class Connection {
 
   createObject(key, size) {
     return this._enqueue(async () => {
-      console.log("create_object", key);
       this.socket.write(create_object(key, size));
-      const chunk = await new Promise(resolve => this.socket.once("data", resolve));
+      const chunk = await awaitRead(this.socket, 9);
       if (chunk.length != 9) throw new Error(`Invalid create_object response: ${chunk}`);
       const err = chunk[0];
       if (err != 0) throw new Error(`create_object error: ${err}`);
@@ -112,9 +120,8 @@ class Connection {
 
   inspectObject(key) {
     return this._enqueue(async () => {
-      console.log("inspect_object", key);
       this.socket.write(inspect_object(key));
-      const chunk = await new Promise(resolve => this.socket.once("data", resolve));
+      const chunk = await awaitRead(this.socket, 10);
       if (chunk.length != 10) throw new Error(`Invalid inspect_object response: ${chunk}`);
       const err = chunk[0];
       if (err != 0) throw new Error(`inspect_object error: ${err}`);
@@ -129,34 +136,27 @@ class Connection {
 
   readObject(key, start, end) {
     return this._enqueue(async () => {
-      console.log("read_object", key);
       this.socket.write(read_object(key, start, end));
-      const chunk = await new Promise(resolve => this.socket.once("data", resolve));
+      const chunk = await awaitRead(this.socket, 17);
       if (chunk.length != 17) throw new Error(`Invalid read_object response: ${chunk}`);
       const err = chunk[0];
       if (err != 0) throw new Error(`read_object error: ${err}`);
       const actualStart = bigIntToNumber(chunk.readBigUInt64BE(1));
       const actualLength = bigIntToNumber(chunk.readBigUInt64BE(9));
-      while (true) {
-        const data = this.socket.read(actualLength);
-        if (data) {
-          return {
-            data,
-            actualStart,
-            actualLength,
-          };
-        }
-        await new Promise(resolve => this.socket.once("readable", resolve));
-      }
+      const data = await awaitRead(this.socket, actualLength);
+      return {
+        data,
+        actualStart,
+        actualLength,
+      };
     });
   }
 
   writeObject(key, objNo, start, data) {
     return this._enqueue(async () => {
-      console.log("write_object", key);
       this.socket.write(write_object(key, objNo, start));
       this.socket.write(data);
-      const chunk = await new Promise(resolve => this.socket.once("data", resolve));
+      const chunk = await awaitRead(this.socket, 1);
       if (chunk.length != 1) throw new Error(`Invalid write_object response: ${chunk}`);
       const err = chunk[0];
       if (err != 0) throw new Error(`write_object error: ${err}`);
