@@ -96,7 +96,7 @@ static inline void change_data_pool_append(change_data_pool_writer_t* writer, ui
     }
     writer->state->change_data_pool = realloc(writer->state->change_data_pool, writer->state->change_data_pool_cap);
   }
-  memcpy(writer->state->change_data_pool, data, len);
+  memcpy(writer->state->change_data_pool + writer->change_data_next, data, len);
   writer->change_data_next += len;
 }
 
@@ -126,16 +126,21 @@ static inline uint32_t change_data_pool_append_u64(change_data_pool_writer_t* wr
   return 8;
 }
 
-#define __RECORD_CHANGE(dev_offset, requires_write_lock_on_bucket_id, change_exprs_added) \
-  append_change(state->changes, change_data_writer->change_data_next, dev_offset, change_exprs_added, requires_write_lock_on_bucket_id)
+// WARNING: Function call argument evaluation order is undefined in C, so we cannot rely on it to simplify this expression. We must get `change_data_next` before evaluating `c1`/`c2`/`c3`.
+// We avoid `(c1) + (c2) + (c3)` as the evaluation order is unspecified.
+// NOTE: This is only supported by GCC (https://gcc.gnu.org/onlinedocs/gcc/Statement-Exprs.html).
+#define __RECORD_CHANGE(dev_offset, requires_write_lock_on_bucket_id, c1, c2, c3) \
+  ({ uint64_t __cdn = change_data_writer->change_data_next; uint32_t __len = c1; __len += c2; __len += c3; append_change(state->changes, __cdn, dev_offset, __len, requires_write_lock_on_bucket_id); })
 
-#define RECORD_CHANGE1_BUCKET(dev_offset, bkt_id, c1) __RECORD_CHANGE(dev_offset, bkt_id, c1)
+#define RECORD_CHANGE1_BUCKET(dev_offset, bkt_id, c1) __RECORD_CHANGE(dev_offset, bkt_id, c1, 0, 0)
 
 #define RECORD_CHANGE1(dev_offset, c1) RECORD_CHANGE1_BUCKET(dev_offset, 0, c1)
 
-#define RECORD_CHANGE2(dev_offset, c1, c2) __RECORD_CHANGE(dev_offset, 0, (c1) + (c2))
+#define RECORD_CHANGE2_BUCKET(dev_offset, bkt_id, c1, c2) __RECORD_CHANGE(dev_offset, bkt_id, c1, c2, 0)
 
-#define RECORD_CHANGE3_BUCKET(dev_offset, bkt_id, c1, c2, c3) __RECORD_CHANGE(dev_offset, bkt_id, (c1) + (c2) + (c3))
+#define RECORD_CHANGE2(dev_offset, c1, c2) RECORD_CHANGE2_BUCKET(dev_offset, 0, c1, c2)
+
+#define RECORD_CHANGE3_BUCKET(dev_offset, bkt_id, c1, c2, c3) __RECORD_CHANGE(dev_offset, bkt_id, c1, c2, c3)
 
 #define RECORD_CHANGE3(dev_offset, c1, c2, c3) RECORD_CHANGE3_BUCKET(dev_offset, 0, c1, c2, c3)
 
@@ -155,6 +160,7 @@ static inline void ts_log_debug_writing_change(change_t c, buckets_t* buckets) {
     DEBUG_TS_LOG("Writing freelist area change: %lu, %u bytes", c.device_offset - offset, c.len);
     return;
   }
+  offset += FREELIST_RESERVED_SPACE;
   uint64_t buckets_space = BUCKETS_RESERVED_SPACE(buckets_get_count(buckets));
   if (c.device_offset < offset + buckets_space) {
     DEBUG_TS_LOG("Writing buckets area change: %lu, %u bytes", c.device_offset - offset, c.len);
@@ -426,10 +432,13 @@ void* thread(void* state_raw) {
     // Record stream changes.
     // NOTE: Do this after processing object deletes/commits, as those create events.
     if (state->stream->pending_flush->len) {
+      uint64_t new_obj_no = atomic_load_explicit(&state->stream->next_obj_no, memory_order_relaxed);
+      uint64_t new_seq_no = atomic_load_explicit(&state->stream->next_seq_no, memory_order_relaxed);
+      DEBUG_TS_LOG("New object number is %lu, sequence number %lu", new_obj_no, new_seq_no);
       RECORD_CHANGE2(
         state->stream->dev_offset,
-        change_data_pool_append_u64(change_data_writer, atomic_load_explicit(&state->stream->next_obj_no, memory_order_relaxed)),
-        change_data_pool_append_u64(change_data_writer, atomic_load_explicit(&state->stream->next_seq_no, memory_order_relaxed))
+        change_data_pool_append_u64(change_data_writer, new_obj_no),
+        change_data_pool_append_u64(change_data_writer, new_seq_no)
       );
       for (uint64_t i = 0; i < state->stream->pending_flush->len; i++) {
         stream_event_t* ev = state->stream->pending_flush->elems + i;

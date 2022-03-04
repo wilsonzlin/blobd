@@ -18,9 +18,12 @@
 #include "flush.h"
 #include "flushstate.h"
 #include "freelist.h"
+#include "log.h"
 #include "server.h"
 #include "tile.h"
 #include "util.h"
+
+LOGGER("main");
 
 int main(int argc, char** argv) {
   if (argc != 4) {
@@ -43,6 +46,8 @@ int main(int argc, char** argv) {
     perror("Failed to get block device size");
     exit(EXIT_INTERNAL);
   }
+
+  ts_log(INFO, "Block device %s has size %lu", arg_dev, dev_size);
 
   // Do not use MAP_PRIVATE as that requires reserving memory upfront.
   char* dev_mmap = mmap(NULL, dev_size, PROT_READ | PROT_WRITE, MAP_SHARED_VALIDATE, dev_fd, 0);

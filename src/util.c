@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #include "util.h"
 #include "vec.h"
@@ -58,7 +59,8 @@ int maybe_read(int fd, uint8_t* out_buf, uint64_t n) {
 // `n` must be nonzero.
 // Returns -1 on error or close, 0 on not ready, and nonzero on (partial) read.
 int maybe_write(int fd, uint8_t* in_buf, uint64_t n) {
-  int writeno = write(fd, in_buf, n);
+  // We must use `send` with MSG_NOSIGNAL over `write` in order to prevent SIGPIPE when trying to write to a closed connection.
+  int writeno = send(fd, in_buf, n, MSG_NOSIGNAL);
   if (writeno == -1) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       return 0;

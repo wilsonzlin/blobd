@@ -23,15 +23,15 @@
   }
 
 #ifdef TURBOSTORE_DEBUG
-#define DEBUG_ASSERT_STATE(chk, msg, ...) ASSERT_STATE(chk, msg, __VA_ARGS__);
+#define DEBUG_ASSERT_STATE(chk, msg, ...) ASSERT_STATE(chk, msg, ##__VA_ARGS__)
 #else
-#define DEBUG_ASSERT_STATE(chk, msg, ...) ((void) 0);
+#define DEBUG_ASSERT_STATE(chk, msg, ...) ((void) 0)
 #endif
 
 #ifdef TURBOSTORE_DEBUG
-#define DEBUG_TS_LOG(msg, ...) DEBUG_TS_LOG(msg, __VA_ARGS__);
+#define DEBUG_TS_LOG(msg, ...) ts_log(DEBUG, msg, ##__VA_ARGS__)
 #else
-#define DEBUG_TS_LOG(msg, ...) ((void) 0);
+#define DEBUG_TS_LOG(msg, ...) ((void) 0)
 #endif
 
 uint64_t min(uint64_t a, uint64_t b);

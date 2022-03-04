@@ -302,6 +302,7 @@ freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint32
 
   // TODO assert cur_usage >= bytes_needed.
   uint32_t new_free = cur_free - bytes_needed;
+  DEBUG_TS_LOG("Microtile %u now has %u free space", microtile_addr, new_free);
   fl->microtile_free_map_6[i1][i2][i3][i4][i5].elems[i6] = (new_free << 8) | i6;
   fl->microtile_free_map_5[i1][i2][i3][i4].elems[i5] = (_mm512_reduce_max_epu32(fl->microtile_free_map_6[i1][i2][i3][i4][i5].vec) & ~15) | i5;
   fl->microtile_free_map_4[i1][i2][i3].elems[i4] = (_mm512_reduce_max_epu32(fl->microtile_free_map_5[i1][i2][i3][i4].vec) & ~15) | i4;

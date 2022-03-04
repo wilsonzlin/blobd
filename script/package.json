@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "dependencies": {
+    "@xtjs/lib": "^0.39.7",
+    "sacli": "^4.0.4"
+  }
+}
