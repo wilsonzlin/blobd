@@ -1,7 +1,17 @@
 import Plot from "react-plotly.js";
 import { AxisType } from "plotly.js";
-import React from "react";
+import React, { useMemo, useState } from "react";
 import ReactDOM from "react-dom";
+
+const distinctYTickVals = (yTickVals: number[]) => {
+  const distinct = [];
+  for (const v of yTickVals.sort((a, b) => a - b)) {
+    if (!distinct.length || v >= distinct[distinct.length - 1] * 2.5) {
+      distinct.push(v);
+    }
+  }
+  return distinct;
+};
 
 const formatBytes = (bytes: number) => {
   let p: string | undefined;
@@ -78,28 +88,28 @@ const tilesChartLayout = (props: {
     xTickVals: TILE_SIZES,
   });
 
-const TILE_PTR_WIDTH = 32;
+const TILE_PTR_WIDTH = 24;
 const OBJ_SIZE_IN_TILE_UNITS_WIDTH = 16;
 
 const TILE_SIZES = [
-  8, 16, 64, 128, 1024, 2048, 4096, 8192, 16384, 65536, 131072, 524288, 1048576,
-  4194304, 8388608, 16777216,
+  8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,
+  4194304, 8388608, 16777216, 33554432, 67108864
 ];
 const TILE_SIZES_FMT = TILE_SIZES.map(formatBytes);
 
 const OBJ_SIZES = [
-  1024 * 50,
-  1024 * 120,
-  1024 * 270,
-  1024 * 1024 * 1.2,
-  1024 * 1024 * 6,
-  1024 * 1024 * 20,
-  1024 * 1024 * 80,
-  1024 * 1024 * 190,
-  1024 * 1024 * 450,
-  1024 * 1024 * 1024 * 1.3,
-  1024 * 1024 * 1024 * 4.5,
-  1024 * 1024 * 1024 * 13,
+  52497,
+  120094,
+  270662,
+  1273409,
+  6984770,
+  21338554,
+  80001001,
+  190991576,
+  455130717,
+  1537460911,
+  4900140055,
+  14383222003,
 ];
 
 const PHYSICAL_BYTES = TILE_SIZES.map((sz) => sz * 2 ** TILE_PTR_WIDTH);
@@ -181,25 +191,19 @@ const MaxObjCount = () => (
 
 // We use an absolute disk size to make aware of the actual physical impact.
 const DiskDataStructures = ({ diskSize }: { diskSize: number }) => {
-  const OVERHEADS = [8, 16, 32, 64, 128];
-  // We assume pathological worst case where every tile's address is recorded along with some other data (counted as overhead).
-  // Note that space reserved for this metadata cannot be used as tiles.
-  const calcYVal = (overheadBytes: number, tileSize: number) => {
-    const metadataBytesPerTile = TILE_PTR_WIDTH / 8 + overheadBytes;
-    const tiles = Math.ceil(diskSize / tileSize);
-    return metadataBytesPerTile * tiles;
-  };
-  const yTickVals = TILE_SIZES.map((tileSize) =>
-    calcYVal(OVERHEADS[2], tileSize)
-  );
+  const yTickVals = TILE_SIZES.map((microtileSize) => Math.ceil(diskSize / microtileSize) / 8);
   return (
     <Plot
-      data={OVERHEADS.map((overheadBytes) => ({
+      data={[{
         x: TILE_SIZES,
-        y: TILE_SIZES.map((tileSize) => calcYVal(overheadBytes, tileSize)),
-        name: `${formatBytes(overheadBytes)} overhead`,
-      }))}
-      layout={tilesChartLayout({
+        y: yTickVals,
+      }]}
+      layout={chartLayout({
+        xType: "log",
+        yType: "log",
+        xTitle: "Microtile size",
+        xTickText: TILE_SIZES_FMT,
+        xTickVals: TILE_SIZES,
         yTitle: "Storage used",
         marginLeft: 150,
         yTickVals,
@@ -216,23 +220,16 @@ const DiskDataStructures = ({ diskSize }: { diskSize: number }) => {
 
 // We use an absolute disk size to make aware of the actual physical impact.
 const BucketPointers = ({ diskSize }: { diskSize: number }) => {
-  const BUCKETS = Array(8)
+  const BUCKETS = Array(17)
     .fill(0)
     .map((_, i) => 2 ** (24 + i));
-  const BUCKET_POINTER_CHECKSUM_INTERVAL = [1, 2, 4, 8, 16, 32, 64, 128, 256];
-  const calcYVal = (buckets: number, bucketPointerChecksumInterval: number) => {
-    return buckets * 6 + Math.ceil(buckets / bucketPointerChecksumInterval) * 8;
-  };
-  const yTickVals = BUCKETS.map((bkts) =>
-    calcYVal(bkts, BUCKET_POINTER_CHECKSUM_INTERVAL[4])
-  );
+  const yTickVals = BUCKETS.map((bkts) => bkts * (TILE_PTR_WIDTH / 8 + 1));
   return (
     <Plot
-      data={BUCKET_POINTER_CHECKSUM_INTERVAL.map((bpci) => ({
+      data={[{
         x: BUCKETS,
-        y: BUCKETS.map((bkts) => calcYVal(bkts, bpci)),
-        name: `Checksum every ${bpci} bucket pointer${bpci == 1 ? "" : "s"}`,
-      }))}
+        y: yTickVals,
+      }]}
       layout={chartLayout({
         xType: "log",
         yType: "log",
@@ -258,7 +255,10 @@ const Inodes = ({ diskSize }: { diskSize: number }) => {
   const calcYVal = (objects: number, inodeSize: number) => {
     return objects * inodeSize;
   };
-  const yTickVals = OBJECTS.map((objects) => calcYVal(objects, INODE_SIZES[5]));
+  const yTickVals = [
+    ...OBJECTS.map((objects) => calcYVal(objects, INODE_SIZES[1])),
+    ...OBJECTS.map((objects) => calcYVal(objects, INODE_SIZES[5])),
+  ];
   return (
     <Plot
       data={INODE_SIZES.map((inodeSize) => ({
@@ -287,13 +287,14 @@ const Inodes = ({ diskSize }: { diskSize: number }) => {
 // We use an absolute disk size to make aware of the actual physical impact.
 const TileWaste = ({ diskSize }: { diskSize: number }) => {
   const calcYVal = (tileSize: number, objectSize: number) => {
-    const totalTiles = Math.ceil(diskSize / tileSize);
-    const totalObjects = totalTiles / Math.ceil(objectSize / tileSize);
-    return (tileSize / 2) * totalObjects;
+    const tilesUsedPerObject = Math.ceil(objectSize / tileSize);
+    const totalTiles = Math.floor(diskSize / tileSize);
+    const totalObjects = Math.floor(totalTiles / tilesUsedPerObject);
+    return (tileSize - (objectSize % tileSize)) * totalObjects;
   };
-  const yTickVals = TILE_SIZES.map((tileSize) =>
-    calcYVal(tileSize, OBJ_SIZES[7])
-  );
+  const yTickVals = distinctYTickVals(OBJ_SIZES.flatMap(objSize => TILE_SIZES.map((tileSize) =>
+    calcYVal(tileSize, objSize)
+  )));
   return (
     <Plot
       data={OBJ_SIZES.map((objSize) => ({
@@ -406,46 +407,52 @@ const WorstCaseExtents = ({ diskSize }: { diskSize: number }) => {
   );
 };
 
-const App = () => (
-  <div className="App">
-    <section>
-      <h1>Maximum volume sizes</h1>
-      <PhysicalBytes />
-    </section>
-    <section>
-      <h1>Maximum object sizes</h1>
-      <MaxObjSize />
-    </section>
-    <section>
-      <h1>Maximum object count</h1>
-      <MaxObjCount />
-    </section>
-    <section>
-      <h1>Disk data structure overhead, 16 TiB disk</h1>
-      <DiskDataStructures diskSize={16 * 1024 * 1024 * 1024 * 1024} />
-    </section>
-    <section>
-      <h1>Bucket pointers, 16 TiB disk</h1>
-      <BucketPointers diskSize={16 * 1024 * 1024 * 1024 * 1024} />
-    </section>
-    <section>
-      <h1>Inodes, 16 TiB disk</h1>
-      <Inodes diskSize={16 * 1024 * 1024 * 1024 * 1024} />
-    </section>
-    <section>
-      <h1>Tile waste, 16 TiB disk</h1>
-      <TileWaste diskSize={16 * 1024 * 1024 * 1024 * 1024} />
-    </section>
-    <section>
-      <h1>Block checksums, 16 TiB disk</h1>
-      <BlockChecksums diskSize={16 * 1024 * 1024 * 1024 * 1024} />
-    </section>
-    <section>
-      <h1>Object extents, 16 TiB disk</h1>
-      <WorstCaseExtents diskSize={16 * 1024 * 1024 * 1024 * 1024} />
-    </section>
-  </div>
-);
+const App = () => {
+  const [diskSize, setDiskSize] = useState(64 * 1024 * 1024 * 1024 * 1024);
+  const diskSizeFmt = useMemo(() => formatBytes(diskSize), [diskSize]);
+
+  return (
+    <div className="App">
+      <section>
+        <h1>Maximum volume sizes</h1>
+        <PhysicalBytes />
+      </section>
+      <section>
+        <h1>Maximum object sizes</h1>
+        <MaxObjSize />
+      </section>
+      <section>
+        <h1>Maximum object count</h1>
+        <MaxObjCount />
+      </section>
+      <section>
+        <h1>Freelist, {diskSizeFmt} disk</h1>
+        <p>Regardless of how we arrange the split between tile and microtile, we need one bit per microtile. The entire freelist must reside in memory.</p>
+        <DiskDataStructures diskSize={diskSize} />
+      </section>
+      <section>
+        <h1>Bucket pointers, {diskSizeFmt} disk</h1>
+        <BucketPointers diskSize={diskSize} />
+      </section>
+      <section>
+        <h1>Inodes, {diskSizeFmt} disk</h1>
+        <Inodes diskSize={diskSize} />
+      </section>
+      <section>
+        <h1>Tile waste, {diskSizeFmt} disk</h1>
+        <TileWaste diskSize={diskSize} />
+      </section>
+      <section>
+        <h1>Block checksums, {diskSizeFmt} disk</h1>
+        <BlockChecksums diskSize={diskSize} />
+      </section>
+      <section>
+        <h1>Object extents, {diskSizeFmt} disk</h1>
+        <WorstCaseExtents diskSize={diskSize} />
+      </section>
+    </div>
+  );
+};
 
 ReactDOM.render(
   <React.StrictMode>
