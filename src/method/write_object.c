@@ -93,12 +93,18 @@ svr_client_result_t method_write_object(
   cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_INCOMPLETE, args->obj_no);
 
   if (inode_cur == NULL) {
-    ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
+    // We close the connection in case the client has already written data, and ending without disconnecting would cause the queued data to be interpreted as the start of the next request.
+    // TODO Should we use some framing protocol or format so we don't have to close the connection?
+    res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
+    goto final;
   }
 
   uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
   if (args->start >= size) {
-    ERROR_RESPONSE(METHOD_ERROR_INVALID_START);
+    // We close the connection in case the client has already written data, and ending without disconnecting would cause the queued data to be interpreted as the start of the next request.
+    // TODO Should we use some framing protocol or format so we don't have to close the connection?
+    res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
+    goto final;
   }
 
   uint8_t ltm = inode_cur[INO_OFFSETOF_LAST_TILE_MODE];

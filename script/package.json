@@ -1,6 +1,7 @@
 {
   "private": true,
   "dependencies": {
+    "@turbostore/client": "file:../client/js/",
     "@xtjs/lib": "^0.39.7",
     "sacli": "^4.0.4"
   }

@@ -61,7 +61,14 @@ const read = async (stream: Readable, n?: number) => {
     if (chunk) {
       return chunk;
     }
-    await new Promise((resolve) => stream.once("readable", resolve));
+    await new Promise<void>((resolve, reject) => {
+      const handler = (error?: Error) => {
+        // "readable" is also emitted on end.
+        stream.off("error", handler).off("readable", handler);
+        error ? reject(error) : resolve();
+      };
+      stream.on("error", handler).on("readable", handler);
+    });
   }
 };
 
@@ -90,10 +97,24 @@ export class TurbostoreClient {
   private readonly socket: net.Socket;
   private onAvailable: Promise<unknown>;
 
-  constructor() {
+  constructor({
+    host,
+    // Must be provided to avoid crashing Node.js on connection errors while idle in the background.
+    onSocketError,
+    port,
+    unixSocketPath,
+  }: {
+    host?: string;
+    onSocketError: (error: Error) => void;
+    port?: number;
+    unixSocketPath?: string;
+  }) {
     this.socket = net.createConnection({
-      path: "/tmp/turbostore.sock",
+      host,
+      path: unixSocketPath,
+      port: port as any,
     });
+    this.socket.on("error", onSocketError);
     this.onAvailable = Promise.resolve();
   }
 
@@ -113,8 +134,9 @@ export class TurbostoreClient {
     return this._enqueue(async () => {
       this.socket.write(commit_object(key, objNo));
       const chunk = await read(this.socket, 1);
-      if (chunk.length != 1)
+      if (chunk.length != 1) {
         throw new Error(`Invalid commit_object response: ${chunk}`);
+      }
       const err = chunk[0];
       if (err != 0) throw new TurbostoreError("commit_object", err);
     });
@@ -124,8 +146,9 @@ export class TurbostoreClient {
     return this._enqueue(async () => {
       this.socket.write(create_object(key, size));
       const chunk = await read(this.socket, 9);
-      if (chunk.length != 9)
+      if (chunk.length != 9) {
         throw new Error(`Invalid create_object response: ${chunk}`);
+      }
       const err = chunk[0];
       if (err != 0) throw new TurbostoreError("create_object", err);
       const objNo = bigIntToNumber(chunk.readBigUInt64BE(1));
@@ -139,8 +162,9 @@ export class TurbostoreClient {
     return this._enqueue(async () => {
       this.socket.write(inspect_object(key));
       const chunk = await read(this.socket, 10);
-      if (chunk.length != 10)
+      if (chunk.length != 10) {
         throw new Error(`Invalid inspect_object response: ${chunk}`);
+      }
       const err = chunk[0];
       if (err != 0) throw new TurbostoreError("inspect_object", err);
       const state = chunk[1];
@@ -156,8 +180,9 @@ export class TurbostoreClient {
     return this._enqueue(async () => {
       this.socket.write(read_object(key, start, end));
       const chunk = await read(this.socket, 17);
-      if (chunk.length != 17)
+      if (chunk.length != 17) {
         throw new Error(`Invalid read_object response: ${chunk}`);
+      }
       const err = chunk[0];
       if (err != 0) throw new TurbostoreError("read_object", err);
       const actualStart = bigIntToNumber(chunk.readBigUInt64BE(1));
@@ -189,23 +214,43 @@ export class TurbostoreClient {
       if (data instanceof Uint8Array) {
         this.socket.write(data);
       } else {
-        // Keep writing until the server responds.
-        while (!this.socket.readableLength) {
+        while (
+          // Keep writing until the server responds.
+          !this.socket.readableLength &&
+          // The server may have disconnected.
+          this.socket.writable &&
+          // The source may have ended or been destroyed.
+          data.readable
+        ) {
+          if ((this.socket as any).writableNeedDrain) {
+            await new Promise<void>((resolve, reject) => {
+              const handler = (error?: Error) => {
+                this.socket.off("error", handler).off("drain", handler);
+                error ? reject(error) : resolve();
+              };
+              this.socket.on("error", handler).on("drain", handler);
+            });
+          }
+          if (!data.readableLength) {
+            await new Promise<void>((resolve, reject) => {
+              const handler = (error?: Error) => {
+                // "readable" is also emitted on end.
+                data.off("error", handler).off("readable", handler);
+                error ? reject(error) : resolve();
+              };
+              data.on("error", handler).on("readable", handler);
+            });
+          }
           let chunk;
-          if (
-            data.readable &&
-            this.socket.writable &&
-            (this.socket as any).writableNeedDrain &&
-            (chunk = data.read())
-          ) {
-            // TODO We need some framing protocol in case the server decides to fail the request early and then proceed to read the rest of the chunk as the start of another request.
+          if ((chunk = data.read())) {
             this.socket.write(chunk);
           }
         }
       }
       const chunk = await read(this.socket, 1);
-      if (chunk.length != 1)
+      if (chunk.length != 1) {
         throw new Error(`Invalid write_object response: ${chunk}`);
+      }
       const err = chunk[0];
       if (err != 0) throw new TurbostoreError("write_object", err);
     });
