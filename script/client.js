@@ -145,9 +145,16 @@ module.exports = class TurbostoreClient {
       if (err != 0) throw new Error(`read_object error: ${err}`);
       const actualStart = bigIntToNumber(chunk.readBigUInt64BE(1));
       const actualLength = bigIntToNumber(chunk.readBigUInt64BE(9));
-      const data = await read(this.socket, actualLength);
+      const data = [];
+      let drainedLength = 0;
+      while (drainedLength < actualLength) {
+        // Node.js will stall if we try to read in one go, because it'll refuse to buffer too much data, so we must drain in chunks.
+        const chunk = await read(this.socket);
+        drainedLength += chunk.length;
+        data.push(chunk);
+      }
       return {
-        data,
+        data: Buffer.concat(data, drainedLength),
         actualStart,
         actualLength,
       };
