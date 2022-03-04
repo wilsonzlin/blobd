@@ -18,9 +18,10 @@ sacli.Command.new("uploadObjects")
       const conn = pool[no % pool.length];
       const k = key(no);
       (async () => {
-        const {objectNumber} = await conn.createObject(k, args.size);
-        await conn.writeObject(k, objectNumber, 0, data);
-        await conn.commitObject(k, objectNumber);
+        const read = await conn.readObject(k, 0, 0);
+        if (read.actualStart !== 0 || read.actualLength !== data.length || !data.equals(read.data)) {
+          throw new Error(`Invalid read`);
+        }
         wg.done();
       })();
     }
