@@ -18,7 +18,6 @@
 #include "../util.h"
 #include "_common.h"
 #include "delete_object.h"
-#include "../../ext/xxHash/xxhash.h"
 
 LOGGER("method_delete_object");
 
@@ -70,33 +69,22 @@ svr_client_result_t method_delete_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
-  // We must acquire a bucket write lock in case someone else tries to commit the object or write to it, or the flusher is currently modifying the list of inodes by processing deletes/commits.
-  bool acquired_bkt_lock = false;
-  svr_client_result_t res;
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&bkt->lock), "acquire write lock on bucket");
-  acquired_bkt_lock = true;
 
-  ino_state_t allowed_states = (args->obj_no_or_zero ? (INO_STATE_INCOMPLETE | INO_STATE_COMMITTED) : 0) | INO_STATE_READY;
-  cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, allowed_states, args->obj_no_or_zero);
+  inode_t* prev = NULL;
+  inode_t* found = NULL;
+  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, &args->key, ctx->dev, (args->obj_no_or_zero ? INO_STATE_INCOMPLETE : 0) | INO_STATE_READY, args->obj_no_or_zero, bkt_ino, true, prev) {
+    found = bkt_ino;
+    break;
+  }
 
-  if (inode_cur == NULL) {
+  if (found == NULL) {
     ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
   }
 
-  inode_cur[INO_OFFSETOF_STATE] = INO_STATE_DELETED;
-
-  buckets_mark_bucket_as_pending_delete_or_commit(ctx->bkts, args->key.bucket);
+  flush_mark_inode_for_awaiting_deletion(ctx->flush, args->key.bucket, prev, found);
 
   args->response[0] = METHOD_ERROR_OK;
   args->response_written = 0;
-  res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
-
-  final:
-  if (acquired_bkt_lock && pthread_rwlock_unlock(&bkt->lock)) {
-    perror("Failed to release read lock on bucket");
-    exit(EXIT_INTERNAL);
-  }
-
-  return res;
+  return SVR_CLIENT_RESULT_AWAITING_FLUSH;
 }

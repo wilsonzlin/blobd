@@ -48,7 +48,6 @@ u24[16777216] microtile_free_space_in_bytes_or_16777215_if_free_tile_or_16777214
 
 typedef struct {
   uint64_t dev_offset;
-  pthread_rwlock_t rwlock;
   // Bits are set if they're free.
   uint64_t tile_bitmap_1;
   uint64_t tile_bitmap_2[64];

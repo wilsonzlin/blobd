@@ -1,7 +1,6 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,7 +17,6 @@
 #include "../util.h"
 #include "_common.h"
 #include "commit_object.h"
-#include "../../ext/xxHash/xxhash.h"
 
 LOGGER("method_commit_object");
 
@@ -70,31 +68,30 @@ svr_client_result_t method_commit_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
-  // We must acquire a bucket write lock in case someone else tries to delete the object or write to it, or the flusher is currently modifying the list of inodes by processing deletes/commits.
-  bool acquired_bkt_lock = false;
-  svr_client_result_t res;
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&bkt->lock), "acquire write lock on bucket");
-  acquired_bkt_lock = true;
 
-  cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_INCOMPLETE, args->obj_no);
+  inode_t* found = NULL;
+  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, &args->key, ctx->dev, INO_STATE_INCOMPLETE, args->obj_no, bkt_ino, false, NULL) {
+    found = bkt_ino;
+    break;
+  }
 
-  if (inode_cur == NULL) {
+  if (found == NULL) {
     ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
   }
 
-  inode_cur[INO_OFFSETOF_STATE] = INO_STATE_COMMITTED;
+  flush_mark_inode_as_committed(ctx->flush, args->key.bucket, found);
 
-  buckets_mark_bucket_as_pending_delete_or_commit(ctx->bkts, args->key.bucket);
+  // Ensure object is found first before deleting other objects.
+  inode_t* bkt_ino_prev = NULL;
+  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, args->key, ctx->dev, INO_STATE_READY, 0, bkt_ino, true, NULL) {
+    DEBUG_TS_LOG("Deleting existing ready inode with object number %lu", read_u64(other_inode_cur + INO_OFFSETOF_OBJ_NO));
+    flush_mark_inode_for_awaiting_deletion(ctx->flush, args->key.bucket, bkt_ino_prev, bkt_ino);
+  }
+
+  // TODO Mark for adding to stream.
 
   args->response[0] = METHOD_ERROR_OK;
   args->response_written = 0;
-  res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
-
-  final:
-  if (acquired_bkt_lock) {
-    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release read lock on bucket");
-  }
-
-  return res;
+  return SVR_CLIENT_RESULT_AWAITING_FLUSH;
 }

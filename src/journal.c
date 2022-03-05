@@ -23,6 +23,9 @@ journal_t* journal_create(device_t* dev, uint64_t dev_offset) {
   journal->mmap = dev->mmap + dev_offset;
   journal->cursor_next = dev->mmap + dev_offset + 8 + 4;
   journal->entry_count = 0;
+  uint8_t u32_0[4];
+  write_u32(u32_0, 0);
+  journal->xxhash_u32_0 = XXH3_64bits(u32_0, 4);
   return journal;
 }
 

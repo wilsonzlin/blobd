@@ -4,7 +4,7 @@
 #include <pthread.h>
 #include "bucket.h"
 #include "device.h"
-#include "flushstate.h"
+#include "flush.h"
 #include "freelist.h"
 #include "list.h"
 #include "stream.h"
@@ -45,6 +45,7 @@ typedef struct {
   device_t* dev;
   flush_state_t* flush;
   freelist_t* fl;
+  inodes_state_t* inodes_state;
   buckets_t* bkts;
   stream_t* stream;
 } svr_method_handler_ctx_t;
@@ -66,6 +67,7 @@ server_t* server_create(
   device_t* dev,
   flush_state_t* flush,
   freelist_t* fl,
+  inodes_state_t* inodes_state,
   buckets_t* bkts,
   stream_t* stream
 );

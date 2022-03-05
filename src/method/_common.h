@@ -6,6 +6,7 @@
 #include "../bucket.h"
 #include "../cursor.h"
 #include "../device.h"
+#include "../inode.h"
 #include "../server.h"
 #include "../util.h"
 
@@ -31,8 +32,7 @@ typedef enum {
 #define ERROR_RESPONSE(error) \
   args->response[0] = error; \
   args->response_written = 0; \
-  res = SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE; \
-  goto final
+  return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
 
 #define MAYBE_HANDLE_RESPONSE(state, response_len, client_fd, return_on_end) \
   if (state->response_written >= 0 && state->response_written < response_len) { \
@@ -68,7 +68,7 @@ method_error_t method_common_key_parse(
   method_common_key_t* out
 );
 
-cursor_t* method_common_find_inode_in_bucket(
+inode_t* method_common_find_inode_in_bucket_for_non_management(
   bucket_t* bkt,
   method_common_key_t* key,
   device_t* dev,

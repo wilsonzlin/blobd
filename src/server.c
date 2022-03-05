@@ -303,6 +303,7 @@ server_t* server_create(
   device_t* dev,
   flush_state_t* flush,
   freelist_t* fl,
+  inodes_state_t* inodes_state,
   buckets_t* bkts,
   stream_t* stream
 ) {
@@ -357,6 +358,7 @@ server_t* server_create(
   svr->svr_epoll_fd = svr_epoll_fd;
   svr->svr_socket_fd = svr_socket;
   svr->ctx = malloc(sizeof(svr_method_handler_ctx_t));
+  svr->ctx->inodes_state = inodes_state;
   svr->ctx->bkts = bkts;
   svr->ctx->dev = dev;
   svr->ctx->fl = fl;

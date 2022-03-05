@@ -88,24 +88,28 @@ svr_client_result_t method_read_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, false);
 
-  bool acquired_lock = false;
   svr_client_result_t res;
-  // We must look up again each time in case it has been deleted since we last held the lock.
-  // This may seem inefficient but it's better than holding the lock the entire time.
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&bkt->lock), "acquire read lock on bucket");
-  acquired_lock = true;
 
-  cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_READY, args->obj_no);
-  if (inode_cur == NULL) {
+  inode_t* found = method_common_find_inode_in_bucket_for_non_management(
+    bkt,
+    &args->key,
+    ctx->dev,
+    INO_STATE_INCOMPLETE,
+    args->obj_no
+  );
+
+  if (found == NULL) {
     if (args->response_written == -1) {
       ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
     }
     // The object has been deleted while we were reading it.
     // TODO Should we use some framing protocol or format so we don't have to close the connection?
+    ts_log(DEBUG, "Connection attempting to read from now-deleted object with key %s will be disconnected", args->key.data.bytes);
     res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
     goto final;
   }
+  cursor_t* inode_cur = ctx->dev + (TILE_SIZE * found->tile) + found->tile_offset;
   if (!args->obj_no) {
     args->obj_no = read_u64(inode_cur + INO_OFFSETOF_OBJ_NO);
     int64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
@@ -180,12 +184,11 @@ svr_client_result_t method_read_object(
     goto final;
   }
   res = SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
+  goto final;
 
   final:
-  if (acquired_lock && pthread_rwlock_unlock(&bkt->lock)) {
-    perror("Failed to release read lock on bucket");
-    exit(EXIT_INTERNAL);
+  if (found != NULL) {
+    atomic_fetch_sub_explicit(&found->refcount, 1, memory_order_relaxed);
   }
-
   return res;
 }

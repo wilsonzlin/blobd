@@ -41,12 +41,35 @@ u8[] last_tile_data_if_mode_is_inline
 
 typedef enum {
   INO_STATE_INCOMPLETE = 1 << 0,
-  INO_STATE_COMMITTED = 1 << 1,
-  INO_STATE_READY = 1 << 2,
-  INO_STATE_DELETED = 1 << 3,
+  INO_STATE_READY = 1 << 1,
+  INO_STATE_DELETED = 1 << 2,
 } ino_state_t;
 
 typedef enum {
   INO_LAST_TILE_MODE_INLINE = 0,
   INO_LAST_TILE_MODE_TILE = 1,
 } ino_last_tile_mode_t;
+
+typedef struct {
+  _Atomic(inode_t*) next;
+  _Atomic(ino_state_t) state;
+  _Atomic(uint64_t) refcount;
+  uint32_t tile;
+  uint32_t tile_offset;
+  // For inode.c internal use only.
+  inode_t* next_free_inode_in_pool;
+} inode_t;
+
+typedef struct inodes_state_s inodes_state_t;
+
+inodes_state_t* inodes_state_create();
+
+inode_t* inode_create_thread_unsafe(
+  inodes_state_t* inodes,
+  inode_t* next,
+  ino_state_t state,
+  uint32_t tile,
+  uint32_t tile_offset
+);
+
+void inode_destroy_thread_unsafe(inodes_state_t* inodes, inode_t* ino);

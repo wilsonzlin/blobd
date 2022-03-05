@@ -2,7 +2,6 @@
 
 #include <immintrin.h>
 #include <inttypes.h>
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,7 +25,6 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
   freelist_t* fl = aligned_alloc(64, sizeof(freelist_t));
   memset(fl, 0, sizeof(freelist_t));
   fl->dev_offset = dev_offset;
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&fl->rwlock, NULL), "initialise lock on freelist");
 
   ts_log(INFO, "Loading %zu tiles", dev->tile_count);
   for (uint64_t tile_no = 0; tile_no < dev->tile_count; tile_no++) {
@@ -185,8 +183,6 @@ void freelist_replenish_tiles_of_inode(freelist_t* fl, cursor_t* inode_cur) {
 
 // tiles_needed must be nonzero.
 void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out) {
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&fl->rwlock), "acquire write lock on freelist");
-
   uint64_t tiles_needed_orig = tiles_needed;
 
   vec_512i_u8_t i1_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_1);
@@ -217,24 +213,14 @@ void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out
     exit(EXIT_NO_SPACE);
   }
 
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&fl->rwlock), "release write lock on freelist");
-
   DEBUG_TS_LOG("Allocated %zu tiles", tiles_needed_orig);
 }
 
 uint32_t freelist_consume_one_tile(freelist_t* fl) {
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&fl->rwlock), "acquire write lock on freelist");
-
-  uint32_t tile = fast_allocate_one_tile(fl);
-
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&fl->rwlock), "release write lock on freelist");
-
-  return tile;
+  return fast_allocate_one_tile(fl);
 }
 
 freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed) {
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&fl->rwlock), "acquire write lock on freelist");
-
   __m512i y512 = _mm512_set1_epi32(bytes_needed << 8);
 
   uint32_t m1 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_1.vec, y512);
@@ -309,8 +295,6 @@ freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint32
   fl->microtile_free_map_3[i1][i2].elems[i3] = (_mm512_reduce_max_epu32(fl->microtile_free_map_4[i1][i2][i3].vec) & ~15) | i3;
   fl->microtile_free_map_2[i1].elems[i2] = (_mm512_reduce_max_epu32(fl->microtile_free_map_3[i1][i2].vec) & ~15) | i2;
   fl->microtile_free_map_1.elems[i1] = (_mm512_reduce_max_epu32(fl->microtile_free_map_2[i1].vec) & ~15) | i1;
-
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&fl->rwlock), "release write lock on freelist");
 
   return out;
 }

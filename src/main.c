@@ -16,9 +16,10 @@
 #include "device.h"
 #include "exit.h"
 #include "flush.h"
-#include "flushstate.h"
 #include "freelist.h"
+#include "inode.h"
 #include "log.h"
+#include "manager.h"
 #include "server.h"
 #include "tile.h"
 #include "util.h"
@@ -117,27 +118,26 @@ int main(int argc, char** argv) {
 
   freelist_t* freelist = freelist_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE + STREAM_RESERVED_SPACE);
 
-  buckets_t* buckets = buckets_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE + STREAM_RESERVED_SPACE + FREELIST_RESERVED_SPACE);
+  inodes_state_t* inodes_state = inodes_state_create();
 
-  flush_state_t* flush = flush_state_create();
+  buckets_t* buckets = buckets_create_from_disk_state(inodes_state, dev, JOURNAL_RESERVED_SPACE + STREAM_RESERVED_SPACE + FREELIST_RESERVED_SPACE);
+
+  flush_state_t* flush = flush_state_create(dev, journal, freelist, inodes_state, buckets, stream);
 
   server_t* svr = server_create(
     dev,
     flush,
     freelist,
+    inodes_state,
     buckets,
     stream
   );
 
-  flush_worker_start(
-    flush,
-    svr,
-    dev,
-    journal,
-    freelist,
-    buckets,
-    stream
-  );
+  manager_state_t* manager_state = manager_state_create();
+
+  manager_t* manager = manager_create(manager_state, svr);
+
+  manager_start(manager);
 
   server_start_loop(
     svr,

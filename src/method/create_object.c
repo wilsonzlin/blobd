@@ -1,7 +1,6 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -10,6 +9,7 @@
 #include "../cursor.h"
 #include "../device.h"
 #include "../exit.h"
+#include "../flush.h"
 #include "../inode.h"
 #include "../log.h"
 #include "../object.h"
@@ -19,7 +19,6 @@
 #include "../util.h"
 #include "_common.h"
 #include "create_object.h"
-#include "../../ext/xxHash/xxhash.h"
 
 LOGGER("method_create_object");
 
@@ -101,7 +100,6 @@ svr_client_result_t method_create_object(
     ltm = INO_LAST_TILE_MODE_INLINE;
   }
 
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&ctx->flush->rwlock), "acquire read lock on flushing");
   // Use 64-bit values as we'll multiply these to get device offset.
   uint64_t ino_addr_tile;
   uint64_t ino_addr_tile_offset;
@@ -114,8 +112,7 @@ svr_client_result_t method_create_object(
     ino_addr_tile_offset = c.microtile_offset;
   }
 
-  // We can use relaxed memory ordering as we have a lock on flushing.
-  uint64_t obj_no = atomic_fetch_add_explicit(&ctx->stream->next_obj_no, 1, memory_order_relaxed);
+  uint64_t obj_no = ctx->stream->next_obj_no++;
   DEBUG_TS_LOG("New object number is %lu, will go into bucket %lu", obj_no, args->key.bucket);
 
   cursor_t* inode_cur = ctx->dev->mmap + (ino_addr_tile * TILE_SIZE) + ino_addr_tile_offset;
@@ -134,19 +131,20 @@ svr_client_result_t method_create_object(
   }
   DEBUG_TS_LOG("Using %zu tiles and last tile mode %d", full_tiles, ltm);
 
-  buckets_mark_bucket_as_dirty(ctx->bkts, args->key.bucket);
-
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&bkt->lock), "acquire write lock on bucket");
-  DEBUG_TS_LOG("Next inode is at tile %u offset %u", bkt->tile, bkt->tile_offset);
-  write_u24(inode_cur + INO_OFFSETOF_NEXT_INODE_TILE, bkt->tile);
-  write_u24(inode_cur + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET, bkt->tile_offset);
-  DEBUG_TS_LOG("Wrote inode at tile %u offset %u", ino_addr_tile, ino_addr_tile_offset);
-  bkt->tile = ino_addr_tile;
-  bkt->tile_offset = ino_addr_tile_offset;
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release write lock on bucket");
 
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&ctx->flush->rwlock), "release read lock on flushing");
+  inode_t* bkt_ino_prev = NULL;
+  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, args->key, INO_STATE_INCOMPLETE, 0, bkt_ino, true, bkt_ino_prev) {
+    DEBUG_TS_LOG("Deleting incomplete inode with object number %lu", read_u64(other_inode_cur + INO_OFFSETOF_OBJ_NO));
+    flush_mark_inode_for_awaiting_deletion(ctx->flush, args->key.bucket, bkt_ino_prev, bkt_ino);
+  }
+
+  inode_t* bkt_head_old = atomic_load_explicit(&bkt->head, memory_order_relaxed);
+  DEBUG_TS_LOG("Next inode is at tile %u offset %u", bkt->tile, bkt->tile_offset);
+  inode_t* bkt_ino = inode_create_thread_unsafe(ctx->inodes_state, bkt_head_old, INO_STATE_INCOMPLETE, ino_addr_tile, ino_addr_tile_offset);
+  DEBUG_TS_LOG("Wrote inode at tile %u offset %u", ino_addr_tile, ino_addr_tile_offset);
+
+  buckets_mark_bucket_as_dirty(ctx->bkts, args->key.bucket);
 
   args->response[0] = METHOD_ERROR_OK;
   write_u64(args->response + 1, obj_no);

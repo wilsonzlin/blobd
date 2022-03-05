@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stdatomic.h>
 #include <stdint.h>
 #include "device.h"
 #include "list.h"
@@ -49,8 +48,8 @@ LIST_DEF(events_pending_flush, stream_event_t);
 typedef struct {
   device_t* dev;
   uint64_t dev_offset;
-  atomic_uint_least64_t next_obj_no __attribute__((aligned (16)));
-  atomic_uint_least64_t next_seq_no __attribute__((aligned (16)));
+  uint64_t next_obj_no;
+  uint64_t next_seq_no;
   events_pending_flush_t* pending_flush;
 } stream_t;
 

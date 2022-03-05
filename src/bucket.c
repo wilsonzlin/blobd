@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 
 #include <inttypes.h>
-#include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,14 +9,14 @@
 #include "cursor.h"
 #include "device.h"
 #include "exit.h"
+#include "inode.h"
 #include "log.h"
+#include "tile.h"
 #include "util.h"
 #include "../ext/klib/khash.h"
 #include "../ext/xxHash/xxhash.h"
 
 LOGGER("bucket");
-
-KHASH_SET_INIT_INT64(buckets_pending_delete_or_commit);
 
 struct buckets_s {
   uint64_t dev_offset_pointers;
@@ -24,14 +24,12 @@ struct buckets_s {
   uint64_t** dirty_pointers;
   // Must be at least 1.
   uint8_t dirty_pointers_layer_count;
-  pthread_rwlock_t dirty_pointers_rwlock;
   uint64_t count;
   uint64_t key_mask;
-  kh_buckets_pending_delete_or_commit_t* pending_delete_or_commit;
-  pthread_mutex_t pending_delete_or_commit_lock;
 };
 
 buckets_t* buckets_create_from_disk_state(
+  inodes_state_t* inodes_state,
   device_t* dev,
   uint64_t dev_offset
 ) {
@@ -51,22 +49,28 @@ buckets_t* buckets_create_from_disk_state(
   for (uint64_t i = 0, l = 1; i < dirty_layer_count; i++, l *= 64) {
     bkts->dirty_pointers[i] = calloc(l, sizeof(uint64_t));
   }
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&bkts->dirty_pointers_rwlock, NULL), "initialise buckets lock");
 
   ts_log(INFO, "Loading %zu buckets", bkts->count);
   cursor_t* cur = dev->mmap + bkts->dev_offset_pointers;
   bkts->buckets = malloc(sizeof(bucket_t) * bkts->count);
   for (uint64_t bkt_id = 0; bkt_id < bkts->count; bkt_id++) {
     bucket_t* bkt = buckets_get_bucket(bkts, bkt_id);
+    atomic_init(&bkt->head, NULL);
     // TODO Check tile address is less than tile_count.
-    bkt->tile = consume_u24(&cur);
-    bkt->tile_offset = consume_u24(&cur);
-    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&bkt->lock, NULL), "initialise bucket lock");
-    bkt->pending_flush_changes = 0;
+    uint32_t tile = consume_u24(&cur);
+    uint32_t tile_offset = consume_u24(&cur);
+    inode_t* prev = NULL;
+    while (tile) {
+      cursor_t* ino_cur = dev->mmap + (TILE_SIZE * tile) + tile_offset;
+      // TODO Check tile address is less than tile_count.
+      uint32_t next_tile = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE);
+      uint32_t next_tile_offset = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET);
+      ino_state_t ino_state = cur[INO_OFFSETOF_STATE];
+      inode_t* bkt_ino = inode_create_thread_unsafe(inodes_state, NULL, ino_state, tile, tile_offset);
+      if (prev != NULL) atomic_store_explicit(&prev->next, bkt_ino, memory_order_relaxed);
+      if (atomic_load_explicit(&bkt->head, memory_order_relaxed) == NULL) atomic_store_explicit(&bkt->head, bkt_ino, memory_order_relaxed);
+    }
   }
-
-  bkts->pending_delete_or_commit = kh_init_buckets_pending_delete_or_commit();
-  ASSERT_ERROR_RETVAL_OK(pthread_mutex_init(&bkts->pending_delete_or_commit_lock, NULL), "initialise buckets pending delete or commit lock");
 
   ts_log(INFO, "Loaded buckets");
 
@@ -93,7 +97,7 @@ uint64_t* buckets_get_dirty_bitmap_layer(buckets_t* bkts, uint8_t layer) {
   return bkts->dirty_pointers[layer];
 }
 
-void buckets_mark_bucket_as_dirty_without_locking(buckets_t* bkts, uint64_t bkt_id) {
+void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id) {
   for (
     uint64_t o = bkt_id, i = bkts->dirty_pointers_layer_count;
     i > 0;
@@ -101,46 +105,6 @@ void buckets_mark_bucket_as_dirty_without_locking(buckets_t* bkts, uint64_t bkt_
   ) {
     bkts->dirty_pointers[i - 1][o / 64] |= (1llu << (o % 64));
   }
-}
-
-void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id) {
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&bkts->dirty_pointers_rwlock), "acquire write lock on buckets");
-  buckets_mark_bucket_as_dirty_without_locking(bkts, bkt_id);
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkts->dirty_pointers_rwlock), "release write lock on buckets");
-}
-
-uint32_t buckets_pending_delete_or_commit_iterator_end(buckets_t* bkts) {
-  return kh_end(bkts->pending_delete_or_commit);
-}
-
-uint64_t buckets_pending_delete_or_commit_iterator_get(buckets_t* bkts, uint32_t it) {
-  if (!kh_exist(bkts->pending_delete_or_commit, it)) {
-    return 0;
-  }
-  return kh_key(bkts->pending_delete_or_commit, it);
-}
-
-void buckets_pending_delete_or_commit_lock(buckets_t* bkts) {
-  ASSERT_ERROR_RETVAL_OK(pthread_mutex_lock(&bkts->pending_delete_or_commit_lock), "acquire lock on buckets pending delete or commit");
-}
-
-void buckets_pending_delete_or_commit_unlock(buckets_t* bkts) {
-  ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&bkts->pending_delete_or_commit_lock), "release lock on buckets pending delete or commit");
-}
-
-void buckets_mark_bucket_as_pending_delete_or_commit(buckets_t* bkts, uint64_t bkt_id) {
-  buckets_pending_delete_or_commit_lock(bkts);
-  int kh_ret;
-  kh_put_buckets_pending_delete_or_commit(bkts->pending_delete_or_commit, bkt_id, &kh_ret);
-  if (kh_ret == -1) {
-    fprintf(stderr, "Failed to add to buckets pending delete or commit\n");
-    exit(EXIT_INTERNAL);
-  }
-  buckets_pending_delete_or_commit_unlock(bkts);
-}
-
-void buckets_clear_pending_delete_or_commit(buckets_t* bkts) {
-  kh_clear_buckets_pending_delete_or_commit(bkts->pending_delete_or_commit);
 }
 
 uint64_t buckets_get_device_offset_of_bucket(buckets_t* bkts, uint64_t bkt_id) {

@@ -82,27 +82,30 @@ svr_client_result_t method_write_object(
 ) {
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
-  bool acquired_lock = false;
   svr_client_result_t res;
-  // We must look up again each time in case it has been deleted since we last held the lock.
-  // This may seem inefficient but it's better than holding the lock the entire time.
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&bkt->lock), "acquire read lock on bucket");
-  acquired_lock = true;
 
-  cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_INCOMPLETE, args->obj_no);
+  inode_t* found = method_common_find_inode_in_bucket_for_non_management(
+    bkt,
+    &args->key,
+    ctx->dev,
+    INO_STATE_INCOMPLETE,
+    args->obj_no
+  );
 
-  if (inode_cur == NULL) {
+  if (found == NULL) {
     // We close the connection in case the client has already written data, and ending without disconnecting would cause the queued data to be interpreted as the start of the next request.
     // TODO Should we use some framing protocol or format so we don't have to close the connection?
-    res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
-    goto final;
+    ts_log(DEBUG, "Connection attempting to write to non-existent object with key %s will be disconnected", args->key.data.bytes);
+    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
+  cursor_t* inode_cur = ctx->dev + (TILE_SIZE * found->tile) + found->tile_offset;
   uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
   if (args->start >= size) {
     // We close the connection in case the client has already written data, and ending without disconnecting would cause the queued data to be interpreted as the start of the next request.
     // TODO Should we use some framing protocol or format so we don't have to close the connection?
+    ts_log(DEBUG, "Connection attempting to write past end of object with key %s will be disconnected", args->key.data.bytes);
     res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
     goto final;
   }
@@ -125,9 +128,9 @@ svr_client_result_t method_write_object(
 
   // TODO Assert not greater than.
   if (args->written == write_max_len) {
-    res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
     args->response_written = 0;
     args->response[0] = METHOD_ERROR_OK;
+    res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
     goto final;
   }
 
@@ -139,17 +142,15 @@ svr_client_result_t method_write_object(
   args->written += readno;
   // TODO Assert not greater than.
   if (args->written == write_max_len) {
-    res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
     args->response_written = 0;
     args->response[0] = METHOD_ERROR_OK;
+    res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
     goto final;
   }
   res = SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;
+  goto final;
 
   final:
-  if (acquired_lock) {
-    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release read lock on bucket");
-  }
-
+  atomic_fetch_sub_explicit(&found->refcount, 1, memory_order_relaxed);
   return res;
 }

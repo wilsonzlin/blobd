@@ -1,7 +1,9 @@
 #pragma once
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include "device.h"
+#include "inode.h"
 #include "../ext/klib/khash.h"
 
 /**
@@ -29,16 +31,12 @@ u8 count_log2_between_12_and_40_inclusive
 #define BUCKETS_RESERVED_SPACE(bkt_cnt) (1 + (bkt_cnt) * 6)
 
 typedef struct {
-  pthread_rwlock_t lock;
-  uint32_t tile;
-  uint32_t tile_offset;
-  // For use by flush.c only.
-  uint64_t pending_flush_changes;
+  _Atomic(inode_t*) head;
 } bucket_t;
 
 typedef struct buckets_s buckets_t;
 
-buckets_t* buckets_create_from_disk_state(device_t* dev, uint64_t dev_offset);
+buckets_t* buckets_create_from_disk_state(inodes_state_t* inodes_state, device_t* dev, uint64_t dev_offset);
 
 uint64_t buckets_get_count(buckets_t* bkts);
 
@@ -50,23 +48,7 @@ uint8_t buckets_get_dirty_bitmap_layer_count(buckets_t* bkts);
 
 uint64_t* buckets_get_dirty_bitmap_layer(buckets_t* bkts, uint8_t layer);
 
-void buckets_mark_bucket_as_dirty_without_locking(buckets_t* bkts, uint64_t bkt_id);
-
+// A bucket is dirty if the head, or any inode's "next" or "state" field value, has changed.
 void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id);
-
-uint32_t buckets_pending_delete_or_commit_iterator_end(buckets_t* bkts);
-
-// Returns 0 if no value is at this iterator position.
-uint64_t buckets_pending_delete_or_commit_iterator_get(buckets_t* bkts, uint32_t it);
-
-void buckets_pending_delete_or_commit_lock(buckets_t* bkts);
-
-void buckets_pending_delete_or_commit_unlock(buckets_t* bkts);
-
-// Lock will be acquired.
-void buckets_mark_bucket_as_pending_delete_or_commit(buckets_t* bkts, uint64_t bkt_id);
-
-// Lock must already be acquired.
-void buckets_clear_pending_delete_or_commit(buckets_t* bkts);
 
 uint64_t buckets_get_device_offset_of_bucket(buckets_t* bkts, uint64_t bkt_id);

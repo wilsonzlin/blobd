@@ -6,7 +6,7 @@ sacli.Command.new("uploadObjects")
   .optional("start", Number)
   .optional("end", Number)
   .action(async (args) => {
-    const conn = new TurbostoreClient();
+    const conn = new TurbostoreClient({unixSocketPath: "/tmp/turbostore.sock", onSocketError: console.error});
     const read = await conn.readObject(args.key, args.start ?? 0, args.end ?? 0);
     console.log(read.data.toString());
     await conn.close();
