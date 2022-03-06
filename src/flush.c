@@ -52,18 +52,19 @@ struct flush_state_s {
 void flush_mark_inode_for_awaiting_deletion(
   flush_state_t* state,
   uint64_t bkt_id,
-  inode_t* previous_if_inode_or_null_if_bucket,
+  // Pointer to previous inode_t, or NULL if the inode is the head.
+  inode_t* previous_if_inode_or_null_if_head,
   inode_t* ino
 ) {
   // We don't need to write to mmap, as we'll do it later during flush. We could also do it now if we wanted to.
   atomic_store_explicit(&ino->state, INO_STATE_DELETED, memory_order_relaxed);
   // We can safely read and write in multiple operations as we're running in a single-threaded manager.
   inode_t* next = atomic_load_explicit(&ino->next, memory_order_relaxed);
-  if (previous_if_inode_or_null_if_bucket == NULL) {
+  if (previous_if_inode_or_null_if_head == NULL) {
     bucket_t* bkt = buckets_get_bucket(state->buckets, bkt_id);
     atomic_store_explicit(&bkt->head, next, memory_order_relaxed);
   } else {
-    atomic_store_explicit(&previous_if_inode_or_null_if_bucket->next, next, memory_order_relaxed);
+    atomic_store_explicit(&previous_if_inode_or_null_if_head->next, next, memory_order_relaxed);
   }
   inode_list_append(state->inodes_awaiting_refcount_for_deletion, ino);
   stream_event_t ev = {

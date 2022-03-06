@@ -12,7 +12,7 @@ typedef struct flush_state_s flush_state_t;
 void flush_mark_inode_for_awaiting_deletion(
   flush_state_t* state,
   uint64_t bkt_id,
-  inode_t* previous_if_inode_or_null_if_bucket,
+  inode_t* previous_if_inode_or_null_if_head,
   inode_t* ino
 );
 

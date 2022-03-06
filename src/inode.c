@@ -38,8 +38,9 @@ inode_t* inode_create_thread_unsafe(
     ino = inodes->next_free_inode_in_pool;
     inodes->next_free_inode_in_pool = ino->next_free_inode_in_pool;
 
-    atomic_store_explicit(&ino->next, next, memory_order_relaxed);
-    atomic_store_explicit(&ino->state, state, memory_order_relaxed);
+    // Use memory_order_release to ensure "tile" and "tile_offset" are always visible to worker threads immediately (assuming they read with memory_order_acquire).
+    atomic_store_explicit(&ino->next, next, memory_order_release);
+    atomic_store_explicit(&ino->state, state, memory_order_release);
     // Do NOT reset refcount in case there are actual users of this released inode.
   }
   ino->tile = tile;

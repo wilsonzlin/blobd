@@ -149,6 +149,7 @@ svr_client_result_t method_create_object(
     flush_mark_inode_for_awaiting_deletion(ctx->flush_state, args->key.bucket, bkt_ino_prev, bkt_ino);
   }
 
+  // We can use memory_order_relaxed, as we're in the single-threaded manager.
   inode_t* bkt_head_old = atomic_load_explicit(&bkt->head, memory_order_relaxed);
   if (bkt_head_old != NULL) {
     DEBUG_TS_LOG("Next inode is at tile %u offset %u", bkt_head_old->tile, bkt_head_old->tile_offset);
@@ -156,7 +157,8 @@ svr_client_result_t method_create_object(
     DEBUG_TS_LOG("Next inode is NULL");
   }
   inode_t* bkt_ino = inode_create_thread_unsafe(ctx->inodes_state, bkt_head_old, INO_STATE_INCOMPLETE, ino_addr_tile, ino_addr_tile_offset);
-  atomic_store_explicit(&bkt->head, bkt_ino, memory_order_relaxed);
+  // Use memory_order_release to ensure worker threads can see inode field values on mmap immediately.
+  atomic_store_explicit(&bkt->head, bkt_ino, memory_order_release);
   DEBUG_TS_LOG("Wrote inode at tile %u offset %u", ino_addr_tile, ino_addr_tile_offset);
 
   // We don't sync now, as then we'd be making millions of msync calls for tiny ranges.
