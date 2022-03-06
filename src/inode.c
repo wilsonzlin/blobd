@@ -40,7 +40,7 @@ inode_t* inode_create_thread_unsafe(
 
     atomic_store_explicit(&ino->next, next, memory_order_relaxed);
     atomic_store_explicit(&ino->state, state, memory_order_relaxed);
-    atomic_store_explicit(&ino->refcount, 0, memory_order_relaxed);
+    // Do NOT reset refcount in case there are actual users of this released inode.
   }
   ino->tile = tile;
   ino->tile_offset = tile_offset;

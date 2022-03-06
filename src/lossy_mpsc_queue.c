@@ -12,16 +12,15 @@ struct lossy_mpsc_queue_s {
 };
 
 lossy_mpsc_queue_t* lossy_mpsc_queue_create(uint8_t capacity_log_2) {
-  uint64_t cap = (1llu << capacity_log_2);
+  uint64_t cap = 1llu << capacity_log_2;
   // We cannot use calloc or memset as NULL is not guaranteed to be zero.
   lossy_mpsc_queue_t* queue = malloc(sizeof(lossy_mpsc_queue_t*) + cap * sizeof(void*));
   // We can't use `(1 << capacity_log_2) - 1` as `capacity_log_2` could be 64.
   queue->capacity_mask = 0xFFFFFFFFFFFFFFFF >> (64 - capacity_log_2);
   queue->read_next = 0;
   atomic_init(&queue->write_next, 0);
-  // TODO Use memcpy_repeat.
   for (uint64_t i = 0; i < cap; i++) {
-    queue->entries[i] = NULL;
+    atomic_init(&queue->entries[i], NULL);
   }
   return queue;
 }

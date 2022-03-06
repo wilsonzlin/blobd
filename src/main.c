@@ -20,9 +20,9 @@
 #include "inode.h"
 #include "log.h"
 #include "manager.h"
-#include "server.h"
 #include "tile.h"
 #include "util.h"
+#include "worker.h"
 
 LOGGER("main");
 
@@ -132,24 +132,20 @@ int main(int argc, char** argv) {
 
   manager_state_t* manager_state = manager_state_create();
 
-  server_t* svr = server_create(
+  worker_t* worker = worker_create(
     dev,
-    freelist,
-    inodes_state,
-    buckets,
-    stream,
-    flush_state,
-    manager_state
+    buckets
   );
 
-  manager_t* manager = manager_create(manager_state, flush_state, svr);
+  manager_t* manager = manager_create(buckets, dev, flush_state, freelist, inodes_state, stream);
 
-  manager_start(manager);
+  void* manager_handle = manager_start(manager);
 
-  server_start_loop(
-    svr,
-    worker_count
-  );
+  void* workers_handle = workers_start(worker, worker_count);
+
+  workers_join(workers_handle, worker_count);
+
+  manager_join(manager_handle);
 
   return 0;
 }

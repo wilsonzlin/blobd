@@ -127,14 +127,6 @@ svr_client_result_t method_write_object(
     write_max_len = TILE_SIZE;
   }
 
-  // TODO Assert not greater than.
-  if (args->written == write_max_len) {
-    args->response_written = 0;
-    args->response[0] = METHOD_ERROR_OK;
-    res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
-    goto final;
-  }
-
   uint64_t dest_dev_offset = write_dev_offset + args->written;
   uint64_t dest_max_len = write_max_len - args->written;
   int readno = maybe_read(client_fd, ctx->dev->mmap + dest_dev_offset, dest_max_len);
@@ -145,7 +137,7 @@ svr_client_result_t method_write_object(
   if (readno > 0) {
     device_sync(ctx->dev, dest_dev_offset, dest_dev_offset + readno);
     args->written += readno;
-    // TODO Assert not greater than.
+    ASSERT_STATE(args->written <= write_max_len, "wrote past maximum length");
     if (args->written == write_max_len) {
       args->response_written = 0;
       args->response[0] = METHOD_ERROR_OK;
