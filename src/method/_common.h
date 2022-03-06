@@ -88,8 +88,6 @@ inode_t* method_common_find_inode_in_bucket_for_non_management(
   uint64_t required_obj_no_or_zero
 );
 
-#define INODE_CUR(dev, bkt_ino) ((dev)->mmap + ((bkt_ino)->tile * TILE_SIZE) + (bkt_ino)->tile_offset)
-
 #define METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, key, dev, allowed_states, required_obj_no_or_zero, bkt_ino, prev_expr) \
   for ( \
     /* We can use memory_order_relaxed, as we're in the single-threaded manager. */ \

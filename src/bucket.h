@@ -48,7 +48,7 @@ uint8_t buckets_get_dirty_bitmap_layer_count(buckets_t* bkts);
 
 uint64_t* buckets_get_dirty_bitmap_layer(buckets_t* bkts, uint8_t layer);
 
-// A bucket is dirty if the head, or any inode's "next" or "state" field value, has changed.
+// A bucket is dirty if the head, or any inode's "next" field value, has changed.
 void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id);
 
 uint64_t buckets_get_device_offset_of_bucket(buckets_t* bkts, uint64_t bkt_id);

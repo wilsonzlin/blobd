@@ -25,6 +25,10 @@ u8[] last_tile_data_if_mode_is_inline
 
 **/
 
+#include <stdatomic.h>
+#include <stdint.h>
+#include "tile.h"
+
 #define INO_OFFSETOF_INODE_SIZE 0
 #define INO_OFFSETOF_NEXT_INODE_TILE (INO_OFFSETOF_INODE_SIZE + 3)
 #define INO_OFFSETOF_NEXT_INODE_TILE_OFFSET (INO_OFFSETOF_NEXT_INODE_TILE + 3)
@@ -61,6 +65,10 @@ struct inode_s {
 };
 
 typedef struct inode_s inode_t;
+
+#define INODE_DEV_OFFSET(bkt_ino) (((bkt_ino)->tile * TILE_SIZE) + (bkt_ino)->tile_offset)
+
+#define INODE_CUR(dev, bkt_ino) ((dev)->mmap + (INODE_DEV_OFFSET(bkt_ino)))
 
 typedef struct inodes_state_s inodes_state_t;
 

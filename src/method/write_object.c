@@ -106,7 +106,7 @@ svr_client_result_t method_write_object(
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
-  uint64_t inode_dev_offset = (TILE_SIZE * found->tile) + found->tile_offset;
+  uint64_t inode_dev_offset = INODE_DEV_OFFSET(found);
   cursor_t* inode_cur = ctx->dev->mmap + inode_dev_offset;
   uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
   if (args->start >= size) {

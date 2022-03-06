@@ -56,8 +56,9 @@ void flush_mark_inode_for_awaiting_deletion(
   inode_t* previous_if_inode_or_null_if_head,
   inode_t* ino
 ) {
-  // We don't need to write to mmap, as we'll do it later during flush. We could also do it now if we wanted to.
   atomic_store_explicit(&ino->state, INO_STATE_DELETED, memory_order_relaxed);
+  cursor_t* inode_cur = INODE_CUR(state->dev, ino);
+  inode_cur[INO_OFFSETOF_STATE] = INO_STATE_DELETED;
   // We can safely read and write in multiple operations as we're running in a single-threaded manager.
   inode_t* next = atomic_load_explicit(&ino->next, memory_order_relaxed);
   if (previous_if_inode_or_null_if_head == NULL) {
@@ -69,7 +70,7 @@ void flush_mark_inode_for_awaiting_deletion(
   inode_list_append(state->inodes_awaiting_refcount_for_deletion, ino);
   stream_event_t ev = {
     .bkt_id = bkt_id,
-    .obj_no = read_u64(state->dev->mmap + (TILE_SIZE * ino->tile) + ino->tile_offset + INO_OFFSETOF_OBJ_NO),
+    .obj_no = read_u64(inode_cur + INO_OFFSETOF_OBJ_NO),
     .seq_no = state->stream->next_seq_no++,
     .typ = STREAM_EVENT_OBJECT_DELETE,
   };
@@ -82,12 +83,13 @@ void flush_mark_inode_as_committed(
   uint64_t bkt_id,
   inode_t* ino
 ) {
-  // We don't need to write to mmap, as we'll do it later during flush. We could also do it now if we wanted to.
   // TODO Do we care that someone could still be writing to the object?
   atomic_store_explicit(&ino->state, INO_STATE_READY, memory_order_relaxed);
+  cursor_t* inode_cur = INODE_CUR(state->dev, ino);
+  inode_cur[INO_OFFSETOF_STATE] = INO_STATE_INCOMPLETE;
   stream_event_t ev = {
     .bkt_id = bkt_id,
-    .obj_no = read_u64(state->dev->mmap + (TILE_SIZE * ino->tile) + ino->tile_offset + INO_OFFSETOF_OBJ_NO),
+    .obj_no = read_u64(inode_cur + INO_OFFSETOF_OBJ_NO),
     .seq_no = state->stream->next_seq_no++,
     .typ = STREAM_EVENT_OBJECT_COMMIT,
   };
@@ -199,7 +201,7 @@ static inline void ts_log_debug_writing_change(change_t c, buckets_t* buckets) {
   DEBUG_TS_LOG("Writing heap area change: %lu, %u bytes", c.device_offset - offset, c.len);
 }
 
-// This will update bucket head, as well as "next" and "state" fields on all inodes in the bucket.
+// This will update bucket head, as well as "next" fields on all inodes in the bucket.
 static inline void record_bucket_change(
   flush_state_t* state,
   change_data_pool_writer_t* change_data_writer,
@@ -217,11 +219,7 @@ static inline void record_bucket_change(
     if (ino == NULL) {
       break;
     }
-    RECORD_CHANGE1(
-      (TILE_SIZE * ino->tile) + ino->tile_offset + INO_OFFSETOF_STATE,
-      atomic_load_explicit(&ino->state, memory_order_relaxed)
-    );
-    dev_offset = (TILE_SIZE * ino->tile) + ino->tile_offset + INO_OFFSETOF_NEXT_INODE_TILE;
+    dev_offset = INODE_DEV_OFFSET(ino) + INO_OFFSETOF_NEXT_INODE_TILE;
     ino = atomic_load_explicit(&ino->next, memory_order_relaxed);
   }
 }
@@ -271,7 +269,7 @@ void flush_perform(flush_state_t* state) {
   for (uint64_t i = 0; i < state->inodes_awaiting_refcount_for_deletion->len; i++) {
     inode_t* ino = state->inodes_awaiting_refcount_for_deletion->elems[i];
     if (atomic_load_explicit(&ino->refcount, memory_order_relaxed) == 0) {
-      freelist_replenish_tiles_of_inode(state->fl, state->dev->mmap + (TILE_SIZE * ino->tile) + ino->tile_offset);
+      freelist_replenish_tiles_of_inode(state->fl, INODE_CUR(state->dev, ino));
       inode_destroy_thread_unsafe(state->inodes_state, ino);
     } else {
       state->inodes_awaiting_refcount_for_deletion->elems[new_awaiting_deletion_len] = ino;

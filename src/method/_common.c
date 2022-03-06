@@ -54,9 +54,10 @@ inode_t* method_common_find_inode_in_bucket_for_non_management(
     bkt_ino != NULL;
     bkt_ino = atomic_load_explicit(&bkt_ino->next, memory_order_acquire)
   ) {
-    cursor_t* cur = dev->mmap + (bkt_ino->tile * TILE_SIZE) + bkt_ino->tile_offset;
+    cursor_t* cur = INODE_CUR(dev, bkt_ino);
     DEBUG_TS_LOG_LOOKUP("Looking at inode with object number %lu, state %d, and key %s", read_u64(cur + INO_OFFSETOF_OBJ_NO), atomic_load_explicit(&bkt_ino->state, memory_order_relaxed), cur + INO_OFFSETOF_KEY);
     atomic_fetch_add_explicit(&bkt_ino->refcount, 1, memory_order_relaxed);
+    DEBUG_ASSERT_STATE(cur[INO_OFFSETOF_KEY_NULL_TERM(cur[INO_OFFSETOF_KEY_LEN])] == 0, "inode at tile %u offset %u does not have key null terminator", bkt_ino->tile, bkt_ino->tile_offset);
     if (
       // Use memory_order_acquire to ensure all inode field values read from mmap are latest.
       (atomic_load_explicit(&bkt_ino->state, memory_order_acquire) & allowed_states) &&

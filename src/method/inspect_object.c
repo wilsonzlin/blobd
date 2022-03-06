@@ -88,7 +88,7 @@ svr_client_result_t method_inspect_object(
     produce_u8(&res_cur, 0);
     produce_u64(&res_cur, 0);
   } else {
-    cursor_t* inode_cur = ctx->dev->mmap + (TILE_SIZE * found->tile) + found->tile_offset;
+    cursor_t* inode_cur = INODE_CUR(ctx->dev, found);
     produce_u8(&res_cur, METHOD_ERROR_OK);
     produce_u8(&res_cur, inode_cur[INO_OFFSETOF_STATE]);
     produce_u64(&res_cur, read_u40(inode_cur + INO_OFFSETOF_SIZE));
