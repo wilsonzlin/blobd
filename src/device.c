@@ -19,7 +19,7 @@
 
 LOGGER("device");
 
-device_t* device_create(void* mmap, uint64_t size) {
+device_t* device_create(void* mmap, uint64_t size, uint64_t page_size) {
   device_t* dev = malloc(sizeof(device_t));
   dev->mmap = mmap;
   dev->size = size;

@@ -25,10 +25,11 @@ typedef struct {
   uint64_t size;
   // This should equal ceil(device_size / tile_size).
   uint32_t tile_count;
+  uint64_t page_size;
 } device_t;
 
-device_t* device_create(void* mmap, uint64_t size);
+device_t* device_create(void* mmap, uint64_t size, uint64_t page_size);
 
-void device_sync(device_t* dev);
+void device_sync(device_t* dev, uint64_t start, uint64_t end_exclusive);
 
 void device_format(device_t* dev, uint8_t bucket_count_log2);

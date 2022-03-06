@@ -1,3 +1,5 @@
+#include <stdlib.h>
+#include <stdio.h>
 #include "exit.h"
 #include "flush.h"
 #include "list.h"
@@ -7,12 +9,6 @@
 #include "server.h"
 
 LOGGER("manager");
-
-typedef struct {
-  int fd;
-  svr_method_t method;
-  void* method_state;
-} client_t;
 
 struct manager_state_s {
   lossy_mpsc_queue_t* client_queue;
@@ -24,8 +20,20 @@ manager_state_t* manager_state_create() {
   return st;
 }
 
-LIST_DEF(clients_awaiting_flush, client_t*);
-LIST(clients_awaiting_flush, client_t*);
+void manager_hand_off_client(
+  manager_state_t* manager_state,
+  server_t* server,
+  svr_client_t* client
+) {
+  svr_client_t* popped = lossy_mpsc_queue_enqueue(manager_state->client_queue, client);
+  if (popped != NULL) {
+    // We are too overloaded, drop the client.
+    server_hand_back_client_from_manager(server, popped, SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR);
+  }
+}
+
+LIST_DEF(clients_awaiting_flush, svr_client_t*);
+LIST(clients_awaiting_flush, svr_client_t*);
 
 struct manager_s {
   manager_state_t* manager_state;
@@ -65,11 +73,16 @@ void* thread(manager_t* mgr) {
           perror("Failed to get current time");
           exit(EXIT_INTERNAL);
         }
+        for (uint64_t i = 0; i < mgr->clients_awaiting_flush->len; i++) {
+          svr_client_t* client = mgr->clients_awaiting_flush->elems[i];
+          server_hand_back_client_from_manager(mgr->server, client, SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE);
+        }
+        mgr->clients_awaiting_flush->len = 0;
         continue;
       }
     }
 
-    client_t* client = (client_t*) lossy_mpsc_queue_dequeue(mgr->manager_state->client_queue);
+    svr_client_t* client = (svr_client_t*) lossy_mpsc_queue_dequeue(mgr->manager_state->client_queue);
     if (client == NULL) {
       // Let's sleep for 2 ms.
       struct timespec sleep_req;
@@ -82,7 +95,27 @@ void* thread(manager_t* mgr) {
       continue;
     }
 
-    // TODO
+    svr_method_handler_ctx_t* ctx = server_get_method_handler_context(mgr->server);
+    svr_method_t method = server_client_get_method(client);
+    void* method_state = server_client_get_method_state(client);
+    int fd = server_client_get_file_descriptor(client);
+    svr_client_result_t res;
+    if (method == SVR_METHOD_CREATE_OBJECT) {
+      res = method_create_object(ctx, method_state, fd);
+    } else if (method == SVR_METHOD_COMMIT_OBJECT) {
+      res = method_commit_object(ctx, method_state, fd);
+    } else if (method == SVR_METHOD_DELETE_OBJECT) {
+      res = method_delete_object(ctx, method_state, fd);
+    } else {
+      fprintf(stderr, "Unknown client method %u\n", method);
+      exit(EXIT_INTERNAL);
+    }
+
+    if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH) {
+      clients_awaiting_flush_append(mgr->clients_awaiting_flush, client);
+    } else {
+      server_hand_back_client_from_manager(mgr->server, client, res);
+    }
   }
 }
 

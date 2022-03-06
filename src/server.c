@@ -10,8 +10,8 @@
 #include <sys/un.h>
 #include "errno.h"
 #include "exit.h"
-#include "list.h"
 #include "log.h"
+#include "manager.h"
 #include "server.h"
 #include "util.h"
 #include "method/commit_object.h"
@@ -23,8 +23,8 @@
 #include "../ext/klib/khash.h"
 
 #define SVR_SOCK_PATH "/tmp/turbostore.sock"
-#define SVR_LISTEN_BACKLOG 16384
-#define SVR_EPOLL_EVENTS_MAX 128
+#define SVR_LISTEN_BACKLOG 65536
+#define SVR_EPOLL_EVENTS_MAX 1024
 #define SVR_CLIENTS_ACTIVE_MAX 1048576
 
 LOGGER("server");
@@ -61,47 +61,53 @@ bool svr_method_args_parser_end(svr_method_args_parser_t* parser) {
   return parser->read_next == parser->raw_len;
 }
 
-typedef struct {
+struct svr_client_s {
   int fd;
   svr_method_args_parser_t* args_parser;
   svr_method_t method;
   void* method_state;
   void (*method_state_destructor)(void*);
-} svr_client_t;
+  // Set only if the manager previously handled the client and has now handed it back to us.
+  svr_client_result_t method_result_from_manager;
+};
+
+svr_method_t server_client_get_method(svr_client_t* client) {
+  return client->method;
+}
+
+void* server_client_get_method_state(svr_client_t* client) {
+  return client->method_state;
+}
+
+int server_client_get_file_descriptor(svr_client_t* client) {
+  return client->fd;
+}
 
 KHASH_MAP_INIT_INT(svr_fd_to_client, svr_client_t*);
-
-LIST_DEF(client_list, svr_client_t*);
-LIST(client_list, svr_client_t*);
 
 struct server_s {
   kh_svr_fd_to_client_t* fd_to_client;
   pthread_rwlock_t fd_to_client_lock;
-  client_list_t* awaiting_flush;
-  pthread_mutex_t awaiting_flush_lock;
-  client_list_t* flushing;
   int svr_epoll_fd;
   int svr_socket_fd;
+  manager_state_t* manager_state;
   svr_method_handler_ctx_t* ctx;
 };
 
 #define READ_OR_RELEASE(readres, fd, buf, n) \
   readres = maybe_read(fd, buf, n); \
   if (!readres) { \
-    res = SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE; \
-    break; \
+    return SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE; \
   } \
   if (readres < 0) { \
-    res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR; \
-    break; \
+    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR; \
   }
 
-static inline void worker_handle_client_ready(
+static inline svr_client_result_t process_client_until_result(
   server_t* state,
   svr_client_t* client
 ) {
-  svr_client_result_t res = SVR_CLIENT_RESULT__UNKNOWN;
-  loop: while (true) {
+  while (true) {
     if (client->method == SVR_METHOD__UNKNOWN) {
       // We haven't parsed the method yet.
       uint8_t buf[1];
@@ -153,83 +159,99 @@ static inline void worker_handle_client_ready(
         }
       }
     } else {
-      if (client->method == SVR_METHOD_CREATE_OBJECT) {
-        res = method_create_object(state->ctx, client->method_state, client->fd);
-      } else if (client->method == SVR_METHOD_INSPECT_OBJECT) {
-        res = method_inspect_object(state->ctx, client->method_state, client->fd);
-      } else if (client->method == SVR_METHOD_READ_OBJECT) {
-        res = method_read_object(state->ctx, client->method_state, client->fd);
-      } else if (client->method == SVR_METHOD_WRITE_OBJECT) {
-        res = method_write_object(state->ctx, client->method_state, client->fd);
-      } else if (client->method == SVR_METHOD_COMMIT_OBJECT) {
-        res = method_commit_object(state->ctx, client->method_state, client->fd);
-      } else if (client->method == SVR_METHOD_DELETE_OBJECT) {
-        res = method_delete_object(state->ctx, client->method_state, client->fd);
-      } else {
-        fprintf(stderr, "Unknown client method %u\n", client->method);
+       if (client->method == SVR_METHOD_INSPECT_OBJECT) {
+        return method_inspect_object(state->ctx, client->method_state, client->fd);
+      }
+      if (client->method == SVR_METHOD_READ_OBJECT) {
+        return method_read_object(state->ctx, client->method_state, client->fd);
+      }
+      if (client->method == SVR_METHOD_WRITE_OBJECT) {
+        return method_write_object(state->ctx, client->method_state, client->fd);
+      }
+      if (client->method == SVR_METHOD_COMMIT_OBJECT || client->method == SVR_METHOD_CREATE_OBJECT || client->method == SVR_METHOD_DELETE_OBJECT) {
+        manager_hand_off_client(state->manager_state, state, client);
+        return SVR_CLIENT_RESULT_HANDED_OFF_TO_MANAGER;
+      }
+      fprintf(stderr, "Unknown client method %u\n", client->method);
+      exit(EXIT_INTERNAL);
+    }
+  }
+}
+
+static inline void worker_handle_client_ready(
+  server_t* state,
+  svr_client_t* client
+) {
+  while (true) {
+    svr_client_result_t res = client->method_result_from_manager;
+    if (res == SVR_CLIENT_RESULT__UNKNOWN) {
+      res = process_client_until_result(state, client);
+    } else {
+      client->method_result_from_manager = SVR_CLIENT_RESULT__UNKNOWN;
+    }
+
+    if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE || res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
+      struct epoll_event ev;
+      ev.events = EPOLLET | EPOLLONESHOT | (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE ? EPOLLIN : EPOLLOUT);
+      ev.data.fd = client->fd;
+      if (-1 == epoll_ctl(state->svr_epoll_fd, EPOLL_CTL_MOD, client->fd, &ev)) {
+        perror("Failed to add connection to epoll");
         exit(EXIT_INTERNAL);
       }
       break;
     }
-  }
 
-  if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE || res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
-    struct epoll_event ev;
-    ev.events = EPOLLET | EPOLLONESHOT | (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE ? EPOLLIN : EPOLLOUT);
-    ev.data.fd = client->fd;
-    if (-1 == epoll_ctl(state->svr_epoll_fd, EPOLL_CTL_MOD, client->fd, &ev)) {
-      perror("Failed to add connection to epoll");
-      exit(EXIT_INTERNAL);
+    if (res == SVR_CLIENT_RESULT_HANDED_OFF_TO_MANAGER) {
+      break;
     }
-  } else if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH) {
-    ASSERT_ERROR_RETVAL_OK(pthread_mutex_lock(&state->awaiting_flush_lock), "acquire lock on awaiting flush list");
-    client_list_append(state->awaiting_flush, client);
-    ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&state->awaiting_flush_lock), "acquire unlock on awaiting flush list");
-  } else if (res == SVR_CLIENT_RESULT_END) {
-    res = SVR_CLIENT_RESULT__UNKNOWN;
-    client->method = SVR_METHOD__UNKNOWN;
-    if (client->args_parser != NULL) {
-      args_parser_destroy(client->args_parser);
-      client->args_parser = NULL;
+
+    if (res == SVR_CLIENT_RESULT_END) {
+      res = SVR_CLIENT_RESULT__UNKNOWN;
+      client->method = SVR_METHOD__UNKNOWN;
+      if (client->args_parser != NULL) {
+        args_parser_destroy(client->args_parser);
+        client->args_parser = NULL;
+      }
+      if (client->method_state != NULL) {
+        client->method_state_destructor(client->method_state);
+        client->method_state = NULL;
+        client->method_state_destructor = NULL;
+      }
+      continue;
     }
-    if (client->method_state != NULL) {
-      client->method_state_destructor(client->method_state);
-      client->method_state = NULL;
-      client->method_state_destructor = NULL;
+
+    if (res == SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR) {
+      ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&state->fd_to_client_lock), "acquire write lock on FD map");
+      // Close before removing from map as otherwise an epoll event might still emit,
+      // but acquire lock before closing in case FD is reused immediately.
+      if (-1 == close(client->fd)) {
+        perror("Failed to close client FD");
+        exit(EXIT_INTERNAL);
+      }
+      khint_t k = kh_get_svr_fd_to_client(state->fd_to_client, client->fd);
+      if (k == kh_end(state->fd_to_client)) {
+        fprintf(stderr, "Client does not exist\n");
+        exit(EXIT_INTERNAL);
+      }
+      kh_del_svr_fd_to_client(state->fd_to_client, k);
+      ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&state->fd_to_client_lock), "release write lock on FD map");
+      // Destroy the client.
+      if (client->args_parser != NULL) {
+        args_parser_destroy(client->args_parser);
+      }
+      if (client->method_state != NULL) {
+        client->method_state_destructor(client->method_state);
+      }
+      free(client);
+      break;
     }
-    goto loop;
-  } else if (res == SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR) {
-    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&state->fd_to_client_lock), "acquire write lock on FD map");
-    // Close before removing from map as otherwise an epoll event might still emit,
-    // but acquire lock before closing in case FD is reused immediately.
-    if (-1 == close(client->fd)) {
-      perror("Failed to close client FD");
-      exit(EXIT_INTERNAL);
-    }
-    khint_t k = kh_get_svr_fd_to_client(state->fd_to_client, client->fd);
-    if (k == kh_end(state->fd_to_client)) {
-      fprintf(stderr, "Client does not exist\n");
-      exit(EXIT_INTERNAL);
-    }
-    kh_del_svr_fd_to_client(state->fd_to_client, k);
-    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&state->fd_to_client_lock), "release write lock on FD map");
-    // Destroy the client.
-    if (client->args_parser != NULL) {
-      args_parser_destroy(client->args_parser);
-    }
-    if (client->method_state != NULL) {
-      client->method_state_destructor(client->method_state);
-    }
-    free(client);
-  } else {
-    fprintf(stderr, "Unknown client action result\n");
+
+    fprintf(stderr, "Unknown client action result: %d\n", res);
     exit(EXIT_INTERNAL);
   }
 }
 
-void* worker_start(void* state_raw) {
-  server_t* state = (server_t*) state_raw;
-
+void* worker_start(server_t* state) {
   struct epoll_event svr_epoll_events[SVR_EPOLL_EVENTS_MAX];
   while (true) {
     int nfds = epoll_wait(state->svr_epoll_fd, svr_epoll_events, SVR_EPOLL_EVENTS_MAX, -1);
@@ -268,6 +290,7 @@ void* worker_start(void* state_raw) {
         client->method = SVR_METHOD__UNKNOWN;
         client->method_state = NULL;
         client->method_state_destructor = NULL;
+        client->method_result_from_manager = SVR_CLIENT_RESULT__UNKNOWN;
 
         // Map FD to client ID.
         ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&state->fd_to_client_lock), "acquire write lock on FD map");
@@ -301,11 +324,11 @@ void* worker_start(void* state_raw) {
 
 server_t* server_create(
   device_t* dev,
-  flush_state_t* flush,
   freelist_t* fl,
   inodes_state_t* inodes_state,
   buckets_t* bkts,
-  stream_t* stream
+  stream_t* stream,
+  manager_state_t* manager_state
 ) {
   int svr_socket = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
   if (-1 == svr_socket) {
@@ -350,11 +373,9 @@ server_t* server_create(
   }
 
   server_t* svr = malloc(sizeof(server_t));
+  svr->manager_state = manager_state;
   svr->fd_to_client = kh_init_svr_fd_to_client();
   ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&svr->fd_to_client_lock, NULL), "create lock for FD map");
-  svr->awaiting_flush = client_list_create();
-  ASSERT_ERROR_RETVAL_OK(pthread_mutex_init(&svr->awaiting_flush_lock, NULL), "create lock for awaiting flush list");
-  svr->flushing = client_list_create();
   svr->svr_epoll_fd = svr_epoll_fd;
   svr->svr_socket_fd = svr_socket;
   svr->ctx = malloc(sizeof(svr_method_handler_ctx_t));
@@ -362,41 +383,23 @@ server_t* server_create(
   svr->ctx->bkts = bkts;
   svr->ctx->dev = dev;
   svr->ctx->fl = fl;
-  svr->ctx->flush = flush;
   svr->ctx->stream = stream;
   return svr;
 }
 
-bool server_on_flush_start(server_t* clients) {
-  ASSERT_ERROR_RETVAL_OK(pthread_mutex_lock(&clients->awaiting_flush_lock), "acquire lock on awaiting flush list");
-  bool has_awaiting = !!clients->awaiting_flush->len;
-  if (has_awaiting) {
-    if (clients->flushing->cap < clients->awaiting_flush->len) {
-      while (clients->flushing->cap < clients->awaiting_flush->len) {
-        clients->flushing->cap *= 2;
-      }
-      clients->flushing->elems = realloc(clients->flushing->elems, clients->flushing->cap * sizeof(svr_client_t*));
-    }
-    memcpy(clients->flushing->elems, clients->awaiting_flush->elems, clients->awaiting_flush->len * sizeof(svr_client_t*));
-    clients->flushing->len = clients->awaiting_flush->len;
-    clients->awaiting_flush->len = 0;
-  }
-  ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&clients->awaiting_flush_lock), "release lock on awaiting flush list");
-  return has_awaiting;
+svr_method_handler_ctx_t* server_get_method_handler_context(server_t* server) {
+  return server->ctx;
 }
 
-void server_on_flush_end(server_t* clients) {
-  for (uint64_t i = 0; i < clients->flushing->len; i++) {
-    svr_client_t* client = clients->flushing->elems[i];
-    struct epoll_event ev;
-    ev.events = EPOLLET | EPOLLONESHOT | EPOLLOUT;
-    ev.data.fd = client->fd;
-    if (-1 == epoll_ctl(clients->svr_epoll_fd, EPOLL_CTL_MOD, client->fd, &ev)) {
-      perror("Failed to add connection to epoll");
-      exit(EXIT_INTERNAL);
-    }
+void server_hand_back_client_from_manager(server_t* clients, svr_client_t* client, svr_client_result_t result) {
+  client->method_result_from_manager = result;
+  struct epoll_event ev;
+  ev.events = EPOLLET | EPOLLONESHOT | EPOLLOUT | (result == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE ? EPOLLIN : 0) | (result == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE ? EPOLLOUT : 0);
+  ev.data.fd = client->fd;
+  if (-1 == epoll_ctl(clients->svr_epoll_fd, EPOLL_CTL_MOD, client->fd, &ev)) {
+    perror("Failed to add connection to epoll");
+    exit(EXIT_INTERNAL);
   }
-  clients->flushing->len = 0;
 }
 
 void server_start_loop(

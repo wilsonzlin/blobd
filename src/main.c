@@ -36,6 +36,12 @@ int main(int argc, char** argv) {
   char* arg_dev = argv[2];
   char* arg_worker_or_bucket_count = argv[3];
 
+  long page_size = sysconf(_SC_PAGESIZE);
+  if (-1 == page_size) {
+    perror("Failed to get system page size");
+    exit(EXIT_INTERNAL);
+  }
+
   int dev_fd = open(arg_dev, O_RDWR);
   if (-1 == dev_fd) {
     perror("Failed to open block device");
@@ -62,7 +68,7 @@ int main(int argc, char** argv) {
     exit(EXIT_INTERNAL);
   }
 
-  device_t* dev = device_create(dev_mmap, dev_size);
+  device_t* dev = device_create(dev_mmap, dev_size, page_size);
 
   if (!strcmp("format", arg_action)) {
     errno = 0;
@@ -135,7 +141,7 @@ int main(int argc, char** argv) {
 
   manager_state_t* manager_state = manager_state_create();
 
-  manager_t* manager = manager_create(manager_state, svr);
+  manager_t* manager = manager_create(manager_state, flush, svr);
 
   manager_start(manager);
 

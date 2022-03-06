@@ -4,9 +4,9 @@
 #include <pthread.h>
 #include "bucket.h"
 #include "device.h"
-#include "flush.h"
 #include "freelist.h"
 #include "list.h"
+#include "manager.h"
 #include "stream.h"
 #include "../ext/klib/khash.h"
 
@@ -29,6 +29,7 @@ typedef enum {
   SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE,
   SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE,
   SVR_CLIENT_RESULT_AWAITING_FLUSH,
+  SVR_CLIENT_RESULT_HANDED_OFF_TO_MANAGER,
   SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR,
   SVR_CLIENT_RESULT_END,
 } svr_client_result_t;
@@ -43,7 +44,6 @@ bool svr_method_args_parser_end(svr_method_args_parser_t* parser);
 
 typedef struct {
   device_t* dev;
-  flush_state_t* flush;
   freelist_t* fl;
   inodes_state_t* inodes_state;
   buckets_t* bkts;
@@ -61,21 +61,28 @@ typedef enum {
   SVR_METHOD_DELETE_OBJECT = 6,
 } svr_method_t;
 
+typedef struct svr_client_s svr_client_t;
+
+svr_method_t server_client_get_method(svr_client_t* client);
+
+void* server_client_get_method_state(svr_client_t* client);
+
+int server_client_get_file_descriptor(svr_client_t* client);
+
 typedef struct server_s server_t;
 
 server_t* server_create(
   device_t* dev,
-  flush_state_t* flush,
   freelist_t* fl,
   inodes_state_t* inodes_state,
   buckets_t* bkts,
-  stream_t* stream
+  stream_t* stream,
+  manager_state_t* manager_state
 );
 
-// Returns false if no clients are awaiting flush.
-bool server_on_flush_start(server_t* server);
+svr_method_handler_ctx_t* server_get_method_handler_context(server_t* server);
 
-void server_on_flush_end(server_t* server);
+void server_hand_back_client_from_manager(server_t* clients, svr_client_t* client, svr_client_result_t result);
 
 // This never returns.
 void server_start_loop(
