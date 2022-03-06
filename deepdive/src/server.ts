@@ -17,10 +17,12 @@ server.get("/data", (req, res) => {
   if (start % 16777216 !== 0) {
     return res.status(400).end();
   }
+  const end = start + 1024;
+  console.log("Reading", start, "to", end);
   stream.pipeline(
     fs.createReadStream(DEV, {
       start,
-      end: start + 1048576,
+      end,
     }),
     res.status(200)
   );

@@ -1,6 +1,20 @@
 import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom";
 
+const INO_OFFSETOF_INODE_SIZE = 0;
+const INO_OFFSETOF_NEXT_INODE_TILE = INO_OFFSETOF_INODE_SIZE + 3;
+const INO_OFFSETOF_NEXT_INODE_TILE_OFFSET = INO_OFFSETOF_NEXT_INODE_TILE + 3;
+const INO_OFFSETOF_OBJ_NO = INO_OFFSETOF_NEXT_INODE_TILE_OFFSET + 3;
+const INO_OFFSETOF_STATE = INO_OFFSETOF_OBJ_NO + 8;
+const INO_OFFSETOF_SIZE = INO_OFFSETOF_STATE + 1;
+const INO_OFFSETOF_LAST_TILE_MODE = INO_OFFSETOF_SIZE + 5;
+const INO_OFFSETOF_KEY_LEN = INO_OFFSETOF_LAST_TILE_MODE + 1;
+const INO_OFFSETOF_KEY = INO_OFFSETOF_KEY_LEN + 1;
+const INO_OFFSETOF_KEY_NULL_TERM = (keyLen: number) =>
+  INO_OFFSETOF_KEY + keyLen;
+
+const between = (v: number, low: number, high: number) => v >= low && v < high;
+
 const readU24 = (data: Uint8Array, offset: number) => {
   let v = BigInt(data[offset]);
   v = (v << 8n) | BigInt(data[offset + 1]);
@@ -27,28 +41,17 @@ const readU48 = (data: Uint8Array, offset: number) => {
   return Number(v);
 };
 
-const Byte = ({
-  decimal,
-  children,
-}: {
-  decimal?: boolean;
-  children: number;
-}) => {
-  const text = decimal
-    ? children
-    : children % 128 >= 32 && children % 128 <= 126
-    ? String.fromCharCode(children % 128)
-    : "•";
-  const color =
-    children >= 32 && children <= 126
-      ? "aqua"
-      : children == 0
-      ? "gray"
-      : children <= 31 || children == 127
-      ? "pink"
-      : "gold";
-  return <span style={{ color }}>{text}</span>;
-};
+const byteClass = (v: number) =>
+  v >= 32 && v <= 126
+    ? "byte-printable"
+    : v == 0
+    ? "byte-null"
+    : v <= 31 || v == 127
+    ? "byte-control"
+    : "byte-extended";
+
+const byteText = (v: number) =>
+  v % 128 >= 32 && v % 128 <= 126 ? String.fromCharCode(v % 128) : "•";
 
 const App = ({}: {}) => {
   const [offset, setOffset] = useState(0);
@@ -66,8 +69,9 @@ const App = ({}: {}) => {
   const dataBytes = useMemo(() => new Uint8Array(data), [data]);
 
   const [hoverOffset, setHoverOffset] = useState<undefined | number>(undefined);
+  const hovering = hoverOffset != undefined;
 
-  const inodeKeyLen = dataBytes[hoverOffset ?? 0 + 24];
+  const inodeKeyLen = dataBytes[(hoverOffset ?? 0) + INO_OFFSETOF_KEY_LEN];
 
   const rows = Math.ceil(data.byteLength / 16);
 
@@ -75,7 +79,7 @@ const App = ({}: {}) => {
     <div>
       <input
         type="number"
-        min={1}
+        min={0}
         step={16777216}
         value={offset}
         onChange={(e) => setOffset(e.currentTarget.valueAsNumber)}
@@ -88,27 +92,93 @@ const App = ({}: {}) => {
               <tr key={rowNo}>
                 <th>{offset + rowNo * 16}</th>
                 {[...dataBytes.slice(rowNo * 16, (rowNo + 1) * 16)].map(
-                  (byte, i) => (
-                    <td
-                      key={i}
-                      onMouseOver={() => setHoverOffset(rowNo * 16 + i)}
-                      onMouseOut={() => setHoverOffset(undefined)}
-                    >
-                      <Byte decimal>{byte}</Byte>
-                    </td>
-                  )
+                  (byte, i) => {
+                    const idx = rowNo * 16 + i;
+                    return (
+                      <td
+                        key={i}
+                        className={[
+                          idx === hoverOffset && "byte-selected",
+                          byteClass(byte),
+                          ...(!hovering
+                            ? []
+                            : [
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_INODE_SIZE,
+                                  INO_OFFSETOF_NEXT_INODE_TILE
+                                ) && "ino-inode-size",
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_NEXT_INODE_TILE,
+                                  INO_OFFSETOF_NEXT_INODE_TILE_OFFSET
+                                ) && "ino-next-inode-tile",
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_NEXT_INODE_TILE_OFFSET,
+                                  INO_OFFSETOF_OBJ_NO
+                                ) && "ino-next-inode-tile-offset",
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_OBJ_NO,
+                                  INO_OFFSETOF_STATE
+                                ) && "ino-obj-no",
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_STATE,
+                                  INO_OFFSETOF_SIZE
+                                ) && "ino-state",
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_SIZE,
+                                  INO_OFFSETOF_LAST_TILE_MODE
+                                ) && "ino-size",
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_LAST_TILE_MODE,
+                                  INO_OFFSETOF_KEY_LEN
+                                ) && "ino-last-tile-mode",
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_KEY_LEN,
+                                  INO_OFFSETOF_KEY
+                                ) && "ino-key-len",
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_KEY,
+                                  INO_OFFSETOF_KEY_NULL_TERM(inodeKeyLen)
+                                ) && "ino-key",
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_KEY_NULL_TERM(inodeKeyLen),
+                                  INO_OFFSETOF_KEY_NULL_TERM(inodeKeyLen) + 1
+                                ) && "ino-key-null-terminator",
+                              ]),
+                        ]
+                          .filter((c) => c)
+                          .join(" ")}
+                        onClick={() => setHoverOffset(idx)}
+                      >
+                        {byte}
+                      </td>
+                    );
+                  }
                 )}
                 <td>
                   {[...dataBytes.slice(rowNo * 16, rowNo * 16 + 8)].map(
                     (byte, i) => (
-                      <Byte key={i}>{byte}</Byte>
+                      <span key={i} className={byteClass(byte)}>
+                        {byteText(byte)}
+                      </span>
                     )
                   )}
                 </td>
                 <td>
                   {[...dataBytes.slice(rowNo * 16 + 8, (rowNo + 1) * 16)].map(
                     (byte, i) => (
-                      <Byte key={i}>{byte}</Byte>
+                      <span key={i} className={byteClass(byte)}>
+                        {byteText(byte)}
+                      </span>
                     )
                   )}
                 </td>
@@ -117,7 +187,7 @@ const App = ({}: {}) => {
           </tbody>
         </table>
 
-        {!hoverOffset ? null : (
+        {hoverOffset == undefined ? null : (
           <dl>
             <dt>u16</dt>
             <dd>{dataView.getUint16(hoverOffset, false)}</dd>
@@ -137,44 +207,61 @@ const App = ({}: {}) => {
             <dt>u64</dt>
             <dd>{dataView.getBigUint64(hoverOffset, false).toString()}</dd>
 
-            <dt>Inode inode size</dt>
-            <dd>{readU24(dataBytes, hoverOffset + 0)}</dd>
+            <dt className="ino-inode-size">Inode inode size</dt>
+            <dd>{readU24(dataBytes, hoverOffset + INO_OFFSETOF_INODE_SIZE)}</dd>
 
-            <dt>Inode next inode tile</dt>
-            <dd>{readU24(dataBytes, hoverOffset + 3)}</dd>
+            <dt className="ino-next-inode-tile">Inode next inode tile</dt>
+            <dd>
+              {readU24(dataBytes, hoverOffset + INO_OFFSETOF_NEXT_INODE_TILE)}
+            </dd>
 
-            <dt>Inode next inode tile offset</dt>
-            <dd>{readU24(dataBytes, hoverOffset + 6)}</dd>
+            <dt className="ino-next-inode-tile-offset">
+              Inode next inode tile offset
+            </dt>
+            <dd>
+              {readU24(
+                dataBytes,
+                hoverOffset + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET
+              )}
+            </dd>
 
-            <dt>Inode object number</dt>
-            <dd>{dataView.getBigUint64(hoverOffset + 9, false).toString()}</dd>
+            <dt className="ino-obj-no">Inode object number</dt>
+            <dd>
+              {dataView
+                .getBigUint64(hoverOffset + INO_OFFSETOF_OBJ_NO, false)
+                .toString()}
+            </dd>
 
-            <dt>Inode state</dt>
-            <dd>{dataBytes[hoverOffset + 17]}</dd>
+            <dt className="ino-state">Inode state</dt>
+            <dd>{dataBytes[hoverOffset + INO_OFFSETOF_STATE]}</dd>
 
-            <dt>Inode size</dt>
-            <dd>{readU40(dataBytes, hoverOffset + 18)}</dd>
+            <dt className="ino-size">Inode size</dt>
+            <dd>{readU40(dataBytes, hoverOffset + INO_OFFSETOF_SIZE)}</dd>
 
-            <dt>Inode last tile mode</dt>
-            <dd>{dataBytes[hoverOffset + 23]}</dd>
+            <dt className="ino-last-tile-mode">Inode last tile mode</dt>
+            <dd>{dataBytes[hoverOffset + INO_OFFSETOF_LAST_TILE_MODE]}</dd>
 
-            <dt>Inode key length</dt>
+            <dt className="ino-key-len">Inode key length</dt>
             <dd>{inodeKeyLen}</dd>
 
-            <dt>Inode key</dt>
+            <dt className="ino-key">Inode key</dt>
             <dd>
               {[
                 ...dataBytes.slice(
-                  hoverOffset + 25,
-                  hoverOffset + 25 + inodeKeyLen
+                  hoverOffset + INO_OFFSETOF_KEY,
+                  hoverOffset + INO_OFFSETOF_KEY + inodeKeyLen
                 ),
               ]
                 .map((c) => String.fromCharCode(c))
                 .join("")}
             </dd>
 
-            <dt>Inode key null terminator</dt>
-            <dd>{dataBytes[hoverOffset + 25 + inodeKeyLen]}</dd>
+            <dt className="ino-key-null-terminator">
+              Inode key null terminator
+            </dt>
+            <dd>
+              {dataBytes[hoverOffset + INO_OFFSETOF_KEY_NULL_TERM(inodeKeyLen)]}
+            </dd>
           </dl>
         )}
       </div>

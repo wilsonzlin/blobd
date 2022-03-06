@@ -12,6 +12,11 @@ body {
   margin: 0;
 }
 
+#data {
+  display: flex;
+  align-items: flex-start;
+}
+
 table {
   border-collapse: collapse;
   font-family: monospace;
@@ -21,7 +26,7 @@ table {
 th,
 td {
   border: 1px solid #ccc;
-  padding: 0.5rem;
+  padding: 0.25rem;
 }
 
 th {
@@ -32,7 +37,78 @@ td {
   text-align: right;
 }
 
-#data {
-  display: flex;
-  align-items: flex-start;
+dt {
+  font-weight: bold;
+  padding: 0.5rem;
+}
+
+.byte-selected {
+  background: #f2f2f2;
+  color: white !important;
+}
+
+.byte-printable {
+  color: aqua;
+}
+
+.byte-null {
+  color: gray;
+}
+
+.byte-control {
+  color: pink;
+}
+
+.byte-extended {
+  color: gold;
+}
+
+.ino-inode-size {
+  background: indianred;
+  color: white !important;
+}
+
+.ino-next-inode-tile {
+  background: gold;
+  color: white !important;
+}
+
+.ino-next-inode-tile-offset {
+  background: khaki;
+  color: white !important;
+}
+
+.ino-obj-no {
+  background: plum;
+  color: white !important;
+}
+
+.ino-state {
+  background: indigo;
+  color: white !important;
+}
+
+.ino-size {
+  background: CornflowerBlue;
+  color: white !important;
+}
+
+.ino-last-tile-mode {
+  background: teal;
+  color: white !important;
+}
+
+.ino-key-len {
+  background: seagreen;
+  color: white !important;
+}
+
+.ino-key {
+  background: limegreen;
+  color: white !important;
+}
+
+.ino-key-null-terminator {
+  background: gray;
+  color: white !important;
 }
