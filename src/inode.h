@@ -49,6 +49,8 @@ typedef enum {
   INO_STATE_DELETED = 1 << 2,
 } ino_state_t;
 
+#define INODE_STATE_IS_VALID(x) ((x) == INO_STATE_INCOMPLETE || (x) == INO_STATE_READY || (x) == INO_STATE_DELETED)
+
 typedef enum {
   INO_LAST_TILE_MODE_INLINE = 0,
   INO_LAST_TILE_MODE_TILE = 1,
