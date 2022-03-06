@@ -1,6 +1,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include "lossy_mpsc_queue.h"
 
 struct lossy_mpsc_queue_s {

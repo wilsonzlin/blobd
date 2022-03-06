@@ -116,6 +116,7 @@ svr_client_result_t method_create_object(
   DEBUG_TS_LOG("New object number is %lu, will go into bucket %lu", obj_no, args->key.bucket);
 
   cursor_t* inode_cur = ctx->dev->mmap + (ino_addr_tile * TILE_SIZE) + ino_addr_tile_offset;
+  write_u64(inode_cur + INO_OFFSETOF_INODE_SIZE, ino_size);
   write_u64(inode_cur + INO_OFFSETOF_OBJ_NO, obj_no);
   inode_cur[INO_OFFSETOF_STATE] = INO_STATE_INCOMPLETE;
   write_u40(inode_cur + INO_OFFSETOF_SIZE, args->size);
@@ -134,15 +135,18 @@ svr_client_result_t method_create_object(
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
 
   inode_t* bkt_ino_prev = NULL;
-  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, args->key, INO_STATE_INCOMPLETE, 0, bkt_ino, true, bkt_ino_prev) {
-    DEBUG_TS_LOG("Deleting incomplete inode with object number %lu", read_u64(other_inode_cur + INO_OFFSETOF_OBJ_NO));
-    flush_mark_inode_for_awaiting_deletion(ctx->flush, args->key.bucket, bkt_ino_prev, bkt_ino);
+  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, &args->key, ctx->dev, INO_STATE_INCOMPLETE, 0, bkt_ino, bkt_ino_prev = bkt_ino) {
+    DEBUG_TS_LOG("Deleting incomplete inode with object number %lu", read_u64(INODE_CUR(ctx->dev, bkt_ino) + INO_OFFSETOF_OBJ_NO));
+    flush_mark_inode_for_awaiting_deletion(ctx->flush_state, args->key.bucket, bkt_ino_prev, bkt_ino);
   }
 
   inode_t* bkt_head_old = atomic_load_explicit(&bkt->head, memory_order_relaxed);
-  DEBUG_TS_LOG("Next inode is at tile %u offset %u", bkt->tile, bkt->tile_offset);
+  DEBUG_TS_LOG("Next inode is at tile %u offset %u", bkt_head_old->tile, bkt_head_old->tile_offset);
   inode_t* bkt_ino = inode_create_thread_unsafe(ctx->inodes_state, bkt_head_old, INO_STATE_INCOMPLETE, ino_addr_tile, ino_addr_tile_offset);
+  atomic_store_explicit(&bkt->head, bkt_ino, memory_order_relaxed);
   DEBUG_TS_LOG("Wrote inode at tile %u offset %u", ino_addr_tile, ino_addr_tile_offset);
+
+  device_sync(ctx->dev, ino_addr_tile * TILE_SIZE + ino_addr_tile_offset, ino_size);
 
   buckets_mark_bucket_as_dirty(ctx->bkts, args->key.bucket);
 

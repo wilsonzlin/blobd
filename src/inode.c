@@ -30,23 +30,29 @@ inode_t* inode_create_thread_unsafe(
   inode_t* ino;
   if (inodes->next_free_inode_in_pool == NULL) {
     ino = malloc(sizeof(inode_t));
+
+    atomic_init(&ino->next, next);
+    atomic_init(&ino->state, state);
+    atomic_init(&ino->refcount, 0);
   } else {
     ino = inodes->next_free_inode_in_pool;
     inodes->next_free_inode_in_pool = ino->next_free_inode_in_pool;
+
+    atomic_store_explicit(&ino->next, next, memory_order_relaxed);
+    atomic_store_explicit(&ino->state, state, memory_order_relaxed);
+    atomic_store_explicit(&ino->refcount, 0, memory_order_relaxed);
   }
-  atomic_init(&ino->next, NULL);
-  atomic_init(&ino->state, state);
-  atomic_init(&ino->refcount, 0);
   ino->tile = tile;
   ino->tile_offset = tile_offset;
   // For sanity checks against double-free.
   ino->next_free_inode_in_pool = NULL;
+  return ino;
 }
 
 // We only destroy/release inode_t values from the single-thread manager, so we don't need to figure out how to do this atomically.
 void inode_destroy_thread_unsafe(inodes_state_t* inodes, inode_t* ino) {
   // TODO This doesn't handle all possible cases (e.g. pool only has one element).
-  DEBUG_ASSERT_STATE(ino->next_free_inode_in_pool == NULL, "inode is double freed");
+  DEBUG_ASSERT_STATE(ino->next_free_inode_in_pool == NULL, "inode double free");
   ino->next_free_inode_in_pool = inodes->next_free_inode_in_pool;
   inodes->next_free_inode_in_pool = ino;
 }

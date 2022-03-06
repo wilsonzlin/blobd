@@ -73,7 +73,7 @@ svr_client_result_t method_delete_object(
 
   inode_t* prev = NULL;
   inode_t* found = NULL;
-  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, &args->key, ctx->dev, (args->obj_no_or_zero ? INO_STATE_INCOMPLETE : 0) | INO_STATE_READY, args->obj_no_or_zero, bkt_ino, true, prev) {
+  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, &args->key, ctx->dev, (args->obj_no_or_zero ? INO_STATE_INCOMPLETE : 0) | INO_STATE_READY, args->obj_no_or_zero, bkt_ino, prev = bkt_ino) {
     found = bkt_ino;
     break;
   }
@@ -82,7 +82,7 @@ svr_client_result_t method_delete_object(
     ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
   }
 
-  flush_mark_inode_for_awaiting_deletion(ctx->flush, args->key.bucket, prev, found);
+  flush_mark_inode_for_awaiting_deletion(ctx->flush_state, args->key.bucket, prev, found);
 
   args->response[0] = METHOD_ERROR_OK;
   args->response_written = 0;

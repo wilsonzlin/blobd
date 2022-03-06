@@ -50,15 +50,17 @@ typedef enum {
   INO_LAST_TILE_MODE_TILE = 1,
 } ino_last_tile_mode_t;
 
-typedef struct {
-  _Atomic(inode_t*) next;
+struct inode_s {
+  _Atomic(struct inode_s*) next;
   _Atomic(ino_state_t) state;
   _Atomic(uint64_t) refcount;
   uint32_t tile;
   uint32_t tile_offset;
   // For inode.c internal use only.
-  inode_t* next_free_inode_in_pool;
-} inode_t;
+  struct inode_s* next_free_inode_in_pool;
+};
+
+typedef struct inode_s inode_t;
 
 typedef struct inodes_state_s inodes_state_t;
 

@@ -100,7 +100,7 @@ svr_client_result_t method_write_object(
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
-  cursor_t* inode_cur = ctx->dev + (TILE_SIZE * found->tile) + found->tile_offset;
+  cursor_t* inode_cur = ctx->dev->mmap + (TILE_SIZE * found->tile) + found->tile_offset;
   uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
   if (args->start >= size) {
     // We close the connection in case the client has already written data, and ending without disconnecting would cause the queued data to be interpreted as the start of the next request.

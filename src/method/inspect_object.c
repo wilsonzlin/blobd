@@ -66,23 +66,28 @@ svr_client_result_t method_inspect_object(
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&bkt->lock), "acquire read lock on bucket");
 
-  cursor_t* inode_cur = method_common_find_inode_in_bucket(bkt, &args->key, ctx->dev, INO_STATE_READY, 0);
+  inode_t* found = method_common_find_inode_in_bucket_for_non_management(
+    bkt,
+    &args->key,
+    ctx->dev,
+    INO_STATE_READY,
+    0
+  );
 
   args->response_written = 0;
   cursor_t* res_cur = args->response;
-  if (inode_cur == NULL) {
+  if (found == NULL) {
     produce_u8(&res_cur, METHOD_ERROR_NOT_FOUND);
     produce_u8(&res_cur, 0);
     produce_u64(&res_cur, 0);
   } else {
+    cursor_t* inode_cur = ctx->dev->mmap + (TILE_SIZE * found->tile) + found->tile_offset;
     produce_u8(&res_cur, METHOD_ERROR_OK);
     produce_u8(&res_cur, inode_cur[INO_OFFSETOF_STATE]);
     produce_u64(&res_cur, read_u40(inode_cur + INO_OFFSETOF_SIZE));
+    atomic_fetch_sub_explicit(&found->refcount, 1, memory_order_relaxed);
   }
-
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&bkt->lock), "release read lock on bucket");
 
   return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
 }

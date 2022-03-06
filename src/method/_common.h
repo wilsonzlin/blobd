@@ -7,8 +7,19 @@
 #include "../cursor.h"
 #include "../device.h"
 #include "../inode.h"
-#include "../server.h"
+#include "../server_method_args.h"
 #include "../util.h"
+
+typedef enum {
+  // Dummy value.
+  SVR_METHOD__UNKNOWN = 0,
+  SVR_METHOD_CREATE_OBJECT = 1,
+  SVR_METHOD_INSPECT_OBJECT = 2,
+  SVR_METHOD_READ_OBJECT = 3,
+  SVR_METHOD_WRITE_OBJECT = 4,
+  SVR_METHOD_COMMIT_OBJECT = 5,
+  SVR_METHOD_DELETE_OBJECT = 6,
+} method_t;
 
 typedef enum {
   METHOD_ERROR_OK = 0,
@@ -76,3 +87,19 @@ inode_t* method_common_find_inode_in_bucket_for_non_management(
   ino_state_t allowed_states,
   uint64_t required_obj_no_or_zero
 );
+
+#define INODE_CUR(dev, bkt_ino) ((dev)->mmap + ((bkt_ino)->tile * TILE_SIZE) + (bkt_ino)->tile_offset)
+
+#define METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, key, dev, allowed_states, required_obj_no_or_zero, bkt_ino, prev_expr) \
+  for ( \
+    inode_t* bkt_ino = atomic_load_explicit(&(bkt)->head, memory_order_relaxed); \
+    bkt_ino != NULL; \
+    (prev_expr), bkt_ino = atomic_load_explicit(&bkt_ino->next, memory_order_relaxed) \
+  ) \
+    /* We don't need to increment refcount, as we're in the single-threaded manager. */ \
+    if ( \
+      (atomic_load_explicit(&bkt_ino->state, memory_order_relaxed) & (allowed_states)) && \
+      ((required_obj_no_or_zero) == 0 || read_u64(INODE_CUR(dev, bkt_ino) + INO_OFFSETOF_OBJ_NO) == (required_obj_no_or_zero)) && \
+      INODE_CUR(dev, bkt_ino)[INO_OFFSETOF_KEY_LEN] == (key)->len && \
+      compare_raw_key_with_vec_key(INODE_CUR(dev, bkt_ino) + INO_OFFSETOF_KEY, INODE_CUR(dev, bkt_ino)[INO_OFFSETOF_KEY_LEN], (key)->data.vecs[0], (key)->data.vecs[1]) \
+    )

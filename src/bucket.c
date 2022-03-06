@@ -51,24 +51,26 @@ buckets_t* buckets_create_from_disk_state(
   }
 
   ts_log(INFO, "Loading %zu buckets", bkts->count);
-  cursor_t* cur = dev->mmap + bkts->dev_offset_pointers;
+  cursor_t* bkts_cur = dev->mmap + bkts->dev_offset_pointers;
   bkts->buckets = malloc(sizeof(bucket_t) * bkts->count);
   for (uint64_t bkt_id = 0; bkt_id < bkts->count; bkt_id++) {
     bucket_t* bkt = buckets_get_bucket(bkts, bkt_id);
     atomic_init(&bkt->head, NULL);
     // TODO Check tile address is less than tile_count.
-    uint32_t tile = consume_u24(&cur);
-    uint32_t tile_offset = consume_u24(&cur);
+    uint32_t tile = consume_u24(&bkts_cur);
+    uint32_t tile_offset = consume_u24(&bkts_cur);
     inode_t* prev = NULL;
     while (tile) {
       cursor_t* ino_cur = dev->mmap + (TILE_SIZE * tile) + tile_offset;
       // TODO Check tile address is less than tile_count.
-      uint32_t next_tile = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE);
-      uint32_t next_tile_offset = read_u24(cur + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET);
-      ino_state_t ino_state = cur[INO_OFFSETOF_STATE];
+      uint32_t next_tile = read_u24(ino_cur + INO_OFFSETOF_NEXT_INODE_TILE);
+      uint32_t next_tile_offset = read_u24(ino_cur + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET);
+      ino_state_t ino_state = ino_cur[INO_OFFSETOF_STATE];
       inode_t* bkt_ino = inode_create_thread_unsafe(inodes_state, NULL, ino_state, tile, tile_offset);
       if (prev != NULL) atomic_store_explicit(&prev->next, bkt_ino, memory_order_relaxed);
       if (atomic_load_explicit(&bkt->head, memory_order_relaxed) == NULL) atomic_store_explicit(&bkt->head, bkt_ino, memory_order_relaxed);
+      tile = next_tile;
+      tile_offset = next_tile_offset;
     }
   }
 

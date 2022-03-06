@@ -17,6 +17,10 @@ struct journal_s {
   uint64_t xxhash_u32_0;
 };
 
+static inline void sync_journal(journal_t* jnl) {
+  device_sync(jnl->dev, 0, JOURNAL_RESERVED_SPACE);
+}
+
 journal_t* journal_create(device_t* dev, uint64_t dev_offset) {
   journal_t* journal = malloc(sizeof(journal_t));
   journal->dev = dev;
@@ -39,7 +43,7 @@ void journal_flush(journal_t* jnl) {
   write_u32(jnl->mmap + 8, jnl->entry_count);
   uint64_t journal_checksum = XXH3_64bits(jnl->mmap + 8, jnl->cursor_next - (jnl->mmap + 8));
   write_u64(jnl->mmap, journal_checksum);
-  device_sync(jnl->dev);
+  sync_journal(jnl);
 }
 
 void journal_clear(journal_t* jnl) {
@@ -48,7 +52,7 @@ void journal_clear(journal_t* jnl) {
   write_u64(jnl->mmap, jnl->xxhash_u32_0);
   write_u32(jnl->mmap + 4, 0);
   // We must flush, or else we'll try recovering from journal and overwrite data.
-  device_sync(jnl->dev);
+  sync_journal(jnl);
 }
 
 typedef struct {
@@ -90,7 +94,7 @@ void journal_apply_or_clear(journal_t* jnl) {
       memcpy(jnl->dev->mmap + c.dev_offset, c.data, c.len);
     }
     // Ensure sync BEFORE clearing journal.
-    device_sync(jnl->dev);
+    sync_journal(jnl);
     ts_log(INFO, "Journal applied");
     journal_clear(jnl);
     ts_log(INFO, "Journal cleared");

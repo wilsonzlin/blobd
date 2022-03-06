@@ -71,7 +71,7 @@ svr_client_result_t method_commit_object(
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
 
   inode_t* found = NULL;
-  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, &args->key, ctx->dev, INO_STATE_INCOMPLETE, args->obj_no, bkt_ino, false, NULL) {
+  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, &args->key, ctx->dev, INO_STATE_INCOMPLETE, args->obj_no, bkt_ino, (void) 0) {
     found = bkt_ino;
     break;
   }
@@ -80,13 +80,13 @@ svr_client_result_t method_commit_object(
     ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
   }
 
-  flush_mark_inode_as_committed(ctx->flush, args->key.bucket, found);
+  flush_mark_inode_as_committed(ctx->flush_state, args->key.bucket, found);
 
   // Ensure object is found first before deleting other objects.
   inode_t* bkt_ino_prev = NULL;
-  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, args->key, ctx->dev, INO_STATE_READY, 0, bkt_ino, true, NULL) {
-    DEBUG_TS_LOG("Deleting existing ready inode with object number %lu", read_u64(other_inode_cur + INO_OFFSETOF_OBJ_NO));
-    flush_mark_inode_for_awaiting_deletion(ctx->flush, args->key.bucket, bkt_ino_prev, bkt_ino);
+  METHOD_COMMON_ITERATE_INODES_IN_BUCKET_FOR_MANAGEMENT(bkt, &args->key, ctx->dev, INO_STATE_READY, 0, bkt_ino, bkt_ino_prev = bkt_ino) {
+    DEBUG_TS_LOG("Deleting existing ready inode with object number %lu", read_u64(INODE_CUR(ctx->dev, bkt_ino) + INO_OFFSETOF_OBJ_NO));
+    flush_mark_inode_for_awaiting_deletion(ctx->flush_state, args->key.bucket, bkt_ino_prev, bkt_ino);
   }
 
   // TODO Mark for adding to stream.

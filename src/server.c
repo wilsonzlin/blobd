@@ -8,19 +8,23 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include "../ext/klib/khash.h"
 #include "errno.h"
 #include "exit.h"
+#include "flush.h"
 #include "log.h"
 #include "manager.h"
-#include "server.h"
-#include "util.h"
+#include "method/_common.h"
 #include "method/commit_object.h"
 #include "method/create_object.h"
 #include "method/delete_object.h"
 #include "method/inspect_object.h"
 #include "method/read_object.h"
 #include "method/write_object.h"
-#include "../ext/klib/khash.h"
+#include "server_client.h"
+#include "server_method_args.h"
+#include "server.h"
+#include "util.h"
 
 #define SVR_SOCK_PATH "/tmp/turbostore.sock"
 #define SVR_LISTEN_BACKLOG 65536
@@ -28,60 +32,6 @@
 #define SVR_CLIENTS_ACTIVE_MAX 1048576
 
 LOGGER("server");
-
-struct svr_method_args_parser_s {
-  uint16_t read_next;
-  uint16_t write_next;
-  uint8_t raw_len;
-  uint8_t raw[];
-};
-
-svr_method_args_parser_t* args_parser_create(uint64_t raw_len) {
-  svr_method_args_parser_t* p = malloc(sizeof(svr_method_args_parser_t) + raw_len);
-  p->read_next = 0;
-  p->write_next = 0;
-  p->raw_len = raw_len;
-  return p;
-}
-
-void args_parser_destroy(svr_method_args_parser_t* p) {
-  free(p);
-}
-
-uint8_t* svr_method_args_parser_parse(svr_method_args_parser_t* parser, uint64_t want_bytes) {
-  if (parser->read_next + want_bytes > parser->raw_len) {
-    return NULL;
-  }
-  uint8_t* rv = parser->raw + parser->read_next;
-  parser->read_next += want_bytes;
-  return rv;
-}
-
-bool svr_method_args_parser_end(svr_method_args_parser_t* parser) {
-  return parser->read_next == parser->raw_len;
-}
-
-struct svr_client_s {
-  int fd;
-  svr_method_args_parser_t* args_parser;
-  svr_method_t method;
-  void* method_state;
-  void (*method_state_destructor)(void*);
-  // Set only if the manager previously handled the client and has now handed it back to us.
-  svr_client_result_t method_result_from_manager;
-};
-
-svr_method_t server_client_get_method(svr_client_t* client) {
-  return client->method;
-}
-
-void* server_client_get_method_state(svr_client_t* client) {
-  return client->method_state;
-}
-
-int server_client_get_file_descriptor(svr_client_t* client) {
-  return client->fd;
-}
 
 KHASH_MAP_INIT_INT(svr_fd_to_client, svr_client_t*);
 
@@ -122,7 +72,7 @@ static inline svr_client_result_t process_client_until_result(
         uint8_t buf[1];
         int readlen;
         READ_OR_RELEASE(readlen, client->fd, buf, 1);
-        client->args_parser = args_parser_create(buf[0]);
+        client->args_parser = server_method_args_parser_create(buf[0]);
       } else {
         svr_method_args_parser_t* ap = client->args_parser;
         if (ap->write_next < ap->raw_len) {
@@ -154,7 +104,7 @@ static inline svr_client_result_t process_client_until_result(
             fprintf(stderr, "Unknown client method %u\n", client->method);
             exit(EXIT_INTERNAL);
           }
-          args_parser_destroy(client->args_parser);
+          server_method_args_parser_destroy(client->args_parser);
           client->args_parser = NULL;
         }
       }
@@ -169,7 +119,11 @@ static inline svr_client_result_t process_client_until_result(
         return method_write_object(server->ctx, client->method_state, client->fd);
       }
       if (client->method == SVR_METHOD_COMMIT_OBJECT || client->method == SVR_METHOD_CREATE_OBJECT || client->method == SVR_METHOD_DELETE_OBJECT) {
-        manager_hand_off_client(server->manager_state, server, client);
+        svr_client_t* popped = manager_hand_off_client(server->manager_state, client);
+        if (popped) {
+          // We are too overloaded, drop the client.
+          server_hand_back_client_from_manager(server, popped, SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR);
+        }
         return SVR_CLIENT_RESULT_HANDED_OFF_TO_MANAGER;
       }
       fprintf(stderr, "Unknown client method %u\n", client->method);
@@ -209,7 +163,7 @@ static inline void worker_handle_client_ready(
       res = SVR_CLIENT_RESULT__UNKNOWN;
       client->method = SVR_METHOD__UNKNOWN;
       if (client->args_parser != NULL) {
-        args_parser_destroy(client->args_parser);
+        server_method_args_parser_destroy(client->args_parser);
         client->args_parser = NULL;
       }
       if (client->method_state != NULL) {
@@ -237,7 +191,7 @@ static inline void worker_handle_client_ready(
       ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&server->fd_to_client_lock), "release write lock on FD map");
       // Destroy the client.
       if (client->args_parser != NULL) {
-        args_parser_destroy(client->args_parser);
+        server_method_args_parser_destroy(client->args_parser);
       }
       if (client->method_state != NULL) {
         client->method_state_destructor(client->method_state);
@@ -330,6 +284,7 @@ server_t* server_create(
   inodes_state_t* inodes_state,
   buckets_t* bkts,
   stream_t* stream,
+  flush_state_t* flush_state,
   manager_state_t* manager_state
 ) {
   int svr_socket = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -385,6 +340,7 @@ server_t* server_create(
   svr->ctx->bkts = bkts;
   svr->ctx->dev = dev;
   svr->ctx->fl = fl;
+  svr->ctx->flush_state = flush_state;
   svr->ctx->stream = stream;
   return svr;
 }

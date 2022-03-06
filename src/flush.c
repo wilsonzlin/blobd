@@ -66,7 +66,7 @@ void flush_mark_inode_for_awaiting_deletion(
   } else {
     atomic_store_explicit(&previous_if_inode_or_null_if_bucket->next, next, memory_order_relaxed);
   }
-  bucket_inodes_append(state->inodes_awaiting_refcount_for_deletion, ino);
+  inode_list_append(state->inodes_awaiting_refcount_for_deletion, ino);
   stream_event_t ev = {
     .bkt_id = bkt_id,
     .obj_no = read_u64(state->dev->mmap + (TILE_SIZE * ino->tile) + ino->tile_offset + INO_OFFSETOF_OBJ_NO),
@@ -251,9 +251,6 @@ void visit_bucket_dirty_bitmap(
 void flush_perform(flush_state_t* state) {
   DEBUG_TS_LOG("Starting flush");
 
-  // We sync first to ensure all inodes have been completely written to mmap, as otherwise we could be pointing to invalid inodes, leak space, etc.
-  device_sync(state->dev);
-
   // We collect changes to make first, and then write to journal. This allows two optimisations:
   // - Avoiding paging in the journal until we need to.
   // - Compacting contiguous change list entries, before committing final list to journal.
@@ -366,7 +363,8 @@ void flush_perform(flush_state_t* state) {
     memcpy(state->dev->mmap + c.device_offset, state->change_data_pool + c.offset_in_change_data_pool, c.len);
   }
   // We must ensure changes have been written successfully BEFORE erasing journal.
-  device_sync(state->dev);
+  // TODO Is granular but more frequent msync() calls better or worse?
+  device_sync(state->dev, 0, state->dev->size);
   state->changes->len = 0;
 
   // Erase and flush journal.

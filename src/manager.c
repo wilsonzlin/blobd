@@ -1,36 +1,21 @@
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
 #include "exit.h"
 #include "flush.h"
 #include "list.h"
 #include "log.h"
-#include "lossy_mpsc_queue.h"
 #include "manager.h"
+#include "manager_state.h"
+#include "method/_common.h"
+#include "method/commit_object.h"
+#include "method/create_object.h"
+#include "method/delete_object.h"
 #include "server.h"
 
 LOGGER("manager");
-
-struct manager_state_s {
-  lossy_mpsc_queue_t* client_queue;
-};
-
-manager_state_t* manager_state_create() {
-  manager_state_t* st = malloc(sizeof(manager_state_t));
-  st->client_queue = lossy_mpsc_queue_create(20);
-  return st;
-}
-
-void manager_hand_off_client(
-  manager_state_t* manager_state,
-  server_t* server,
-  svr_client_t* client
-) {
-  svr_client_t* popped = lossy_mpsc_queue_enqueue(manager_state->client_queue, client);
-  if (popped != NULL) {
-    // We are too overloaded, drop the client.
-    server_hand_back_client_from_manager(server, popped, SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR);
-  }
-}
 
 LIST_DEF(clients_awaiting_flush, svr_client_t*);
 LIST(clients_awaiting_flush, svr_client_t*);
@@ -56,7 +41,9 @@ manager_t* manager_create(manager_state_t* manager_state, flush_state_t* flush_s
   return mgr;
 }
 
-void* thread(manager_t* mgr) {
+void* thread(void* mgr_raw) {
+  manager_t* mgr = (manager_t*) mgr_raw;
+
   ts_log(INFO, "Started manager worker");
 
   while (true) {
@@ -96,9 +83,9 @@ void* thread(manager_t* mgr) {
     }
 
     svr_method_handler_ctx_t* ctx = server_get_method_handler_context(mgr->server);
-    svr_method_t method = server_client_get_method(client);
-    void* method_state = server_client_get_method_state(client);
-    int fd = server_client_get_file_descriptor(client);
+    method_t method = client->method;
+    void* method_state = client->method_state;
+    int fd = client->fd;
     svr_client_result_t res;
     if (method == SVR_METHOD_CREATE_OBJECT) {
       res = method_create_object(ctx, method_state, fd);

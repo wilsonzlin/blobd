@@ -5,8 +5,9 @@
 #include "bucket.h"
 #include "device.h"
 #include "freelist.h"
+#include "flush.h"
 #include "list.h"
-#include "manager.h"
+#include "manager_state.h"
 #include "stream.h"
 #include "../ext/klib/khash.h"
 
@@ -24,50 +25,14 @@ We must use ONESHOT to avoid race conditions: [worker] read() EAGAIN => [main] e
 
 **/
 
-typedef enum {
-  SVR_CLIENT_RESULT__UNKNOWN,
-  SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE,
-  SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE,
-  SVR_CLIENT_RESULT_AWAITING_FLUSH,
-  SVR_CLIENT_RESULT_HANDED_OFF_TO_MANAGER,
-  SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR,
-  SVR_CLIENT_RESULT_END,
-} svr_client_result_t;
-
-typedef struct svr_method_args_parser_s svr_method_args_parser_t;
-
-// Returns NULL if not enough bytes.
-uint8_t* svr_method_args_parser_parse(svr_method_args_parser_t* parser, uint64_t want_bytes);
-
-// Returns false if not all argument bytes were used.
-bool svr_method_args_parser_end(svr_method_args_parser_t* parser);
-
 typedef struct {
+  buckets_t* bkts;
   device_t* dev;
+  flush_state_t* flush_state;
   freelist_t* fl;
   inodes_state_t* inodes_state;
-  buckets_t* bkts;
   stream_t* stream;
 } svr_method_handler_ctx_t;
-
-typedef enum {
-  // Dummy value.
-  SVR_METHOD__UNKNOWN = 0,
-  SVR_METHOD_CREATE_OBJECT = 1,
-  SVR_METHOD_INSPECT_OBJECT = 2,
-  SVR_METHOD_READ_OBJECT = 3,
-  SVR_METHOD_WRITE_OBJECT = 4,
-  SVR_METHOD_COMMIT_OBJECT = 5,
-  SVR_METHOD_DELETE_OBJECT = 6,
-} svr_method_t;
-
-typedef struct svr_client_s svr_client_t;
-
-svr_method_t server_client_get_method(svr_client_t* client);
-
-void* server_client_get_method_state(svr_client_t* client);
-
-int server_client_get_file_descriptor(svr_client_t* client);
 
 typedef struct server_s server_t;
 
@@ -77,6 +42,7 @@ server_t* server_create(
   inodes_state_t* inodes_state,
   buckets_t* bkts,
   stream_t* stream,
+  flush_state_t* flush_state,
   manager_state_t* manager_state
 );
 

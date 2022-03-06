@@ -24,11 +24,14 @@ device_t* device_create(void* mmap, uint64_t size, uint64_t page_size) {
   dev->mmap = mmap;
   dev->size = size;
   dev->tile_count = uint_divide_ceil(size, TILE_SIZE);
+  dev->page_mask = ~(page_size - 1);
   return dev;
 }
 
-void device_sync(device_t* dev) {
-  if (-1 == msync(dev->mmap, dev->size, MS_SYNC)) {
+void device_sync(device_t* dev, uint64_t start, uint64_t end_exclusive) {
+  DEBUG_ASSERT_STATE(end_exclusive > start, "invalid device sync range");
+  uint64_t start_nearest = start & dev->page_mask;
+  if (-1 == msync(dev->mmap + start_nearest, end_exclusive - start_nearest, MS_SYNC)) {
     perror("Failed to sync mmap to device");
     exit(EXIT_INTERNAL);
   }
@@ -90,7 +93,7 @@ void device_format(device_t* dev, uint8_t bucket_count_log2) {
   memset(bkt_cur, 0, bkt_cnt * 6);
 
   ts_log(INFO, "Synchronising");
-  device_sync(dev);
+  device_sync(dev, 0, dev->size);
 
   ts_log(INFO, "All done!");
 }
