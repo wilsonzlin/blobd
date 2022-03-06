@@ -18,9 +18,17 @@ sacli.Command.new("uploadObjects")
       const conn = pool[no % pool.length];
       const k = key(no);
       (async () => {
-        const {objectNumber} = await conn.createObject(k, args.size);
-        await conn.writeObject(k, objectNumber, 0, data);
-        await conn.commitObject(k, objectNumber);
+        let phase;
+        try {
+          phase = "create";
+          const {objectNumber} = await conn.createObject(k, args.size);
+          phase = "write";
+          await conn.writeObject(k, objectNumber, 0, data);
+          phase = "commit";
+          await conn.commitObject(k, objectNumber);
+        } catch (err) {
+          console.error(`Failed to upload ${k} (in phase ${phase}): ${err.message}`);
+        }
         wg.done();
       })();
     }

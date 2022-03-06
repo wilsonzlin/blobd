@@ -115,7 +115,8 @@ svr_client_result_t method_create_object(
   uint64_t obj_no = ctx->stream->next_obj_no++;
   DEBUG_TS_LOG("New object number is %lu, will go into bucket %lu", obj_no, args->key.bucket);
 
-  cursor_t* inode_cur = ctx->dev->mmap + (ino_addr_tile * TILE_SIZE) + ino_addr_tile_offset;
+  uint64_t inode_dev_offset = (ino_addr_tile * TILE_SIZE) + ino_addr_tile_offset;
+  cursor_t* inode_cur = ctx->dev->mmap + inode_dev_offset;
   write_u64(inode_cur + INO_OFFSETOF_INODE_SIZE, ino_size);
   write_u64(inode_cur + INO_OFFSETOF_OBJ_NO, obj_no);
   inode_cur[INO_OFFSETOF_STATE] = INO_STATE_INCOMPLETE;
@@ -141,12 +142,16 @@ svr_client_result_t method_create_object(
   }
 
   inode_t* bkt_head_old = atomic_load_explicit(&bkt->head, memory_order_relaxed);
-  DEBUG_TS_LOG("Next inode is at tile %u offset %u", bkt_head_old->tile, bkt_head_old->tile_offset);
+  if (bkt_head_old != NULL) {
+    DEBUG_TS_LOG("Next inode is at tile %u offset %u", bkt_head_old->tile, bkt_head_old->tile_offset);
+  } else {
+    DEBUG_TS_LOG("Next inode is NULL");
+  }
   inode_t* bkt_ino = inode_create_thread_unsafe(ctx->inodes_state, bkt_head_old, INO_STATE_INCOMPLETE, ino_addr_tile, ino_addr_tile_offset);
   atomic_store_explicit(&bkt->head, bkt_ino, memory_order_relaxed);
   DEBUG_TS_LOG("Wrote inode at tile %u offset %u", ino_addr_tile, ino_addr_tile_offset);
 
-  device_sync(ctx->dev, ino_addr_tile * TILE_SIZE + ino_addr_tile_offset, ino_size);
+  device_sync(ctx->dev, inode_dev_offset, inode_dev_offset + ino_size);
 
   buckets_mark_bucket_as_dirty(ctx->bkts, args->key.bucket);
 

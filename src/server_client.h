@@ -21,4 +21,6 @@ typedef struct {
   void (*method_state_destructor)(void*);
   // Set only if the manager previously handled the client and has now handed it back to the server.
   svr_client_result_t method_result_from_manager;
+  // If we've already handed it off to the manager worker, don't hand it off again.
+  bool already_processed_by_manager;
 } svr_client_t;

@@ -86,7 +86,7 @@ svr_client_result_t method_read_object(
   method_read_object_state_t* args,
   int client_fd
 ) {
-  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, false);
+  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, args->response[0] != METHOD_ERROR_OK);
 
   svr_client_result_t res;
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);

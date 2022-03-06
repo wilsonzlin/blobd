@@ -29,7 +29,7 @@ device_t* device_create(void* mmap, uint64_t size, uint64_t page_size) {
 }
 
 void device_sync(device_t* dev, uint64_t start, uint64_t end_exclusive) {
-  DEBUG_ASSERT_STATE(end_exclusive > start, "invalid device sync range");
+  DEBUG_ASSERT_STATE(end_exclusive > start, "invalid device sync range: %lu to %lu", start, end_exclusive);
   uint64_t start_nearest = start & dev->page_mask;
   if (-1 == msync(dev->mmap + start_nearest, end_exclusive - start_nearest, MS_SYNC)) {
     perror("Failed to sync mmap to device");

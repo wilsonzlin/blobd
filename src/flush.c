@@ -359,7 +359,9 @@ void flush_perform(flush_state_t* state) {
   // Write changes to mmap and flush.
   for (uint64_t i = 0; i < state->changes->len; i++) {
     change_t c = state->changes->elems[i];
-    ts_log_debug_writing_change(c, state->buckets);
+    #ifdef TURBOSTORE_DEBUG_LOG_FLUSH_DELTAS
+      ts_log_debug_writing_change(c, state->buckets);
+    #endif
     memcpy(state->dev->mmap + c.device_offset, state->change_data_pool + c.offset_in_change_data_pool, c.len);
   }
   // We must ensure changes have been written successfully BEFORE erasing journal.
