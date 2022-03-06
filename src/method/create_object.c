@@ -159,7 +159,8 @@ svr_client_result_t method_create_object(
   atomic_store_explicit(&bkt->head, bkt_ino, memory_order_relaxed);
   DEBUG_TS_LOG("Wrote inode at tile %u offset %u", ino_addr_tile, ino_addr_tile_offset);
 
-  device_sync(ctx->dev, inode_dev_offset, inode_dev_offset + ino_size);
+  // We don't sync now, as then we'd be making millions of msync calls for tiny ranges.
+  // Instead, we sync on flush.
 
   buckets_mark_bucket_as_dirty(ctx->bkts, args->key.bucket);
 

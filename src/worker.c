@@ -59,7 +59,6 @@ void worker_on_client_event(void* worker_raw, int client_fd) {
     }
 
     if (res == SVR_CLIENT_RESULT_END) {
-      res = SVR_CLIENT_RESULT__UNKNOWN;
       client->method = METHOD__UNKNOWN;
       if (client->args_parser != NULL) {
         server_method_args_parser_destroy(client->args_parser);

@@ -141,6 +141,10 @@ svr_client_result_t method_write_object(
     goto final;
   }
   if (readno > 0) {
+    // This is a trade off:
+    // - msync() all writes (not just metadata) only at flush times will mean that the device will be totally idle the remaining time and overutilised during flush.
+    // - Doing this here means we don't have to make this a manager request, which is single-threaded.
+    // - It is better to sync at flush time if the write length is exceptionally small (e.g. less than 1 KiB).
     device_sync(ctx->dev, dest_dev_offset, dest_dev_offset + readno);
     args->written += readno;
     ASSERT_STATE(args->written <= write_max_len, "wrote past maximum length");

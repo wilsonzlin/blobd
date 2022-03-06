@@ -250,6 +250,11 @@ void visit_bucket_dirty_bitmap(
 void flush_perform(flush_state_t* state) {
   DEBUG_TS_LOG("Starting flush");
 
+  // In create_object, we specify that we wait until now (flush time) to sync all inode data in heap.
+  // One concern we need to think about is ensuring that metadata and heap data are synced at the same time, to prevent pointers/freelists/etc. from referring to nonexistent/corrupt inodes.
+  // However, we don't need to sync before creating journal, as the journal simply records old data, so even if it gets applied the device will still be in a consistent state.
+  // Therefore, to save msync() calls, we msync() at the same time as after applying new metadata bytes, but before journal is cleared.
+
   // We collect changes to make first, and then write to journal. This allows two optimisations:
   // - Avoiding paging in the journal until we need to.
   // - Compacting contiguous change list entries, before committing final list to journal.

@@ -14,7 +14,8 @@
 #include "server.h"
 #include "server_client.h"
 
-#define SERVER_EPOLL_EVENTS_MAX 1024
+// Make sure this is big enough as we flush after each epoll_wait(), and we don't want to do too many flushes in a short timespan (inefficient use of disk I/O).
+#define SERVER_EPOLL_EVENTS_MAX 8192
 #define SERVER_LISTEN_BACKLOG 65536
 
 LOGGER("server");
@@ -198,7 +199,7 @@ svr_client_result_t server_process_client_until_result(server_t* server, svr_cli
           // We haven't parsed the args.
           server_method_state_creator* fn = server->methods->state_creators[client->method];
           if (fn == NULL) {
-            // TODO
+            return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
           }
           client->method_state = fn(server->method_ctx, ap);
           client->method_state_destructor = server->methods->destructors[client->method];

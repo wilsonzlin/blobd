@@ -10,22 +10,24 @@ sacli.Command.new("uploadObjects")
   .required("size", Number)
   .action(async (args) => {
     const startTime = process.hrtime.bigint();
-    const data = Buffer.from("DEADBEEF".repeat(args.size / 8).slice(0, args.size));
-    const pool = Array.from({length: args.concurrency}, () => new TurbostoreClient({unixSocketPath: "/tmp/turbostore.sock", onSocketError: console.error}));
+    const data = Buffer.from("DEADBEEF".repeat(Math.ceil(args.size / 8)).slice(0, args.size));
+    const poolMgr = Array.from({length: args.concurrency}, () => new TurbostoreClient({unixSocketPath: "/tmp/turbostore-manager.sock", onSocketError: console.error}));
+    const poolWkr = Array.from({length: args.concurrency}, () => new TurbostoreClient({unixSocketPath: "/tmp/turbostore.sock", onSocketError: console.error}));
     const wg = waitGroup();
     for (let no = 0; no < args.count; no++) {
       wg.add();
-      const conn = pool[no % pool.length];
+      const connMgr = poolMgr[no % poolMgr.length];
+      const connWkr = poolWkr[no % poolWkr.length];
       const k = key(no);
       (async () => {
         let phase;
         try {
           phase = "create";
-          const {objectNumber} = await conn.createObject(k, args.size);
+          const {objectNumber} = await connMgr.createObject(k, args.size);
           phase = "write";
-          await conn.writeObject(k, objectNumber, 0, data);
+          await connWkr.writeObject(k, objectNumber, 0, data);
           phase = "commit";
-          await conn.commitObject(k, objectNumber);
+          await connMgr.commitObject(k, objectNumber);
         } catch (err) {
           console.error(`Failed to upload ${k} (in phase ${phase}): ${err.message}`);
         }
@@ -37,6 +39,7 @@ sacli.Command.new("uploadObjects")
     console.log(`Effective time: ${effectiveSec} seconds`);
     console.log(`Effective processing rate: ${args.count / effectiveSec} per second`);
     console.log(`Effective bandwidth: ${data.length * args.count / 1024 / 1024 / effectiveSec} MiB/s`);
-    await Promise.all(pool.map(conn => conn.close()));
+    await Promise.all(poolMgr.map(conn => conn.close()));
+    await Promise.all(poolWkr.map(conn => conn.close()));
   })
   .eval(process.argv.slice(2));

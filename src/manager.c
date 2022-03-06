@@ -65,7 +65,6 @@ void manager_on_client_event(void* manager_raw, int client_fd) {
     }
 
     if (res == SVR_CLIENT_RESULT_END) {
-      res = SVR_CLIENT_RESULT__UNKNOWN;
       client->method = METHOD__UNKNOWN;
       if (client->args_parser != NULL) {
         server_method_args_parser_destroy(client->args_parser);
@@ -139,25 +138,12 @@ void* manager_thread(void* mgr_raw) {
     // Aim to flush every 100 ms.
     server_wait_epoll(mgr->server, 100);
 
-    if (mgr->clients_awaiting_flush->len) {
-      struct timespec now;
-      if (-1 == clock_gettime(CLOCK_MONOTONIC, &now)) {
-        perror("Failed to get current time");
-        exit(EXIT_INTERNAL);
-      }
-      if (now.tv_sec - mgr->last_flushed.tv_sec > 0 || now.tv_nsec - mgr->last_flushed.tv_nsec > 100 * 1000 * 1000) {
-        flush_perform(mgr->flush_state);
-        if (-1 == clock_gettime(CLOCK_MONOTONIC, &mgr->last_flushed)) {
-          perror("Failed to get current time");
-          exit(EXIT_INTERNAL);
-        }
-        for (uint64_t i = 0; i < mgr->clients_awaiting_flush->len; i++) {
-          svr_client_t* client = mgr->clients_awaiting_flush->elems[i];
-          server_rearm_client_to_epoll(mgr->server, client->fd, false, true);
-        }
-        mgr->clients_awaiting_flush->len = 0;
-      }
+    for (uint64_t i = 0; i < mgr->clients_awaiting_flush->len; i++) {
+      svr_client_t* client = mgr->clients_awaiting_flush->elems[i];
+      // NOTE: It's possible that the client hasn't written anything, so don't add to epoll as that could cause infinite wait.
+      manager_on_client_event(mgr, client->fd);
     }
+    mgr->clients_awaiting_flush->len = 0;
   }
 }
 
