@@ -10,7 +10,7 @@ sacli.Command.new("readAllObjects")
   .required("size", Number)
   .action(async (args) => {
     const startTime = process.hrtime.bigint();
-    const data = Buffer.from("DEADBEEF".repeat(args.size / 8).slice(0, args.size));
+    const data = Buffer.from("DEADBEEF".repeat(Math.ceil(args.size / 8)).slice(0, args.size));
     const pool = Array.from({length: args.concurrency}, () => new TurbostoreClient({unixSocketPath: "/tmp/turbostore.sock", onSocketError: console.error}));
     const wg = waitGroup();
     for (let no = 0; no < args.count; no++) {
