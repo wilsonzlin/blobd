@@ -119,6 +119,7 @@ svr_client_result_t method_create_object(
   cursor_t* inode_cur = ctx->dev->mmap + inode_dev_offset;
   write_u64(inode_cur + INO_OFFSETOF_INODE_SIZE, ino_size);
   write_u64(inode_cur + INO_OFFSETOF_OBJ_NO, obj_no);
+  // TODO We don't need to do this as flusher will write the state.
   inode_cur[INO_OFFSETOF_STATE] = INO_STATE_INCOMPLETE;
   write_u40(inode_cur + INO_OFFSETOF_SIZE, args->size);
   inode_cur[INO_OFFSETOF_LAST_TILE_MODE] = ltm;

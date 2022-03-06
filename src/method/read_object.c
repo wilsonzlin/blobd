@@ -95,7 +95,7 @@ svr_client_result_t method_read_object(
     bkt,
     &args->key,
     ctx->dev,
-    INO_STATE_INCOMPLETE,
+    INO_STATE_READY,
     args->obj_no
   );
 

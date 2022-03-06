@@ -185,14 +185,14 @@ void freelist_replenish_tiles_of_inode(freelist_t* fl, cursor_t* inode_cur) {
 void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out) {
   uint64_t tiles_needed_orig = tiles_needed;
 
-  vec_512i_u8_t i1_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_1);
-  for (uint64_t o1 = 0, i1; (i1 = i1_candidates.elems[o1]) != 64; o1++) {
-    vec_512i_u8_t i2_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_2[i1]);
-    for (uint64_t o2 = 0, i2; (i2 = i2_candidates.elems[o2]) != 64; o2++) {
-      vec_512i_u8_t i3_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_3[i1][i2]);
-      for (uint64_t o3 = 0, i3; (i3 = i3_candidates.elems[o3]) != 64; o3++) {
+  array_u8_64_t i1_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_1);
+  VEC_ITER_INDICES_OF_NONZERO_BITS_64(i1_candidates, i1) {
+    array_u8_64_t i2_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_2[i1]);
+    VEC_ITER_INDICES_OF_NONZERO_BITS_64(i2_candidates, i2) {
+      array_u8_64_t i3_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_3[i1][i2]);
+      VEC_ITER_INDICES_OF_NONZERO_BITS_64(i3_candidates, i3) {
         free_tiles_t result = find_free_tiles_in_region(fl->tile_bitmap_4[i1][i2][i3], min(tiles_needed, 64));
-        for (uint64_t i = 0; result.tiles.elems[i] != 64; i++) {
+        for (uint64_t i = 0; i < 64 && result.tiles.elems[i] != 64; i++) {
           uint32_t tile = (((((i1 * 64) + i2) * 64) + i3) * 64) + result.tiles.elems[i];
           produce_u24(&out, tile);
           mark_tile_as_dirty(fl, tile);

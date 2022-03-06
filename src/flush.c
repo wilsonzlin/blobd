@@ -110,7 +110,7 @@ static inline uint8_t append_change(
 ) {
   change_t* last = changes_last_mut(changes);
   if (last != NULL && last->device_offset + last->len == device_offset && last->offset_in_change_data_pool + last->len == change_data_offset) {
-    // TODO Assert this doesn't overflow.
+    ASSERT_STATE(last->len <= 4294967295 - len, "too many bytes changed in one entry");
     last->len += len;
     return 0;
   } else {
@@ -234,15 +234,15 @@ void visit_bucket_dirty_bitmap(
   uint8_t layer
 ) {
   buckets_t* bkts = state->buckets;
-  vec_512i_u8_t candidates = vec_find_indices_of_nonzero_bits_64(bitmap);
+  array_u8_64_t candidates = vec_find_indices_of_nonzero_bits_64(bitmap);
   if (layer == buckets_get_dirty_bitmap_layer_count(bkts) - 1) {
-    for (uint64_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
-      uint64_t bkt_id = base + i1;
+    VEC_ITER_INDICES_OF_NONZERO_BITS_64(candidates, index) {
+      uint64_t bkt_id = base + index;
       record_bucket_change(state, change_data_writer, bkt_id);
     }
   } else {
-    for (uint64_t o1 = 0, i1; (i1 = candidates.elems[o1]) != 64; o1++) {
-      uint64_t offset = base + i1;
+    VEC_ITER_INDICES_OF_NONZERO_BITS_64(candidates, index) {
+      uint64_t offset = base + index;
       visit_bucket_dirty_bitmap(state, change_data_writer, buckets_get_dirty_bitmap_layer(bkts, layer + 1)[offset], offset * 64, layer + 1);
     }
   }
@@ -262,25 +262,30 @@ void flush_perform(flush_state_t* state) {
   change_data_pool_writer_t* change_data_writer = &cdw;
 
   // Process inodes pending deletion.
+  uint64_t new_awaiting_deletion_len = 0;
   for (uint64_t i = 0; i < state->inodes_awaiting_refcount_for_deletion->len; i++) {
     inode_t* ino = state->inodes_awaiting_refcount_for_deletion->elems[i];
     if (atomic_load_explicit(&ino->refcount, memory_order_relaxed) == 0) {
       freelist_replenish_tiles_of_inode(state->fl, state->dev->mmap + (TILE_SIZE * ino->tile) + ino->tile_offset);
       inode_destroy_thread_unsafe(state->inodes_state, ino);
+    } else {
+      state->inodes_awaiting_refcount_for_deletion->elems[new_awaiting_deletion_len] = ino;
+      new_awaiting_deletion_len++;
     }
   }
+  state->inodes_awaiting_refcount_for_deletion->len = new_awaiting_deletion_len;
 
   // Record freelist changes.
   // NOTE: Do this after processing object deletes, as those can cause space to be freed.
   if (state->fl->dirty_tiles_bitmap_1) {
-    vec_512i_u8_t i1_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_1);
-    for (uint64_t o1 = 0, i1; (i1 = i1_candidates.elems[o1]) != 64; o1++) {
-      vec_512i_u8_t i2_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_2[i1]);
-      for (uint64_t o2 = 0, i2; (i2 = i2_candidates.elems[o2]) != 64; o2++) {
-        vec_512i_u8_t i3_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_3[i1 * 64 + i2]);
-        for (uint64_t o3 = 0, i3; (i3 = i3_candidates.elems[o3]) != 64; o3++) {
-          vec_512i_u8_t i4_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_4[(((i1 * 64) + i2) * 64) + i3]);
-          for (uint64_t o4 = 0, i4; (i4 = i4_candidates.elems[o4]) != 64; o4++) {
+    array_u8_64_t i1_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_1);
+    VEC_ITER_INDICES_OF_NONZERO_BITS_64(i1_candidates, i1) {
+      array_u8_64_t i2_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_2[i1]);
+      VEC_ITER_INDICES_OF_NONZERO_BITS_64(i2_candidates, i2) {
+        array_u8_64_t i3_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_3[i1 * 64 + i2]);
+        VEC_ITER_INDICES_OF_NONZERO_BITS_64(i3_candidates, i3) {
+          array_u8_64_t i4_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_4[(((i1 * 64) + i2) * 64) + i3]);
+          VEC_ITER_INDICES_OF_NONZERO_BITS_64(i4_candidates, i4) {
             uint64_t tile_no = ((((i1 * 64) + i2) * 64) + i3) * 64 + i4;
             uint64_t dev_offset = state->fl->dev_offset + tile_no * 3;
 

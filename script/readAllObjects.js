@@ -4,7 +4,7 @@ const {TurbostoreClient} = require("@turbostore/client");
 
 const key = (no) => `/random/data/${no}`;
 
-sacli.Command.new("uploadObjects")
+sacli.Command.new("readAllObjects")
   .required("concurrency", Number)
   .required("count", Number)
   .required("size", Number)
@@ -20,7 +20,7 @@ sacli.Command.new("uploadObjects")
       (async () => {
         const read = await conn.readObject(k, 0, 0);
         if (read.actualStart !== 0 || read.actualLength !== data.length || !data.equals(read.data)) {
-          throw new Error(`Invalid read`);
+          throw new Error(`Invalid read (wanted length ${args.size}, got length ${read.data.length})`);
         }
         wg.done();
       })();

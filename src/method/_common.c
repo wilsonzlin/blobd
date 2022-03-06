@@ -40,14 +40,16 @@ inode_t* method_common_find_inode_in_bucket_for_non_management(
   uint64_t required_obj_no_or_zero
 ) {
   // WARNING: There are very subtle behaviours here that prevent race conditions:
-  // - Incrementing the refcount must be done BEFORE looking up the state. If we don't, it's possible for the inode and tile spaces to be freed and overwritten with other data, before we read the state and other fields.
+  // - Incrementing the refcount must be done BEFORE looking up the state. If we don't, it's possible for the inode and tile spaces to be freed and overwritten with other data, before we read the state and other fields or object data in tiles.
   // - The inode_t must always point to a valid address (e.g. using a pool). If we allocated it using malloc(), it's possible that we get to the value before the previous "next" is updated, but it gets free()'d before we manage to increment the refcount. If it's a pool value, it's possible the value has changed, but it's still safe to read the fields and detect that it's changed.
+  DEBUG_TS_LOG("Trying to find %s with state %d and object number %lu", key->data.bytes, allowed_states, required_obj_no_or_zero);
   for (
     inode_t* bkt_ino = atomic_load_explicit(&bkt->head, memory_order_relaxed);
     bkt_ino != NULL;
     bkt_ino = atomic_load_explicit(&bkt_ino->next, memory_order_relaxed)
   ) {
     cursor_t* cur = dev->mmap + (bkt_ino->tile * TILE_SIZE) + bkt_ino->tile_offset;
+    DEBUG_TS_LOG("Looking at inode with object number %lu, state %d, and key %s", read_u64(cur + INO_OFFSETOF_OBJ_NO), atomic_load_explicit(&bkt_ino->state, memory_order_relaxed), cur + INO_OFFSETOF_KEY);
     atomic_fetch_add_explicit(&bkt_ino->refcount, 1, memory_order_relaxed);
     if (
       (atomic_load_explicit(&bkt_ino->state, memory_order_relaxed) & allowed_states) &&
@@ -60,5 +62,6 @@ inode_t* method_common_find_inode_in_bucket_for_non_management(
     }
     atomic_fetch_sub_explicit(&bkt_ino->refcount, 1, memory_order_relaxed);
   }
+  DEBUG_TS_LOG("%s not found", key->data.bytes);
   return NULL;
 }

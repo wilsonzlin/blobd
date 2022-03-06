@@ -7,7 +7,7 @@ pushd "$(dirname "$0")"
 if [[ "${DEBUG:-}" == "1" ]]; then
   cc_args="-O0 -g -D TURBOSTORE_DEBUG"
 else
-  cc_args="-O3 -flto"
+  cc_args="-O3 -g -flto"
 fi
 
 gcc --std=c18 -Wall -Wextra -Werror $cc_args -march=native -o main -l pthread ext/xxHash/xxhash.c src/**/*.c src/*.c
