@@ -130,8 +130,6 @@ int main(int argc, char** argv) {
 
   flush_state_t* flush_state = flush_state_create(dev, journal, freelist, inodes_state, buckets, stream);
 
-  manager_state_t* manager_state = manager_state_create();
-
   worker_t* worker = worker_create(
     dev,
     buckets

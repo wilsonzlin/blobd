@@ -21,7 +21,6 @@
 #include "tile.h"
 #include "util.h"
 #include "vec.h"
-#include "../ext/xxHash/xxhash.h"
 
 LOGGER("flush");
 

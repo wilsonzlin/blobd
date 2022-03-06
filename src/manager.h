@@ -1,7 +1,6 @@
 #pragma once
 
 #include "flush.h"
-#include "manager_state.h"
 #include "server.h"
 
 typedef struct {

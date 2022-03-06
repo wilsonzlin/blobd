@@ -1,5 +1,9 @@
 #pragma once
 
+#include <stdbool.h>
+#include "server_client.h"
+#include "server_method_args.h"
+
 typedef struct server_s server_t;
 
 // Called with callback_state and client_fd.
@@ -25,7 +29,6 @@ void server_methods_add(server_methods_t* methods, method_t method, server_metho
 
 server_t* server_create(
   char* unix_socket_path,
-  int backlog_len,
   void* callback_state,
   server_on_client_add_handler* on_client_add,
   server_on_client_event_handler* on_client_event,

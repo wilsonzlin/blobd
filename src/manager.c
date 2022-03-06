@@ -8,11 +8,11 @@
 #include "list.h"
 #include "log.h"
 #include "manager.h"
-#include "manager_state.h"
 #include "method/_common.h"
 #include "method/commit_object.h"
 #include "method/create_object.h"
 #include "method/delete_object.h"
+#include "server_client.h"
 #include "server.h"
 
 #define MANAGER_SOCK_PATH "/tmp/turbostore-manager.sock"
@@ -25,7 +25,7 @@ LIST(clients_awaiting_flush, svr_client_t*);
 KHASH_MAP_INIT_INT(fd_to_client, svr_client_t*);
 
 struct manager_s {
-  kh_fd_to_client_t* fd_to_client;
+  server_clients_t* clients;
   server_t* server;
 
   manager_method_handler_ctx_t method_handler_ctx;
@@ -35,43 +35,16 @@ struct manager_s {
   clients_awaiting_flush_t* clients_awaiting_flush;
 };
 
-#define READ_OR_RELEASE(readres, fd, buf, n) \
-  readres = maybe_read(fd, buf, n); \
-  if (!readres) { \
-    return SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE; \
-  } \
-  if (readres < 0) { \
-    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR; \
-  }
-
 void manager_on_client_add(void* manager_raw, int client_fd) {
   manager_t* manager = (manager_t*) manager_raw;
 
-  svr_client_t* client = malloc(sizeof(svr_client_t));
-  client->fd = client_fd;
-  client->args_parser = NULL;
-  client->method = METHOD__UNKNOWN;
-  client->method_state = NULL;
-
-  // Map FD to client ID.
-  int kh_res;
-  khint_t kh_it = kh_put_svr_fd_to_client(manager->fd_to_client, client_fd, &kh_res);
-  if (-1 == kh_res) {
-    fprintf(stderr, "Failed to insert client into map\n");
-    exit(EXIT_INTERNAL);
-  }
-  kh_val(manager->fd_to_client, kh_it) = client;
+  server_clients_add(manager->clients, client_fd);
 }
 
 void manager_on_client_event(void* manager_raw, int client_fd) {
   manager_t* manager = (manager_t*) manager_raw;
 
-  khint_t kh_it = kh_get_svr_fd_to_client(manager->fd_to_client, client_fd);
-  if (kh_it == kh_end(manager->fd_to_client)) {
-    fprintf(stderr, "Client does not exist\n");
-    exit(EXIT_INTERNAL);
-  }
-  svr_client_t* client = kh_val(manager->fd_to_client, kh_it);
+  svr_client_t* client = server_clients_get(manager->clients, client_fd);
 
   while (true) {
     svr_client_result_t res = server_process_client_until_result(manager->server, client);
@@ -83,6 +56,11 @@ void manager_on_client_event(void* manager_raw, int client_fd) {
 
     if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
       server_rearm_client_to_epoll(manager->server, client->fd, false, true);
+      break;
+    }
+
+    if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH) {
+      clients_awaiting_flush_append(manager->clients_awaiting_flush, client);
       break;
     }
 
@@ -102,24 +80,7 @@ void manager_on_client_event(void* manager_raw, int client_fd) {
     }
 
     if (res == SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR) {
-      if (-1 == close(client->fd)) {
-        perror("Failed to close client FD");
-        exit(EXIT_INTERNAL);
-      }
-      khint_t k = kh_get_svr_fd_to_client(manager->fd_to_client, client->fd);
-      if (k == kh_end(manager->fd_to_client)) {
-        fprintf(stderr, "Client does not exist\n");
-        exit(EXIT_INTERNAL);
-      }
-      kh_del_svr_fd_to_client(manager->fd_to_client, k);
-      // Destroy the client.
-      if (client->args_parser != NULL) {
-        server_method_args_parser_destroy(client->args_parser);
-      }
-      if (client->method_state != NULL) {
-        client->method_state_destructor(client->method_state);
-      }
-      free(client);
+      server_clients_close(manager->clients, client);
       break;
     }
 
@@ -143,7 +104,7 @@ manager_t* manager_create(
 
   manager_t* mgr = malloc(sizeof(manager_t));
 
-  mgr->fd_to_client = kh_init_fd_to_client();
+  mgr->clients = server_clients_create();
   mgr->server = server_create(
     MANAGER_SOCK_PATH,
     mgr,

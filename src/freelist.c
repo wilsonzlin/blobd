@@ -14,7 +14,6 @@
 #include "log.h"
 #include "tile.h"
 #include "util.h"
-#include "../ext/xxHash/xxhash.h"
 
 LOGGER("freelist");
 

@@ -9,7 +9,6 @@
 #include "../tile.h"
 #include "../util.h"
 #include "_common.h"
-#include "../../ext/xxHash/xxhash.h"
 
 LOGGER("method_common");
 

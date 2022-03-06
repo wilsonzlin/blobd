@@ -1,16 +1,23 @@
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <unistd.h>
 #include "exit.h"
+#include "log.h"
 #include "method/_common.h"
 #include "server.h"
 #include "server_client.h"
 
 #define SERVER_EPOLL_EVENTS_MAX 1024
 #define SERVER_LISTEN_BACKLOG 65536
+
+LOGGER("server");
 
 struct server_methods_s {
   server_method_state_creator* state_creators[256];
@@ -153,6 +160,15 @@ void server_rearm_client_to_epoll(server_t* server, int client_fd, bool read, bo
     exit(EXIT_INTERNAL);
   }
 }
+
+#define READ_OR_RELEASE(readres, fd, buf, n) \
+  readres = maybe_read(fd, buf, n); \
+  if (!readres) { \
+    return SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE; \
+  } \
+  if (readres < 0) { \
+    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR; \
+  }
 
 svr_client_result_t server_process_client_until_result(server_t* server, svr_client_t* client) {
   while (true) {

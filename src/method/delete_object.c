@@ -7,16 +7,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "_common.h"
 #include "../cursor.h"
 #include "../device.h"
 #include "../exit.h"
 #include "../inode.h"
 #include "../log.h"
+#include "../manager.h"
 #include "../object.h"
-#include "../server.h"
+#include "../server_client.h"
+#include "../server_method_args.h"
 #include "../tile.h"
 #include "../util.h"
-#include "_common.h"
 #include "delete_object.h"
 
 LOGGER("method_delete_object");
@@ -31,10 +33,12 @@ struct method_delete_object_state_s {
 };
 
 // Method signature: (u8 key_len, char[] key, u64 obj_no_or_zero).
-method_delete_object_state_t* method_delete_object_state_create(
-  svr_method_handler_ctx_t* ctx,
+void* method_delete_object_state_create(
+  void* ctx_raw,
   svr_method_args_parser_t* parser
 ) {
+  manager_method_handler_ctx_t* ctx = (manager_method_handler_ctx_t*) ctx_raw;
+
   method_delete_object_state_t* args = aligned_alloc(64, sizeof(method_delete_object_state_t));
   INIT_STATE_RESPONSE(args, RESPONSE_LEN);
   uint8_t* p = NULL;
@@ -63,10 +67,13 @@ void method_delete_object_state_destroy(void* state) {
 }
 
 svr_client_result_t method_delete_object(
-  svr_method_handler_ctx_t* ctx,
-  method_delete_object_state_t* args,
+  void* ctx_raw,
+  void* args_raw,
   int client_fd
 ) {
+  manager_method_handler_ctx_t* ctx = (manager_method_handler_ctx_t*) ctx_raw;
+  method_delete_object_state_t* args = (method_delete_object_state_t*) args_raw;
+
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
 
   bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);

@@ -7,18 +7,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "_common.h"
 #include "../cursor.h"
 #include "../device.h"
 #include "../exit.h"
 #include "../inode.h"
 #include "../log.h"
 #include "../object.h"
-#include "../server.h"
+#include "../server_client.h"
+#include "../server_method_args.h"
 #include "../tile.h"
 #include "../util.h"
-#include "_common.h"
+#include "../worker.h"
 #include "read_object.h"
-#include "../../ext/xxHash/xxhash.h"
 
 LOGGER("method_create_object");
 
@@ -43,10 +44,12 @@ struct method_read_object_state_s {
 
 // Method signature: (u8 key_len, char[] key, i64 start, i64 end_exclusive_or_zero_for_eof).
 // Requested range cannot be empty.
-method_read_object_state_t* method_read_object_state_create(
-  svr_method_handler_ctx_t* ctx,
+void* method_read_object_state_create(
+  void* ctx_raw,
   svr_method_args_parser_t* parser
 ) {
+  worker_method_handler_ctx_t* ctx = (worker_method_handler_ctx_t*) ctx_raw;
+
   method_read_object_state_t* args = aligned_alloc(64, sizeof(method_read_object_state_t));
   uint8_t* p = NULL;
   args->read_count = 0;
@@ -82,10 +85,13 @@ void method_read_object_state_destroy(void* state) {
 }
 
 svr_client_result_t method_read_object(
-  svr_method_handler_ctx_t* ctx,
-  method_read_object_state_t* args,
+  void* ctx_raw,
+  void* args_raw,
   int client_fd
 ) {
+  worker_method_handler_ctx_t* ctx = (worker_method_handler_ctx_t*) ctx_raw;
+  method_read_object_state_t* args = (method_read_object_state_t*) args_raw;
+
   MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, args->response[0] != METHOD_ERROR_OK);
 
   svr_client_result_t res;
