@@ -156,6 +156,13 @@ static inline uint32_t change_data_pool_append_u40(change_data_pool_writer_t* wr
   return 5;
 }
 
+static inline uint32_t change_data_pool_append_u48(change_data_pool_writer_t* writer, uint64_t val) {
+  uint8_t data[6];
+  write_u48(data, val);
+  change_data_pool_append(writer, data, 6);
+  return 6;
+}
+
 static inline uint32_t change_data_pool_append_u64(change_data_pool_writer_t* writer, uint64_t val) {
   uint8_t data[8];
   write_u64(data, val);
@@ -211,15 +218,14 @@ static inline void record_bucket_change(
   uint64_t dev_offset = buckets_get_device_offset_of_bucket(state->buckets, bkt_id);
   inode_t* ino = atomic_load_explicit(&bkt->head, memory_order_relaxed);
   while (true) {
-    RECORD_CHANGE2(
+    RECORD_CHANGE1(
       dev_offset,
-      change_data_pool_append_u24(change_data_writer, ino == NULL ? 0 : ino->tile),
-      change_data_pool_append_u24(change_data_writer, ino == NULL ? 0 : ino->tile_offset)
+      change_data_pool_append_u48(change_data_writer, ino == NULL ? 0 : INODE_DEV_OFFSET(ino))
     );
     if (ino == NULL) {
       break;
     }
-    dev_offset = INODE_DEV_OFFSET(ino) + INO_OFFSETOF_NEXT_INODE_TILE;
+    dev_offset = INODE_DEV_OFFSET(ino) + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
     ino = atomic_load_explicit(&ino->next, memory_order_relaxed);
   }
 }

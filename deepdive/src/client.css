@@ -68,13 +68,8 @@ dt {
   color: white !important;
 }
 
-.ino-next-inode-tile {
+.ino-next-inode-dev-offset {
   background: gold;
-  color: white !important;
-}
-
-.ino-next-inode-tile-offset {
-  background: khaki;
   color: white !important;
 }
 

@@ -56,21 +56,18 @@ buckets_t* buckets_create_from_disk_state(
   for (uint64_t bkt_id = 0; bkt_id < bkts->count; bkt_id++) {
     bucket_t* bkt = buckets_get_bucket(bkts, bkt_id);
     atomic_init(&bkt->head, NULL);
-    // TODO Check tile address is less than tile_count.
-    uint32_t tile = consume_u24(&bkts_cur);
-    uint32_t tile_offset = consume_u24(&bkts_cur);
+    // TODO Check device offset is less than device size.
+    uint64_t dev_offset = consume_u48(&bkts_cur);
     inode_t* prev = NULL;
-    while (tile) {
-      cursor_t* ino_cur = dev->mmap + (TILE_SIZE * tile) + tile_offset;
-      // TODO Check tile address is less than tile_count.
-      uint32_t next_tile = read_u24(ino_cur + INO_OFFSETOF_NEXT_INODE_TILE);
-      uint32_t next_tile_offset = read_u24(ino_cur + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET);
+    while (dev_offset) {
+      cursor_t* ino_cur = dev->mmap + dev_offset;
+      // TODO Check device offset is less than device size.
+      uint32_t next_dev_offset = read_u48(ino_cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET);
       ino_state_t ino_state = ino_cur[INO_OFFSETOF_STATE];
-      inode_t* bkt_ino = inode_create_thread_unsafe(inodes_state, NULL, ino_state, tile, tile_offset);
+      inode_t* bkt_ino = inode_create_thread_unsafe(inodes_state, NULL, ino_state, dev_offset);
       if (prev != NULL) atomic_store_explicit(&prev->next, bkt_ino, memory_order_relaxed);
       if (atomic_load_explicit(&bkt->head, memory_order_relaxed) == NULL) atomic_store_explicit(&bkt->head, bkt_ino, memory_order_relaxed);
-      tile = next_tile;
-      tile_offset = next_tile_offset;
+      dev_offset = next_dev_offset;
     }
   }
 

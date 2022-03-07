@@ -36,6 +36,8 @@ void write_u32(cursor_t* cur, uint32_t v);
 
 void write_u40(cursor_t* cur, uint64_t v);
 
+void write_u48(cursor_t* cur, uint64_t v);
+
 void write_u64(cursor_t* cur, uint64_t v);
 
 void produce_u8(cursor_t** cur, uint8_t v);

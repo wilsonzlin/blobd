@@ -2,9 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom";
 
 const INO_OFFSETOF_INODE_SIZE = 0;
-const INO_OFFSETOF_NEXT_INODE_TILE = INO_OFFSETOF_INODE_SIZE + 3;
-const INO_OFFSETOF_NEXT_INODE_TILE_OFFSET = INO_OFFSETOF_NEXT_INODE_TILE + 3;
-const INO_OFFSETOF_OBJ_NO = INO_OFFSETOF_NEXT_INODE_TILE_OFFSET + 3;
+const INO_OFFSETOF_NEXT_INODE_DEV_OFFSET = INO_OFFSETOF_INODE_SIZE + 3;
+const INO_OFFSETOF_OBJ_NO = INO_OFFSETOF_NEXT_INODE_DEV_OFFSET + 6;
 const INO_OFFSETOF_STATE = INO_OFFSETOF_OBJ_NO + 8;
 const INO_OFFSETOF_SIZE = INO_OFFSETOF_STATE + 1;
 const INO_OFFSETOF_LAST_TILE_MODE = INO_OFFSETOF_SIZE + 5;
@@ -106,18 +105,13 @@ const App = ({}: {}) => {
                                 between(
                                   idx - hoverOffset,
                                   INO_OFFSETOF_INODE_SIZE,
-                                  INO_OFFSETOF_NEXT_INODE_TILE
+                                  INO_OFFSETOF_NEXT_INODE_DEV_OFFSET
                                 ) && "ino-inode-size",
                                 between(
                                   idx - hoverOffset,
-                                  INO_OFFSETOF_NEXT_INODE_TILE,
-                                  INO_OFFSETOF_NEXT_INODE_TILE_OFFSET
-                                ) && "ino-next-inode-tile",
-                                between(
-                                  idx - hoverOffset,
-                                  INO_OFFSETOF_NEXT_INODE_TILE_OFFSET,
+                                  INO_OFFSETOF_NEXT_INODE_DEV_OFFSET,
                                   INO_OFFSETOF_OBJ_NO
-                                ) && "ino-next-inode-tile-offset",
+                                ) && "ino-next-inode-dev-offset",
                                 between(
                                   idx - hoverOffset,
                                   INO_OFFSETOF_OBJ_NO,
@@ -210,18 +204,13 @@ const App = ({}: {}) => {
             <dt className="ino-inode-size">Inode inode size</dt>
             <dd>{readU24(dataBytes, hoverOffset + INO_OFFSETOF_INODE_SIZE)}</dd>
 
-            <dt className="ino-next-inode-tile">Inode next inode tile</dt>
-            <dd>
-              {readU24(dataBytes, hoverOffset + INO_OFFSETOF_NEXT_INODE_TILE)}
-            </dd>
-
-            <dt className="ino-next-inode-tile-offset">
-              Inode next inode tile offset
+            <dt className="ino-next-inode-dev-offset">
+              Inode next inode dev offset
             </dt>
             <dd>
               {readU24(
                 dataBytes,
-                hoverOffset + INO_OFFSETOF_NEXT_INODE_TILE_OFFSET
+                hoverOffset + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET
               )}
             </dd>
 

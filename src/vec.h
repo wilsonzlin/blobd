@@ -24,7 +24,9 @@ typedef struct {
 
 array_u8_64_t vec_find_indices_of_nonzero_bits_64(uint64_t bits);
 
-#define UNIQUE_VAR_INNER(base, x) base ## x
+// WARNING: UNIQUE_VAR_INNER_2 is necessary (check with `gcc -E` if not believed).
+#define UNIQUE_VAR_INNER_2(base, x) base ## x
+#define UNIQUE_VAR_INNER(base, x) UNIQUE_VAR_INNER_2(base, x)
 #define UNIQUE_VAR(base) UNIQUE_VAR_INNER(base, __COUNTER__)
 
 #define __VEC_ITER_INDICES_OF_NONZERO_BITS_64_WITH_VAR(indices, out, var_i) \

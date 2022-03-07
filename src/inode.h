@@ -11,8 +11,7 @@ Structure
 ---------
 
 u24 inode_size
-u24 next_inode_tile_or_zero_if_end
-u24 next_inode_byte_offset
+u48 next_inode_dev_offset_or_zero_if_end
 u64 obj_no
 u8 state
 u40 size
@@ -30,9 +29,8 @@ u8[] last_tile_data_if_mode_is_inline
 #include "tile.h"
 
 #define INO_OFFSETOF_INODE_SIZE 0
-#define INO_OFFSETOF_NEXT_INODE_TILE (INO_OFFSETOF_INODE_SIZE + 3)
-#define INO_OFFSETOF_NEXT_INODE_TILE_OFFSET (INO_OFFSETOF_NEXT_INODE_TILE + 3)
-#define INO_OFFSETOF_OBJ_NO (INO_OFFSETOF_NEXT_INODE_TILE_OFFSET + 3)
+#define INO_OFFSETOF_NEXT_INODE_DEV_OFFSET (INO_OFFSETOF_INODE_SIZE + 3)
+#define INO_OFFSETOF_OBJ_NO (INO_OFFSETOF_NEXT_INODE_DEV_OFFSET + 6)
 #define INO_OFFSETOF_STATE (INO_OFFSETOF_OBJ_NO + 8)
 #define INO_OFFSETOF_SIZE (INO_OFFSETOF_STATE + 1)
 #define INO_OFFSETOF_LAST_TILE_MODE (INO_OFFSETOF_SIZE + 5)
@@ -60,15 +58,16 @@ struct inode_s {
   _Atomic(struct inode_s*) next;
   _Atomic(ino_state_t) state;
   _Atomic(uint64_t) refcount;
-  uint32_t tile;
-  uint32_t tile_offset;
+  // This still needs to be atomic, even if we read the other fields atomically and with memory barriers:
+  // - It's still allowed for an inode to be released then immediately reused, overwriting this field, causing readers to misread.
+  _Atomic(uint64_t) dev_offset;
   // For inode.c internal use only.
   struct inode_s* next_free_inode_in_pool;
 };
 
 typedef struct inode_s inode_t;
 
-#define INODE_DEV_OFFSET(bkt_ino) (((bkt_ino)->tile * TILE_SIZE) + (bkt_ino)->tile_offset)
+#define INODE_DEV_OFFSET(bkt_ino) atomic_load_explicit(&(bkt_ino)->dev_offset, memory_order_relaxed)
 
 #define INODE_CUR(dev, bkt_ino) ((dev)->mmap + (INODE_DEV_OFFSET(bkt_ino)))
 
@@ -80,8 +79,7 @@ inode_t* inode_create_thread_unsafe(
   inodes_state_t* inodes,
   inode_t* next,
   ino_state_t state,
-  uint32_t tile,
-  uint32_t tile_offset
+  uint64_t dev_offset
 );
 
 void inode_destroy_thread_unsafe(inodes_state_t* inodes, inode_t* ino);

@@ -21,10 +21,7 @@ Structure
 ---------
 
 u8 count_log2_between_12_and_40_inclusive
-{
-  u24 tile_or_zero
-  u24 tile_offset
-}[] heads
+u48[] dev_offset_or_zero
 
 **/
 

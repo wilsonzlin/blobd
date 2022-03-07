@@ -107,23 +107,17 @@ svr_client_result_t method_create_object(
     ltm = INO_LAST_TILE_MODE_INLINE;
   }
 
-  // Use 64-bit values as we'll multiply these to get device offset.
-  uint64_t ino_addr_tile;
-  uint64_t ino_addr_tile_offset;
+  uint64_t ino_dev_offset;
   if (alloc_strategy == ALLOC_FULL_TILE) {
-    ino_addr_tile = freelist_consume_one_tile(ctx->fl);
-    ino_addr_tile_offset = 0;
+    ino_dev_offset = ((uint64_t) freelist_consume_one_tile(ctx->fl)) * TILE_SIZE;
   } else {
-    freelist_consumed_microtile_t c = freelist_consume_microtiles(ctx->fl, ino_size);
-    ino_addr_tile = c.microtile;
-    ino_addr_tile_offset = c.microtile_offset;
+    ino_dev_offset = freelist_consume_microtiles(ctx->fl, ino_size);
   }
 
   uint64_t obj_no = ctx->stream->next_obj_no++;
   DEBUG_TS_LOG("New object number is %lu, will go into bucket %lu", obj_no, args->key.bucket);
 
-  uint64_t inode_dev_offset = (ino_addr_tile * TILE_SIZE) + ino_addr_tile_offset;
-  cursor_t* inode_cur = ctx->dev->mmap + inode_dev_offset;
+  cursor_t* inode_cur = ctx->dev->mmap + ino_dev_offset;
   write_u64(inode_cur + INO_OFFSETOF_INODE_SIZE, ino_size);
   write_u64(inode_cur + INO_OFFSETOF_OBJ_NO, obj_no);
   inode_cur[INO_OFFSETOF_STATE] = INO_STATE_INCOMPLETE;
@@ -151,14 +145,14 @@ svr_client_result_t method_create_object(
   // We can use memory_order_relaxed, as we're in the single-threaded manager.
   inode_t* bkt_head_old = atomic_load_explicit(&bkt->head, memory_order_relaxed);
   if (bkt_head_old != NULL) {
-    DEBUG_TS_LOG("Next inode is at tile %u offset %u", bkt_head_old->tile, bkt_head_old->tile_offset);
+    DEBUG_TS_LOG("Next inode is at device offset %lu", INODE_DEV_OFFSET(bkt_head_old->ino_dev_offset));
   } else {
     DEBUG_TS_LOG("Next inode is NULL");
   }
-  inode_t* bkt_ino = inode_create_thread_unsafe(ctx->inodes_state, bkt_head_old, INO_STATE_INCOMPLETE, ino_addr_tile, ino_addr_tile_offset);
+  inode_t* bkt_ino = inode_create_thread_unsafe(ctx->inodes_state, bkt_head_old, INO_STATE_INCOMPLETE, ino_dev_offset);
   // Use memory_order_release to ensure worker threads can see inode field values on mmap immediately.
   atomic_store_explicit(&bkt->head, bkt_ino, memory_order_release);
-  DEBUG_TS_LOG("Wrote inode at tile %u offset %u", ino_addr_tile, ino_addr_tile_offset);
+  DEBUG_TS_LOG("Wrote inode at device offset %lu", ino_dev_offset);
 
   // We don't sync now, as then we'd be making millions of msync calls for tiny ranges.
   // Instead, we sync on flush.

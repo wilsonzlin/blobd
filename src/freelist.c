@@ -219,7 +219,7 @@ uint32_t freelist_consume_one_tile(freelist_t* fl) {
   return fast_allocate_one_tile(fl);
 }
 
-freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed) {
+uint64_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed) {
   __m512i y512 = _mm512_set1_epi32(bytes_needed << 8);
 
   uint32_t m1 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_1.vec, y512);
@@ -281,10 +281,6 @@ freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint32
     DEBUG_TS_LOG("Found microtile %u with %u free space", microtile_addr, cur_free);
   }
 
-  freelist_consumed_microtile_t out;
-  out.microtile = microtile_addr;
-  out.microtile_offset = TILE_SIZE - cur_free;
-
   // TODO assert cur_usage >= bytes_needed.
   uint32_t new_free = cur_free - bytes_needed;
   DEBUG_TS_LOG("Microtile %u now has %u free space", microtile_addr, new_free);
@@ -295,5 +291,5 @@ freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint32
   fl->microtile_free_map_2[i1].elems[i2] = (_mm512_reduce_max_epu32(fl->microtile_free_map_3[i1][i2].vec) & ~15) | i2;
   fl->microtile_free_map_1.elems[i1] = (_mm512_reduce_max_epu32(fl->microtile_free_map_2[i1].vec) & ~15) | i1;
 
-  return out;
+  return ((uint64_t) microtile_addr) * TILE_SIZE + (TILE_SIZE - cur_free);
 }

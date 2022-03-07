@@ -68,11 +68,6 @@ typedef struct {
   uint64_t dirty_tiles_bitmap_4[64 * 64 * 64];
 } freelist_t;
 
-typedef struct {
-  uint32_t microtile;
-  uint32_t microtile_offset;
-} freelist_consumed_microtile_t;
-
 freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset);
 
 void freelist_replenish_tiles_of_inode(freelist_t* fl, cursor_t* inode_cur);
@@ -81,4 +76,4 @@ void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out
 
 uint32_t freelist_consume_one_tile(freelist_t* fl);
 
-freelist_consumed_microtile_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed);
+uint64_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed);
