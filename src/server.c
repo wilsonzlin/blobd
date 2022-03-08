@@ -173,44 +173,47 @@ void server_rearm_client_to_epoll(server_t* server, int client_fd, bool read, bo
 
 svr_client_result_t server_process_client_until_result(server_t* server, svr_client_t* client) {
   while (true) {
-    if (client->method == METHOD__UNKNOWN) {
+    int fd = server_client_get_fd(client);
+    method_t method = server_client_get_method(client);
+    void* method_state = server_client_get_method_state(client);
+    if (method == METHOD__UNKNOWN) {
       // We haven't parsed the method yet.
       uint8_t buf[1];
       int readlen;
-      READ_OR_RELEASE(readlen, client->fd, buf, 1);
+      READ_OR_RELEASE(readlen, fd, buf, 1);
       // TODO Validate.
-      client->method = buf[0];
-    } else if (client->method_state == NULL) {
+      server_client_set_method(client, buf[0]);
+    } else if (method_state == NULL) {
       // NOTE: args_parser may be NULL if we've freed it after parsing and creating method_state.
-      if (client->args_parser == NULL) {
+      svr_method_args_parser_t* ap = server_client_get_args_parser(client);
+      if (ap == NULL) {
         // We haven't got the args length.
         uint8_t buf[1];
         int readlen;
-        READ_OR_RELEASE(readlen, client->fd, buf, 1);
-        client->args_parser = server_method_args_parser_create(buf[0]);
+        READ_OR_RELEASE(readlen, fd, buf, 1);
+        server_client_set_args_parser(client, server_method_args_parser_create(buf[0]));
       } else {
-        svr_method_args_parser_t* ap = client->args_parser;
         if (ap->write_next < ap->raw_len) {
           // We haven't received all args.
           int readlen;
-          READ_OR_RELEASE(readlen, client->fd, ap->raw + ap->write_next, ap->raw_len - ap->write_next);
+          READ_OR_RELEASE(readlen, fd, ap->raw + ap->write_next, ap->raw_len - ap->write_next);
           ap->write_next += readlen;
         } else {
           // We haven't parsed the args.
-          server_method_state_creator* fn = server->methods->state_creators[client->method];
+          server_method_state_creator* fn = server->methods->state_creators[method];
           if (fn == NULL) {
             return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
           }
-          client->method_state = fn(server->method_ctx, ap);
-          client->method_state_destructor = server->methods->destructors[client->method];
-          server_method_args_parser_destroy(client->args_parser);
-          client->args_parser = NULL;
+          server_client_set_method_state(client, fn(server->method_ctx, ap));
+          server_client_set_method_state_destructor(client, server->methods->destructors[method]);
+          server_method_args_parser_destroy(ap);
+          server_client_set_args_parser(client, NULL);
         }
       }
     } else {
       // The method must exist.
-      server_method_handler* fn = server->methods->handlers[client->method];
-      return fn(server->method_ctx, client->method_state, client->fd);
+      server_method_handler* fn = server->methods->handlers[method];
+      return fn(server->method_ctx, method_state, fd);
     }
   }
 }

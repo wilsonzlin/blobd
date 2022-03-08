@@ -50,12 +50,12 @@ void manager_on_client_event(void* manager_raw, int client_fd) {
     svr_client_result_t res = server_process_client_until_result(manager->server, client);
 
     if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE) {
-      server_rearm_client_to_epoll(manager->server, client->fd, true, false);
+      server_rearm_client_to_epoll(manager->server, client_fd, true, false);
       break;
     }
 
     if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
-      server_rearm_client_to_epoll(manager->server, client->fd, false, true);
+      server_rearm_client_to_epoll(manager->server, client_fd, false, true);
       break;
     }
 
@@ -65,25 +65,16 @@ void manager_on_client_event(void* manager_raw, int client_fd) {
     }
 
     if (res == SVR_CLIENT_RESULT_END) {
-      client->method = METHOD__UNKNOWN;
-      if (client->args_parser != NULL) {
-        server_method_args_parser_destroy(client->args_parser);
-        client->args_parser = NULL;
-      }
-      if (client->method_state != NULL) {
-        client->method_state_destructor(client->method_state);
-        client->method_state = NULL;
-        client->method_state_destructor = NULL;
-      }
+      server_client_reset(client);
       continue;
     }
 
     if (res == SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR) {
-      server_clients_close(manager->clients, client);
+      server_clients_close(client);
       break;
     }
 
-    fprintf(stderr, "Unknown client (method=%d) action result: %d\n", client->method, res);
+    fprintf(stderr, "Unknown client (method=%d) action result: %d\n", server_client_get_method(client), res);
     exit(EXIT_INTERNAL);
   }
 }
@@ -141,7 +132,7 @@ void* manager_thread(void* mgr_raw) {
     for (uint64_t i = 0; i < mgr->clients_awaiting_flush->len; i++) {
       svr_client_t* client = mgr->clients_awaiting_flush->elems[i];
       // NOTE: It's possible that the client hasn't written anything, so don't add to epoll as that could cause infinite wait.
-      manager_on_client_event(mgr, client->fd);
+      manager_on_client_event(mgr, server_client_get_fd(client));
     }
     mgr->clients_awaiting_flush->len = 0;
   }
