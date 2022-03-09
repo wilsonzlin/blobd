@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 
+#include <arpa/inet.h>
 #include <errno.h>
+#include <netinet/ip.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -55,26 +57,53 @@ struct server_s {
 };
 
 server_t* server_create(
+  // Can be NULL.
+  char* address,
+  // Must be 0 if `unix_socket_path` is not NULL.
+  uint16_t port,
+  // Can be NULL.
   char* unix_socket_path,
   void* callback_state,
   server_on_client_event_handler* on_client_event,
   void* method_ctx,
   server_methods_t* methods
 ) {
-  int svr_socket = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+  int family = unix_socket_path ? AF_UNIX : AF_INET;
+
+  int svr_socket = socket(family, SOCK_STREAM | SOCK_NONBLOCK, 0);
   if (-1 == svr_socket) {
     perror("Failed to open socket");
     exit(EXIT_INTERNAL);
   }
 
-  struct sockaddr_un svr_addr;
-  svr_addr.sun_family = AF_UNIX;
-  strncpy(svr_addr.sun_path, unix_socket_path, sizeof(svr_addr.sun_path) - 1);
-  if (-1 == unlink(unix_socket_path) && errno != ENOENT) {
-    perror("Failed to unlink socket");
-    exit(EXIT_CONF);
+  struct sockaddr* svr_addr;
+  uint64_t svr_addr_size;
+  if (unix_socket_path) {
+    struct sockaddr_un un;
+    un.sun_family = AF_UNIX;
+    strncpy(un.sun_path, unix_socket_path, sizeof(un.sun_path) - 1);
+    if (-1 == unlink(unix_socket_path) && errno != ENOENT) {
+      perror("Failed to unlink socket");
+      exit(EXIT_CONF);
+    }
+    svr_addr = (struct sockaddr*) &un;
+    svr_addr_size = sizeof(un);
+  } else {
+    struct sockaddr_in in;
+    in.sin_family = AF_INET;
+    if (address) {
+      in.sin_addr.s_addr = htonl(INADDR_ANY);
+    } else {
+      if (!inet_aton(address, &in.sin_addr)) {
+        fprintf(stderr, "Invalid address: %s\n", address);
+        exit(EXIT_CONF);
+      }
+    }
+    in.sin_port = htons(port);
+    svr_addr = (struct sockaddr*) &in;
+    svr_addr_size = sizeof(in);
   }
-  if (-1 == bind(svr_socket, (struct sockaddr*) &svr_addr, sizeof(svr_addr))) {
+  if (-1 == bind(svr_socket, svr_addr, svr_addr_size)) {
     perror("Failed to bind socket");
     exit(EXIT_CONF);
   }

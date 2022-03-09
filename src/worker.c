@@ -18,8 +18,6 @@
 #include "util.h"
 #include "worker.h"
 
-#define WORKER_SOCK_PATH "/tmp/turbostore.sock"
-
 LOGGER("worker");
 
 struct worker_s {
@@ -59,6 +57,9 @@ void worker_on_client_event(void* worker_raw, svr_client_t* client) {
 }
 
 worker_t* worker_create(
+  char* address,
+  uint16_t port,
+  char* unix_socket_path,
   device_t* dev,
   buckets_t* bkts
 ) {
@@ -69,7 +70,9 @@ worker_t* worker_create(
 
   worker_t* worker = malloc(sizeof(worker_t));
   worker->server = server_create(
-    WORKER_SOCK_PATH,
+    address,
+    port,
+    unix_socket_path,
     worker,
     worker_on_client_event,
     &worker->ctx,

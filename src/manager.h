@@ -15,6 +15,9 @@ typedef struct {
 typedef struct manager_s manager_t;
 
 manager_t* manager_create(
+  char* address,
+  uint16_t port,
+  char* unix_socket_path,
   buckets_t* bkts,
   device_t* dev,
   flush_state_t* flush_state,

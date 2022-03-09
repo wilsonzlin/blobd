@@ -14,8 +14,6 @@
 #include "server_client.h"
 #include "server.h"
 
-#define MANAGER_SOCK_PATH "/tmp/turbostore-manager.sock"
-
 LOGGER("manager");
 
 LIST_DEF(clients_awaiting_flush, svr_client_t*);
@@ -69,6 +67,9 @@ void manager_on_client_event(void* manager_raw, svr_client_t* client) {
 }
 
 manager_t* manager_create(
+  char* address,
+  uint16_t port,
+  char* unix_socket_path,
   buckets_t* bkts,
   device_t* dev,
   flush_state_t* flush_state,
@@ -84,7 +85,9 @@ manager_t* manager_create(
   manager_t* mgr = malloc(sizeof(manager_t));
 
   mgr->server = server_create(
-    MANAGER_SOCK_PATH,
+    address,
+    port,
+    unix_socket_path,
     mgr,
     manager_on_client_event,
     &mgr->method_handler_ctx,

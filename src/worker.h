@@ -32,6 +32,9 @@ typedef struct {
 typedef struct worker_s worker_t;
 
 worker_t* worker_create(
+  char* address,
+  uint16_t port,
+  char* unix_socket_path,
   device_t* dev,
   buckets_t* bkts
 );

@@ -13,6 +13,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "conf.h"
 #include "device.h"
 #include "exit.h"
 #include "flush.h"
@@ -26,20 +27,48 @@
 
 LOGGER("main");
 
+#define CONF_LEN_MAX 65536
+
 int main(int argc, char** argv) {
-  if (argc != 4) {
-    fprintf(stderr, "Not enough arguments provided\n");
+  if (argc != 3) {
+    fprintf(stderr, "Not enough or too many arguments provided\n");
     exit(EXIT_CONF);
   }
 
   char* arg_action = argv[1];
-  char* arg_dev = argv[2];
-  char* arg_worker_or_bucket_count = argv[3];
+  char* arg_conf = argv[2];
 
   long page_size = sysconf(_SC_PAGESIZE);
   if (-1 == page_size) {
     perror("Failed to get system page size");
     exit(EXIT_INTERNAL);
+  }
+
+  conf_parser_t* conf_parser = conf_parser_create();
+
+  char* conf_raw = malloc(CONF_LEN_MAX + 1);
+  int conf_fd = open(arg_conf, O_RDONLY);
+  int conf_len = read(conf_fd, conf_raw, CONF_LEN_MAX + 1);
+  if (conf_len < 0) {
+    perror("Failed to read conf file");
+    exit(EXIT_CONF);
+  }
+  if (conf_len == CONF_LEN_MAX) {
+    fprintf(stderr, "Conf file is too large\n");
+    exit(EXIT_CONF);
+  }
+  if (-1 == close(conf_fd)) {
+    perror("Failed to close conf file");
+    exit(EXIT_INTERNAL);
+  }
+
+  conf_t* conf = conf_parse(conf_parser, conf_raw, conf_len);
+  free(conf_raw);
+
+  char* arg_dev = conf->device_path;
+  if (arg_dev == NULL) {
+    fprintf(stderr, "Device path was not specified\n");
+    exit(EXIT_CONF);
   }
 
   int dev_fd = open(arg_dev, O_RDWR);
@@ -66,19 +95,14 @@ int main(int argc, char** argv) {
   device_t* dev = device_create(dev_fd, dev_mmap, dev_size, page_size);
 
   if (!strcmp("format", arg_action)) {
-    errno = 0;
-    uint64_t bucket_count = strtoull(arg_worker_or_bucket_count, NULL, 10);
-    if (errno != 0) {
-      perror("Failed to parse bucket count argument");
-      exit(EXIT_CONF);
-    }
+    uint64_t bucket_count = conf->bucket_count;
 
     if (bucket_count & (bucket_count - 1)) {
       fprintf(stderr, "Bucket count must be a power of 2\n");
       exit(EXIT_CONF);
     }
 
-    if (bucket_count < 4096 || bucket_count > 281474976710656) {
+    if (bucket_count < 4096llu || bucket_count > 281474976710656llu) {
       fprintf(stderr, "Bucket count must be in the range [4096, 281474976710656]\n");
       exit(EXIT_CONF);
     }
@@ -95,12 +119,7 @@ int main(int argc, char** argv) {
     exit(EXIT_CONF);
   }
 
-  errno = 0;
-  uint64_t worker_count = strtoull(arg_worker_or_bucket_count, NULL, 10);
-  if (errno != 0) {
-    perror("Failed to parse worker count argument");
-    exit(EXIT_CONF);
-  }
+  uint64_t worker_count = conf->worker_threads;
 
   if (worker_count == 0) {
     int v = sysconf(_SC_NPROCESSORS_ONLN);
@@ -126,15 +145,31 @@ int main(int argc, char** argv) {
   flush_state_t* flush_state = flush_state_create(dev, journal, freelist, inodes_state, buckets, stream);
 
   worker_t* worker = worker_create(
+    conf->worker_address,
+    conf->worker_port,
+    conf->worker_unix_socket_path,
     dev,
     buckets
   );
 
-  manager_t* manager = manager_create(buckets, dev, flush_state, freelist, inodes_state, stream);
+  manager_t* manager = manager_create(
+    conf->manager_address,
+    conf->manager_port,
+    conf->manager_unix_socket_path,
+    buckets,
+    dev,
+    flush_state,
+    freelist,
+    inodes_state,
+    stream
+  );
 
   void* manager_handle = manager_start(manager);
 
-  void* workers_handle = workers_start(worker, worker_count);
+  void* workers_handle = workers_start(
+    worker,
+    worker_count
+  );
 
   workers_join(workers_handle, worker_count);
 
