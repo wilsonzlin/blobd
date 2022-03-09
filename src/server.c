@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <sys/epoll.h>
@@ -44,10 +45,10 @@ void server_methods_add(server_methods_t* methods, method_t method, server_metho
 }
 
 struct server_s {
+  server_clients_t* clients;
   int socket_fd;
   int epoll_fd;
   void* callback_state;
-  server_on_client_add_handler* on_client_add;
   server_on_client_event_handler* on_client_event;
   void* method_ctx;
   server_methods_t* methods;
@@ -56,7 +57,6 @@ struct server_s {
 server_t* server_create(
   char* unix_socket_path,
   void* callback_state,
-  server_on_client_add_handler* on_client_add,
   server_on_client_event_handler* on_client_event,
   void* method_ctx,
   server_methods_t* methods
@@ -104,10 +104,10 @@ server_t* server_create(
   }
 
   server_t* svr = malloc(sizeof(server_t));
+  svr->clients = server_clients_create();
   svr->socket_fd = svr_socket;
   svr->epoll_fd = svr_epoll_fd;
   svr->callback_state = callback_state;
-  svr->on_client_add = on_client_add;
   svr->on_client_event = on_client_event;
   svr->method_ctx = method_ctx;
   svr->methods = methods;
@@ -140,27 +140,27 @@ void server_wait_epoll(server_t* server, int timeout) {
         exit(EXIT_INTERNAL);
       }
 
+      svr_client_t* client = server_clients_add(server->clients, peer);
+
       // Add to epoll.
       struct epoll_event ev;
       ev.events = EPOLLIN | EPOLLONESHOT | EPOLLET;
-      ev.data.fd = peer;
+      ev.data.ptr = client;
       if (-1 == epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, peer, &ev)) {
         perror("Failed to add connection to epoll");
         exit(EXIT_INTERNAL);
       }
-
-      server->on_client_add(server->callback_state, peer);
     } else {
-      server->on_client_event(server->callback_state, svr_epoll_events[n].data.fd);
+      server->on_client_event(server->callback_state, svr_epoll_events[n].data.ptr);
     }
   }
 }
 
-void server_rearm_client_to_epoll(server_t* server, int client_fd, bool read, bool write) {
+void server_rearm_client_to_epoll(server_t* server, svr_client_t* client, bool read, bool write) {
   struct epoll_event ev;
   ev.events = EPOLLET | EPOLLONESHOT | (read ? EPOLLIN : 0) | (write ? EPOLLOUT : 0);
-  ev.data.fd = client_fd;
-  if (-1 == epoll_ctl(server->epoll_fd, EPOLL_CTL_MOD, client_fd, &ev)) {
+  ev.data.ptr = client;
+  if (-1 == epoll_ctl(server->epoll_fd, EPOLL_CTL_MOD, server_client_get_fd(client), &ev)) {
     perror("Failed to add connection to epoll");
     exit(EXIT_INTERNAL);
   }
@@ -220,4 +220,8 @@ svr_client_result_t server_process_client_until_result(server_t* server, svr_cli
       return fn(server->method_ctx, method_state, fd);
     }
   }
+}
+
+void server_close_client(server_t* server, svr_client_t* client) {
+  server_clients_close(server->clients, client);
 }

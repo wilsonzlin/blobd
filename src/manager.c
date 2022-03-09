@@ -2,7 +2,6 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <time.h>
 #include "exit.h"
 #include "flush.h"
 #include "list.h"
@@ -25,37 +24,27 @@ LIST(clients_awaiting_flush, svr_client_t*);
 KHASH_MAP_INIT_INT(fd_to_client, svr_client_t*);
 
 struct manager_s {
-  server_clients_t* clients;
   server_t* server;
 
   manager_method_handler_ctx_t method_handler_ctx;
 
   flush_state_t* flush_state;
-  struct timespec last_flushed;
   clients_awaiting_flush_t* clients_awaiting_flush;
 };
 
-void manager_on_client_add(void* manager_raw, int client_fd) {
+void manager_on_client_event(void* manager_raw, svr_client_t* client) {
   manager_t* manager = (manager_t*) manager_raw;
-
-  server_clients_add(manager->clients, client_fd);
-}
-
-void manager_on_client_event(void* manager_raw, int client_fd) {
-  manager_t* manager = (manager_t*) manager_raw;
-
-  svr_client_t* client = server_clients_get(manager->clients, client_fd);
 
   while (true) {
     svr_client_result_t res = server_process_client_until_result(manager->server, client);
 
     if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE) {
-      server_rearm_client_to_epoll(manager->server, client_fd, true, false);
+      server_rearm_client_to_epoll(manager->server, client, true, false);
       break;
     }
 
     if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
-      server_rearm_client_to_epoll(manager->server, client_fd, false, true);
+      server_rearm_client_to_epoll(manager->server, client, false, true);
       break;
     }
 
@@ -70,7 +59,7 @@ void manager_on_client_event(void* manager_raw, int client_fd) {
     }
 
     if (res == SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR) {
-      server_clients_close(client);
+      server_close_client(manager->server, client);
       break;
     }
 
@@ -94,11 +83,9 @@ manager_t* manager_create(
 
   manager_t* mgr = malloc(sizeof(manager_t));
 
-  mgr->clients = server_clients_create();
   mgr->server = server_create(
     MANAGER_SOCK_PATH,
     mgr,
-    manager_on_client_add,
     manager_on_client_event,
     &mgr->method_handler_ctx,
     methods
@@ -112,10 +99,6 @@ manager_t* manager_create(
   mgr->method_handler_ctx.stream = stream;
 
   mgr->flush_state = flush_state;
-  if (-1 == clock_gettime(CLOCK_MONOTONIC, &mgr->last_flushed)) {
-    perror("Failed to get current time");
-    exit(EXIT_INTERNAL);
-  }
   mgr->clients_awaiting_flush = clients_awaiting_flush_create();
   return mgr;
 }
@@ -132,7 +115,7 @@ void* manager_thread(void* mgr_raw) {
     for (uint64_t i = 0; i < mgr->clients_awaiting_flush->len; i++) {
       svr_client_t* client = mgr->clients_awaiting_flush->elems[i];
       // NOTE: It's possible that the client hasn't written anything, so don't add to epoll as that could cause infinite wait.
-      manager_on_client_event(mgr, server_client_get_fd(client));
+      manager_on_client_event(mgr, client);
     }
     mgr->clients_awaiting_flush->len = 0;
   }

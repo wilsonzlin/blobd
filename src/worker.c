@@ -24,31 +24,22 @@ LOGGER("worker");
 
 struct worker_s {
   server_t* server;
-  server_clients_t* clients;
   worker_method_handler_ctx_t ctx;
 };
 
-void worker_on_client_add(void* worker_raw, int client_fd) {
+void worker_on_client_event(void* worker_raw, svr_client_t* client) {
   worker_t* worker = (worker_t*) worker_raw;
-
-  server_clients_add(worker->clients, client_fd);
-}
-
-void worker_on_client_event(void* worker_raw, int client_fd) {
-  worker_t* worker = (worker_t*) worker_raw;
-
-  svr_client_t* client = server_clients_get(worker->clients, client_fd);
 
   while (true) {
     svr_client_result_t res = server_process_client_until_result(worker->server, client);
 
     if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE) {
-      server_rearm_client_to_epoll(worker->server, client_fd, true, false);
+      server_rearm_client_to_epoll(worker->server, client, true, false);
       break;
     }
 
     if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
-      server_rearm_client_to_epoll(worker->server, client_fd, false, true);
+      server_rearm_client_to_epoll(worker->server, client, false, true);
       break;
     }
 
@@ -58,7 +49,7 @@ void worker_on_client_event(void* worker_raw, int client_fd) {
     }
 
     if (res == SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR) {
-      server_clients_close(client);
+      server_close_client(worker->server, client);
       break;
     }
 
@@ -77,11 +68,9 @@ worker_t* worker_create(
   server_methods_add(methods, METHOD_WRITE_OBJECT, method_write_object_state_create, method_write_object, method_write_object_state_destroy);
 
   worker_t* worker = malloc(sizeof(worker_t));
-  worker->clients = server_clients_create();
   worker->server = server_create(
     WORKER_SOCK_PATH,
     worker,
-    worker_on_client_add,
     worker_on_client_event,
     &worker->ctx,
     methods

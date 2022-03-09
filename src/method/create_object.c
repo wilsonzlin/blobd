@@ -148,7 +148,7 @@ svr_client_result_t method_create_object(
   // We can use memory_order_relaxed, as we're in the single-threaded manager.
   inode_t* bkt_head_old = atomic_load_explicit(&bkt->head, memory_order_relaxed);
   if (bkt_head_old != NULL) {
-    DEBUG_TS_LOG("Next inode is at device offset %lu", INODE_DEV_OFFSET(bkt_head_old->ino_dev_offset));
+    DEBUG_TS_LOG("Next inode is at device offset %lu", INODE_DEV_OFFSET(bkt_head_old));
   } else {
     DEBUG_TS_LOG("Next inode is NULL");
   }
