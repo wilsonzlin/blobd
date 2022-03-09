@@ -116,7 +116,6 @@ conf_t* conf_parse(conf_parser_t* parser, char* raw, uint64_t len) {
       memcpy(str_val, value_raw, value_raw_len);
       str_val[value_raw_len] = 0;
       *((char**) (conf_raw + f.offset)) = str_val;
-      printf("offsetof %s %lu %lu\n", key_buf, (uint64_t) conf, f.offset);
       break;
 
     case FT_U16:

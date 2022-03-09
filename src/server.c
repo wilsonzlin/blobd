@@ -91,7 +91,7 @@ server_t* server_create(
   } else {
     struct sockaddr_in in;
     in.sin_family = AF_INET;
-    if (address) {
+    if (!address) {
       in.sin_addr.s_addr = htonl(INADDR_ANY);
     } else {
       if (!inet_aton(address, &in.sin_addr)) {
@@ -107,9 +107,11 @@ server_t* server_create(
     perror("Failed to bind socket");
     exit(EXIT_CONF);
   }
-  if (-1 == chmod(unix_socket_path, 0777)) {
-    perror("Failed to chmod socket");
-    exit(EXIT_CONF);
+  if (unix_socket_path) {
+    if (-1 == chmod(unix_socket_path, 0777)) {
+      perror("Failed to chmod socket");
+      exit(EXIT_CONF);
+    }
   }
 
   if (-1 == listen(svr_socket, SERVER_LISTEN_BACKLOG)) {
