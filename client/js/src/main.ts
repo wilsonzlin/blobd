@@ -1,6 +1,6 @@
 import net from "net";
 import bigIntToNumber from "@xtjs/lib/js/bigIntToNumber";
-import { Readable } from "stream";
+import { Readable, Writable } from "stream";
 
 const buf = Buffer.alloc(8);
 const encodeI64 = (val: number) => {
@@ -247,56 +247,55 @@ export class TurbostoreClient {
     });
   }
 
-  writeObject(
+  writeObjectWithBuffer(
     key: string,
     objNo: number,
     start: number,
-    data: Uint8Array | Readable
+    data: Uint8Array
   ) {
     return this._enqueue(async () => {
       this.socket.write(write_object(key, objNo, start));
-      if (data instanceof Uint8Array) {
-        this.socket.write(data);
-      } else {
-        while (
-          // Keep writing until the server responds.
-          !this.socket.readableLength &&
-          // The server may have disconnected.
-          this.socket.writable &&
-          // The source may have ended or been destroyed.
-          data.readable
-        ) {
-          if ((this.socket as any).writableNeedDrain) {
-            await new Promise<void>((resolve, reject) => {
-              const handler = (error?: Error) => {
-                this.socket.off("error", handler).off("drain", handler);
-                error ? reject(error) : resolve();
-              };
-              this.socket.on("error", handler).on("drain", handler);
-            });
-          }
-          if (!data.readableLength) {
-            await new Promise<void>((resolve, reject) => {
-              const handler = (error?: Error) => {
-                // "readable" is also emitted on end.
-                data.off("error", handler).off("readable", handler);
-                error ? reject(error) : resolve();
-              };
-              data.on("error", handler).on("readable", handler);
-            });
-          }
-          let chunk;
-          if ((chunk = data.read())) {
-            this.socket.write(chunk);
-          }
-        }
-      }
+      this.socket.write(data);
       const chunk = await read(this.socket, 1);
       if (chunk.length != 1) {
         throw new Error(`Invalid write_object response: ${chunk}`);
       }
       const err = chunk[0];
-      if (err != 0) throw new TurbostoreError("write_object", err);
+      if (err != 0) {
+        throw new TurbostoreError("write_object", err);
+      }
+    });
+  }
+
+  writeObjectWithStream(key: string, objNo: number, start: number) {
+    return this._enqueue(async () => {
+      const { socket } = this;
+      socket.write(write_object(key, objNo, start));
+      return new Writable({
+        destroy(err, cb) {
+          // TODO
+          socket.destroy(new Error("write_object downstream was destroyed"));
+          cb(err);
+        },
+        final(cb) {
+          // TODO Handle case where not enough bytes were written.
+          read(socket, 1)
+            .then((chunk) => {
+              if (chunk.length != 1) {
+                throw new Error(`Invalid write_object response: ${chunk}`);
+              }
+              const err = chunk[0];
+              if (err != 0) {
+                throw new TurbostoreError("write_object", err);
+              }
+              cb();
+            })
+            .catch(cb);
+        },
+        write(chunk, encoding, cb) {
+          socket.write(chunk, encoding, cb);
+        },
+      });
     });
   }
 }
