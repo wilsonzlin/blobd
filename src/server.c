@@ -70,40 +70,51 @@ server_t* server_create(
 ) {
   int family = unix_socket_path ? AF_UNIX : AF_INET;
 
-  int svr_socket = socket(family, SOCK_STREAM | SOCK_NONBLOCK, 0);
-  if (-1 == svr_socket) {
+  int skt = socket(family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+  if (-1 == skt) {
     perror("Failed to open socket");
     exit(EXIT_INTERNAL);
   }
+  if (!unix_socket_path) {
+    int opt = 1;
+    // Set SO_REUSEADDR to allow immediate reuse of address/port combo if we crashed.
+    if (-1 == setsockopt(skt, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+      perror("Failed to set SO_REUSEADDR");
+      exit(EXIT_INTERNAL);
+    }
+  }
 
-  struct sockaddr* svr_addr;
-  uint64_t svr_addr_size;
+  struct sockaddr* addr;
+  uint64_t addr_size;
   if (unix_socket_path) {
-    struct sockaddr_un un;
-    un.sun_family = AF_UNIX;
-    strncpy(un.sun_path, unix_socket_path, sizeof(un.sun_path) - 1);
+    ts_log(INFO, "Binding to UNIX socket path %s", unix_socket_path);
+    addr_size = sizeof(struct sockaddr_un);
+    struct sockaddr_un* un = malloc(addr_size);
+    un->sun_family = AF_UNIX;
+    strncpy(un->sun_path, unix_socket_path, sizeof(un->sun_path) - 1);
     if (-1 == unlink(unix_socket_path) && errno != ENOENT) {
       perror("Failed to unlink socket");
       exit(EXIT_CONF);
     }
-    svr_addr = (struct sockaddr*) &un;
-    svr_addr_size = sizeof(un);
+    addr = (struct sockaddr*) un;
   } else {
-    struct sockaddr_in in;
-    in.sin_family = AF_INET;
+    addr_size = sizeof(struct sockaddr_in);
+    struct sockaddr_in* in = malloc(addr_size);
+    in->sin_family = AF_INET;
     if (!address) {
-      in.sin_addr.s_addr = htonl(INADDR_ANY);
+      ts_log(INFO, "Binding to TCP port %u on all addresses", port);
+      in->sin_addr.s_addr = INADDR_ANY;
     } else {
-      if (!inet_aton(address, &in.sin_addr)) {
+      if (!inet_aton(address, &in->sin_addr)) {
         fprintf(stderr, "Invalid address: %s\n", address);
         exit(EXIT_CONF);
       }
+      ts_log(INFO, "Binding to TCP port %u on address %s", port, address);
     }
-    in.sin_port = htons(port);
-    svr_addr = (struct sockaddr*) &in;
-    svr_addr_size = sizeof(in);
+    in->sin_port = htons(port);
+    addr = (struct sockaddr*) in;
   }
-  if (-1 == bind(svr_socket, svr_addr, svr_addr_size)) {
+  if (-1 == bind(skt, addr, addr_size)) {
     perror("Failed to bind socket");
     exit(EXIT_CONF);
   }
@@ -114,30 +125,30 @@ server_t* server_create(
     }
   }
 
-  if (-1 == listen(svr_socket, SERVER_LISTEN_BACKLOG)) {
+  if (-1 == listen(skt, SERVER_LISTEN_BACKLOG)) {
     perror("Failed to listen on socket");
     exit(EXIT_INTERNAL);
   }
   DEBUG_TS_LOG("Listening");
 
-  int svr_epoll_fd = epoll_create1(0);
-  if (-1 == svr_epoll_fd) {
+  int epfd = epoll_create1(0);
+  if (-1 == epfd) {
     perror("Failed to create epoll");
     exit(EXIT_INTERNAL);
   }
 
   struct epoll_event ev;
   ev.events = EPOLLIN;
-  ev.data.fd = svr_socket;
-  if (-1 == epoll_ctl(svr_epoll_fd, EPOLL_CTL_ADD, svr_socket, &ev)) {
+  ev.data.fd = skt;
+  if (-1 == epoll_ctl(epfd, EPOLL_CTL_ADD, skt, &ev)) {
     perror("Failed to add socket to epoll");
     exit(EXIT_INTERNAL);
   }
 
   server_t* svr = malloc(sizeof(server_t));
   svr->clients = server_clients_create();
-  svr->socket_fd = svr_socket;
-  svr->epoll_fd = svr_epoll_fd;
+  svr->socket_fd = skt;
+  svr->epoll_fd = epfd;
   svr->callback_state = callback_state;
   svr->on_client_event = on_client_event;
   svr->method_ctx = method_ctx;
