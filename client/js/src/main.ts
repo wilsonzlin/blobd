@@ -205,16 +205,42 @@ export class TurbostoreClient {
       if (err != 0) throw new TurbostoreError("read_object", err);
       const actualStart = bigIntToNumber(chunk.readBigUInt64BE(1));
       const actualLength = bigIntToNumber(chunk.readBigUInt64BE(9));
-      const data = [];
-      let drainedLength = 0;
-      while (drainedLength < actualLength) {
-        // Node.js will stall if we try to read in one go, because it'll refuse to buffer too much data, so we must drain in chunks.
-        const chunk = await read(this.socket);
-        drainedLength += chunk.length;
-        data.push(chunk);
-      }
+
+      let pushedLen = 0;
+      let canPush = true;
+      const maybePush = () => {
+        let chunk;
+        while (
+          this.socket.readable &&
+          stream.readable &&
+          canPush &&
+          (chunk = this.socket.read())
+        ) {
+          canPush = stream.push(chunk);
+          if ((pushedLen += chunk.length) == actualLength) {
+            stream.push(null);
+            stream.off("close", upstreamCloseHandler);
+          }
+        }
+      };
+      const { socket } = this;
+      const upstreamCloseHandler = () =>
+        stream.destroy(new Error("TurbostoreClient socket was destroyed"));
+      socket.on("close", upstreamCloseHandler);
+      const stream = new Readable({
+        destroy(err, cb) {
+          // TODO We need some protocol that allows us to cancel a request.
+          socket.destroy(new Error("read_object downstream was destroyed"));
+          cb(err);
+        },
+        read(_n) {
+          canPush = true;
+          maybePush();
+        },
+      });
+      maybePush();
       return {
-        data: Buffer.concat(data, drainedLength),
+        stream,
         actualStart,
         actualLength,
       };
