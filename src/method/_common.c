@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 
+#include "_common.h"
+#include "../../ext/coz/include/coz.h"
 #include "../bucket.h"
 #include "../cursor.h"
 #include "../device.h"
@@ -8,7 +10,6 @@
 #include "../server.h"
 #include "../tile.h"
 #include "../util.h"
-#include "_common.h"
 
 LOGGER("method_common");
 
@@ -44,10 +45,12 @@ inode_t* method_common_find_inode_in_bucket_for_non_management(
   ino_state_t allowed_states,
   uint64_t required_obj_no_or_zero
 ) {
+  COZ_BEGIN("method_common_find_inode_in_bucket_for_non_management");
   // WARNING: There are very subtle behaviours here that prevent race conditions:
   // - Incrementing the refcount must be done BEFORE looking up the state. If we don't, it's possible for the inode and tile spaces to be freed and overwritten with other data, before we read the state and other fields or object data in tiles.
   // - The inode_t must always point to a valid address (e.g. using a pool). If we allocated it using malloc(), it's possible that we get to the value before the previous "next" is updated, but it gets free()'d before we manage to increment the refcount. If it's a pool value, it's possible the value has changed, but it's still safe to read the fields and detect that it's changed.
   DEBUG_TS_LOG_LOOKUP("Trying to find %s with state %d and object number %lu", key->data.bytes, allowed_states, required_obj_no_or_zero);
+  inode_t* found = NULL;
   for (
     inode_t* bkt_ino = atomic_load_explicit(&bkt->head, memory_order_relaxed);
     bkt_ino != NULL;
@@ -66,10 +69,12 @@ inode_t* method_common_find_inode_in_bucket_for_non_management(
       compare_raw_key_with_vec_key(cur + INO_OFFSETOF_KEY, cur[INO_OFFSETOF_KEY_LEN], key->data.vecs[0], key->data.vecs[1])
     ) {
       // Do NOT decrement refcount if it's the inode we want; we must decrement only once we're done.
-      return bkt_ino;
+      found = bkt_ino;
+      break;
     }
     atomic_fetch_sub_explicit(&bkt_ino->refcount, 1, memory_order_relaxed);
   }
-  DEBUG_TS_LOG_LOOKUP("%s not found", key->data.bytes);
-  return NULL;
+  if (found == NULL) DEBUG_TS_LOG_LOOKUP("%s not found", key->data.bytes);
+  COZ_END("method_common_find_inode_in_bucket_for_non_management");
+  return found;
 }

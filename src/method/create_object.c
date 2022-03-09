@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "_common.h"
+#include "../../ext/coz/include/coz.h"
 #include "../cursor.h"
 #include "../device.h"
 #include "../exit.h"
@@ -126,6 +127,7 @@ svr_client_result_t method_create_object(
   inode_cur[INO_OFFSETOF_KEY_LEN] = args->key.len;
   memcpy(inode_cur + INO_OFFSETOF_KEY, args->key.data.bytes, args->key.len);
   inode_cur[INO_OFFSETOF_KEY_NULL_TERM(args->key.len)] = 0;
+  COZ_PROGRESS_NAMED("method_create_object write inode");
   if (full_tiles) {
     freelist_consume_tiles(ctx->fl, full_tiles + ((ltm == INO_LAST_TILE_MODE_TILE) ? 1 : 0), inode_cur + INO_OFFSETOF_TILES(args->key.len));
   }
@@ -141,6 +143,7 @@ svr_client_result_t method_create_object(
     DEBUG_TS_LOG("Deleting incomplete inode with object number %lu", read_u64(INODE_CUR(ctx->dev, bkt_ino) + INO_OFFSETOF_OBJ_NO));
     flush_mark_inode_for_awaiting_deletion(ctx->flush_state, args->key.bucket, bkt_ino_prev, bkt_ino);
   }
+  COZ_PROGRESS_NAMED("method_create_object delete incomplete inodes");
 
   // We can use memory_order_relaxed, as we're in the single-threaded manager.
   inode_t* bkt_head_old = atomic_load_explicit(&bkt->head, memory_order_relaxed);
@@ -153,6 +156,7 @@ svr_client_result_t method_create_object(
   // Use memory_order_release to ensure worker threads can see inode field values on mmap immediately.
   atomic_store_explicit(&bkt->head, bkt_ino, memory_order_release);
   DEBUG_TS_LOG("Wrote inode at device offset %lu", ino_dev_offset);
+  COZ_PROGRESS_NAMED("method_create_object finalise inode");
 
   // We don't sync now, as then we'd be making millions of msync calls for tiny ranges.
   // Instead, we sync on flush.

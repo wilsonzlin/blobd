@@ -10,5 +10,5 @@ else
   cc_args="-O3 -g -flto"
 fi
 
-gcc --std=c18 -Wall -Wextra -Werror $cc_args -march=native -o main -l pthread ext/xxHash/xxhash.c src/**/*.c src/*.c
+gcc --std=c18 -Wall -Wextra -Werror $cc_args -march=native -o main -l dl -l pthread ext/xxHash/xxhash.c src/**/*.c src/*.c
 sudo ./main $@

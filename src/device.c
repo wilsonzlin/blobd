@@ -19,8 +19,9 @@
 
 LOGGER("device");
 
-device_t* device_create(void* mmap, uint64_t size, uint64_t page_size) {
+device_t* device_create(int fd, void* mmap, uint64_t size, uint64_t page_size) {
   device_t* dev = malloc(sizeof(device_t));
+  dev->fd = fd;
   dev->mmap = mmap;
   dev->size = size;
   dev->tile_count = uint_divide_ceil(size, TILE_SIZE);

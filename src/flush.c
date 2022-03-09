@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
+#include "../ext/coz/include/coz.h"
 #include "bucket.h"
 #include "cursor.h"
 #include "device.h"
@@ -56,6 +57,7 @@ void flush_mark_inode_for_awaiting_deletion(
   inode_t* previous_if_inode_or_null_if_head,
   inode_t* ino
 ) {
+  COZ_BEGIN("flush_mark_inode_for_awaiting_deletion");
   atomic_store_explicit(&ino->state, INO_STATE_DELETED, memory_order_relaxed);
   cursor_t* inode_cur = INODE_CUR(state->dev, ino);
   inode_cur[INO_OFFSETOF_STATE] = INO_STATE_DELETED;
@@ -76,6 +78,7 @@ void flush_mark_inode_for_awaiting_deletion(
   };
   events_pending_flush_append(state->stream->pending_flush, ev);
   buckets_mark_bucket_as_dirty(state->buckets, bkt_id);
+  COZ_END("flush_mark_inode_for_awaiting_deletion");
 }
 
 void flush_mark_inode_as_committed(
@@ -83,6 +86,7 @@ void flush_mark_inode_as_committed(
   uint64_t bkt_id,
   inode_t* ino
 ) {
+  COZ_BEGIN("flush_mark_inode_as_committed");
   // TODO Do we care that someone could still be writing to the object?
   atomic_store_explicit(&ino->state, INO_STATE_READY, memory_order_relaxed);
   cursor_t* inode_cur = INODE_CUR(state->dev, ino);
@@ -95,6 +99,7 @@ void flush_mark_inode_as_committed(
   };
   events_pending_flush_append(state->stream->pending_flush, ev);
   buckets_mark_bucket_as_dirty(state->buckets, bkt_id);
+  COZ_END("flush_mark_inode_as_committed");
 }
 
 typedef struct {

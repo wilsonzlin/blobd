@@ -4,3 +4,6 @@
 [submodule "ext/klib"]
 	path = ext/klib
 	url = https://github.com/attractivechaos/klib.git
+[submodule "ext/coz"]
+	path = ext/coz
+	url = https://github.com/plasma-umass/coz.git

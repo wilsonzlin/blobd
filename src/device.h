@@ -20,6 +20,7 @@ heap
 **/
 
 typedef struct {
+  int fd;
   cursor_t* mmap;
   // Exact byte length of block device.
   uint64_t size;
@@ -28,7 +29,7 @@ typedef struct {
   uint64_t page_mask;
 } device_t;
 
-device_t* device_create(void* mmap, uint64_t size, uint64_t page_size);
+device_t* device_create(int fd, void* mmap, uint64_t size, uint64_t page_size);
 
 void device_sync(device_t* dev, uint64_t start, uint64_t end_exclusive);
 

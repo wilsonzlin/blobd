@@ -10,12 +10,14 @@ We use a null terminator after the key so that we can use it directly from mmap'
 Structure
 ---------
 
+The ordering is important, as we want to avoid multiple read() syscalls. Therefore we position `size`, `obj_no`, `key_len`, and `key` together, so it's possible to get all that data in one call, and optionally without `size`.
+
 u24 inode_size
 u48 next_inode_dev_offset_or_zero_if_end
-u64 obj_no
 u8 state
-u40 size
 u8 last_tile_mode
+u40 size
+u64 obj_no
 u8 key_len
 u8[] key
 u8 key_null_terminator
@@ -30,11 +32,11 @@ u8[] last_tile_data_if_mode_is_inline
 
 #define INO_OFFSETOF_INODE_SIZE 0
 #define INO_OFFSETOF_NEXT_INODE_DEV_OFFSET (INO_OFFSETOF_INODE_SIZE + 3)
-#define INO_OFFSETOF_OBJ_NO (INO_OFFSETOF_NEXT_INODE_DEV_OFFSET + 6)
-#define INO_OFFSETOF_STATE (INO_OFFSETOF_OBJ_NO + 8)
-#define INO_OFFSETOF_SIZE (INO_OFFSETOF_STATE + 1)
-#define INO_OFFSETOF_LAST_TILE_MODE (INO_OFFSETOF_SIZE + 5)
-#define INO_OFFSETOF_KEY_LEN (INO_OFFSETOF_LAST_TILE_MODE + 1)
+#define INO_OFFSETOF_STATE (INO_OFFSETOF_NEXT_INODE_DEV_OFFSET + 3)
+#define INO_OFFSETOF_LAST_TILE_MODE (INO_OFFSETOF_STATE + 1)
+#define INO_OFFSETOF_SIZE (INO_OFFSETOF_LAST_TILE_MODE + 1)
+#define INO_OFFSETOF_OBJ_NO (INO_OFFSETOF_SIZE + 5)
+#define INO_OFFSETOF_KEY_LEN (INO_OFFSETOF_OBJ_NO + 8)
 #define INO_OFFSETOF_KEY (INO_OFFSETOF_KEY_LEN + 1)
 #define INO_OFFSETOF_KEY_NULL_TERM(key_len) (INO_OFFSETOF_KEY + (key_len))
 #define INO_OFFSETOF_TILE_NO(key_len, tile) ((INO_OFFSETOF_KEY_NULL_TERM(key_len)) + 1 + 3 * (tile))

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include "../ext/coz/include/coz.h"
 #include "cursor.h"
 #include "device.h"
 #include "exit.h"
@@ -142,6 +143,7 @@ static inline void propagate_tile_bitmap_change(freelist_t* fl, uint64_t new_bit
 }
 
 uint32_t fast_allocate_one_tile(freelist_t* fl) {
+  COZ_BEGIN("fast_allocate_one_tile");
   uint64_t i1 = _tzcnt_u64(fl->tile_bitmap_1);
   if (i1 == 64) {
     ts_log(CRIT, "Failed to allocate one tile");
@@ -158,6 +160,7 @@ uint32_t fast_allocate_one_tile(freelist_t* fl) {
   uint32_t tile = (((((i1 * 64) + i2) * 64) + i3) * 64) + i4;
   mark_tile_as_dirty(fl, tile);
 
+  COZ_END("fast_allocate_one_tile");
   return tile;
 }
 
@@ -182,6 +185,7 @@ void freelist_replenish_tiles_of_inode(freelist_t* fl, cursor_t* inode_cur) {
 
 // tiles_needed must be nonzero.
 void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out) {
+  COZ_BEGIN("freelist_consume_tiles");
   uint64_t tiles_needed_orig = tiles_needed;
 
   array_u8_64_t i1_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_1);
@@ -213,6 +217,7 @@ void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out
   }
 
   DEBUG_TS_LOG("Allocated %zu tiles", tiles_needed_orig);
+  COZ_END("freelist_consume_tiles");
 }
 
 uint32_t freelist_consume_one_tile(freelist_t* fl) {
@@ -220,6 +225,7 @@ uint32_t freelist_consume_one_tile(freelist_t* fl) {
 }
 
 uint64_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed) {
+  COZ_BEGIN("freelist_consume_microtiles");
   __m512i y512 = _mm512_set1_epi32(bytes_needed << 8);
 
   uint32_t m1 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_1.vec, y512);
@@ -291,5 +297,6 @@ uint64_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed) {
   fl->microtile_free_map_2[i1].elems[i2] = (_mm512_reduce_max_epu32(fl->microtile_free_map_3[i1][i2].vec) & ~15) | i2;
   fl->microtile_free_map_1.elems[i1] = (_mm512_reduce_max_epu32(fl->microtile_free_map_2[i1].vec) & ~15) | i1;
 
+  COZ_END("freelist_consume_microtiles");
   return ((uint64_t) microtile_addr) * TILE_SIZE + (TILE_SIZE - cur_free);
 }

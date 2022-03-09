@@ -63,12 +63,7 @@ int main(int argc, char** argv) {
     exit(EXIT_INTERNAL);
   }
 
-  if (-1 == close(dev_fd)) {
-    perror("Failed to close block device file descriptor");
-    exit(EXIT_INTERNAL);
-  }
-
-  device_t* dev = device_create(dev_mmap, dev_size, page_size);
+  device_t* dev = device_create(dev_fd, dev_mmap, dev_size, page_size);
 
   if (!strcmp("format", arg_action)) {
     errno = 0;

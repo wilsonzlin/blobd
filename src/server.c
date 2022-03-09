@@ -118,6 +118,10 @@ void server_wait_epoll(server_t* server, int timeout) {
   struct epoll_event svr_epoll_events[SERVER_EPOLL_EVENTS_MAX];
   int nfds = epoll_wait(server->epoll_fd, svr_epoll_events, SERVER_EPOLL_EVENTS_MAX, timeout);
   if (-1 == nfds) {
+    if (errno == EINTR) {
+      // Coz will frequently interrupt the process with signals; just ignore them.
+      return;
+    }
     perror("Failed to wait for epoll events");
     exit(EXIT_INTERNAL);
   }
