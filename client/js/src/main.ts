@@ -27,6 +27,12 @@ const create_object = (key: string, size: number) => {
   return buildArgs(1, argsRaw);
 };
 
+const delete_object = (key: string, objNo: number) => {
+  const keyBytes = Buffer.from(key);
+  const argsRaw = [keyBytes.length, ...keyBytes, ...encodeU64(objNo)];
+  return buildArgs(6, argsRaw);
+};
+
 const inspect_object = (key: string) => {
   const keyBytes = Buffer.from(key);
   const argsRaw = [keyBytes.length, ...keyBytes];
@@ -155,6 +161,18 @@ export class TurbostoreClient {
       return {
         objectNumber: objNo,
       };
+    });
+  }
+
+  deleteObject(key: string, objNo?: number) {
+    return this._enqueue(async () => {
+      this.socket.write(delete_object(key, objNo ?? 0));
+      const chunk = await read(this.socket, 1);
+      if (chunk.length != 1) {
+        throw new Error(`Invalid delete_object response: ${chunk}`);
+      }
+      const err = chunk[0];
+      if (err != 0) throw new TurbostoreError("delete_object", err);
     });
   }
 
