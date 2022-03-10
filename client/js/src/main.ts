@@ -282,18 +282,22 @@ export class TurbostoreClient {
       socket.write(write_object(key, objNo, start));
       const socketCloseHandler = () =>
         stream.destroy(new Error("TurbostoreClient socket was closed"));
+      let readResponse = false;
       const cleanUp = () => socket.off("close", socketCloseHandler);
       socket.on("close", socketCloseHandler);
       const stream = new Writable({
         destroy(err, cb) {
           cleanUp();
-          socket.destroy(new Error("write_object downstream was destroyed"));
+          if (!readResponse) {
+            socket.destroy(new Error("write_object downstream was destroyed"));
+          }
           cb(err);
         },
         final(cb) {
           // TODO Handle case where not enough bytes were written.
           read(socket, 1)
             .then((chunk) => {
+              readResponse = true;
               if (chunk.length != 1) {
                 throw new Error(`Invalid write_object response: ${chunk}`);
               }
