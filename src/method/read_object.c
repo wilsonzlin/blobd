@@ -23,8 +23,8 @@
 
 LOGGER("method_create_object");
 
-// [u8 error, u64 actual_read_start, u64 actual_read_len].
-#define RESPONSE_LEN (1 + 8 + 8)
+// [u8 error, u64 actual_read_start, u64 actual_read_len, u64 obj_size].
+#define RESPONSE_LEN (1 + 8 + 8 + 8)
 
 struct method_read_object_state_s {
   uint32_t read_count;
@@ -156,6 +156,7 @@ svr_client_result_t method_read_object(
     args->response[0] = METHOD_ERROR_OK;
     write_u64(args->response + 1, actual_start);
     write_u64(args->response + 9, args->actual_length);
+    write_u64(args->response + 17, args->object_size);
     res = SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
     goto final;
   }
