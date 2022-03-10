@@ -237,8 +237,9 @@ export class TurbostoreClient {
       socket.on("close", maybePush).on("readable", maybePush);
       const stream = new Readable({
         destroy(err, cb) {
-          // TODO We need some protocol that allows us to cancel a request.
-          socket.destroy(new Error("read_object downstream was destroyed"));
+          if (pushedLen < actualLength) {
+            socket.destroy(new Error("read_object downstream was destroyed"));
+          }
           cb(err);
         },
         read(_n) {
