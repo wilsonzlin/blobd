@@ -197,14 +197,15 @@ export class TurbostoreClient {
   readObject(key: string, start: number, end: number) {
     return this._enqueue(async () => {
       this.socket.write(read_object(key, start, end));
-      const chunk = await read(this.socket, 17);
-      if (chunk.length != 17) {
+      const chunk = await read(this.socket, 25);
+      if (chunk.length != 25) {
         throw new Error(`Invalid read_object response: ${chunk}`);
       }
       const err = chunk[0];
       if (err != 0) throw new TurbostoreError("read_object", err);
       const actualStart = bigIntToNumber(chunk.readBigUInt64BE(1));
       const actualLength = bigIntToNumber(chunk.readBigUInt64BE(9));
+      const objectSize = bigIntToNumber(chunk.readBigUInt64BE(17));
 
       let pushedLen = 0;
       let canPush = true;
@@ -252,6 +253,7 @@ export class TurbostoreClient {
         stream,
         actualStart,
         actualLength,
+        objectSize,
       };
     });
   }
