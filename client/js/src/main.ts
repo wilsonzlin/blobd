@@ -280,14 +280,10 @@ export class TurbostoreClient {
     return this._enqueue(async () => {
       const { socket } = this;
       socket.write(write_object(key, objNo, start));
-      const socketCloseHandler = () =>
-        stream.destroy(new Error("TurbostoreClient socket was closed"));
+      // We don't need a "close" handler on `socket` as both `socket.write` and `read(socket, 1)` will fail if it's closed.
       let readResponse = false;
-      const cleanUp = () => socket.off("close", socketCloseHandler);
-      socket.on("close", socketCloseHandler);
       const stream = new Writable({
         destroy(err, cb) {
-          cleanUp();
           if (!readResponse) {
             socket.destroy(new Error("write_object downstream was destroyed"));
           }
@@ -307,8 +303,7 @@ export class TurbostoreClient {
               }
               cb();
             })
-            .catch(cb)
-            .finally(cleanUp);
+            .catch(cb);
         },
         write(chunk, encoding, cb) {
           socket.write(chunk, encoding, cb);
