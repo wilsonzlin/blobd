@@ -208,25 +208,33 @@ export class TurbostoreClient {
 
       let pushedLen = 0;
       let canPush = true;
+      const { socket } = this;
       const maybePush = () => {
         let chunk;
         while (
-          this.socket.readable &&
+          socket.readable &&
           stream.readable &&
           canPush &&
-          (chunk = this.socket.read())
+          (chunk = socket.read())
         ) {
           canPush = stream.push(chunk);
           if ((pushedLen += chunk.length) == actualLength) {
             stream.push(null);
-            stream.off("close", upstreamCloseHandler);
+            cleanUp();
           }
         }
+        if (!socket.readable) {
+          // The socket should never end or close, even after all object data has been provided (one connection handles infinite requests).
+          // This handles socket "end", "error", "close".
+          stream.destroy(
+            new Error("TurbostoreClient socket is no longer readable")
+          );
+          cleanUp();
+        }
       };
-      const { socket } = this;
-      const upstreamCloseHandler = () =>
-        stream.destroy(new Error("TurbostoreClient socket was destroyed"));
-      socket.on("close", upstreamCloseHandler);
+      const cleanUp = () =>
+        stream.off("close", maybePush).off("readable", maybePush);
+      socket.on("close", maybePush).on("readable", maybePush);
       const stream = new Readable({
         destroy(err, cb) {
           // TODO We need some protocol that allows us to cancel a request.
@@ -271,9 +279,13 @@ export class TurbostoreClient {
     return this._enqueue(async () => {
       const { socket } = this;
       socket.write(write_object(key, objNo, start));
-      return new Writable({
+      const socketCloseHandler = () =>
+        stream.destroy(new Error("TurbostoreClient socket was closed"));
+      const cleanUp = () => socket.off("close", socketCloseHandler);
+      socket.on("close", socketCloseHandler);
+      const stream = new Writable({
         destroy(err, cb) {
-          // TODO
+          cleanUp();
           socket.destroy(new Error("write_object downstream was destroyed"));
           cb(err);
         },
@@ -290,12 +302,14 @@ export class TurbostoreClient {
               }
               cb();
             })
-            .catch(cb);
+            .catch(cb)
+            .finally(cleanUp);
         },
         write(chunk, encoding, cb) {
           socket.write(chunk, encoding, cb);
         },
       });
+      return stream;
     });
   }
 }
