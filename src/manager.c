@@ -115,12 +115,16 @@ void* manager_thread(void* mgr_raw) {
     // Aim to flush every 100 ms.
     server_wait_epoll(mgr->server, 100);
 
-    for (uint64_t i = 0; i < mgr->clients_awaiting_flush->len; i++) {
-      svr_client_t* client = mgr->clients_awaiting_flush->elems[i];
-      // NOTE: It's possible that the client hasn't written anything, so don't add to epoll as that could cause infinite wait.
-      manager_on_client_event(mgr, client);
+    if (mgr->clients_awaiting_flush->len) {
+      flush_perform(mgr->flush_state);
+
+      for (uint64_t i = 0; i < mgr->clients_awaiting_flush->len; i++) {
+        svr_client_t* client = mgr->clients_awaiting_flush->elems[i];
+        // NOTE: It's possible that the client hasn't written anything, so don't add to epoll as that could cause infinite wait.
+        manager_on_client_event(mgr, client);
+      }
+      mgr->clients_awaiting_flush->len = 0;
     }
-    mgr->clients_awaiting_flush->len = 0;
   }
 }
 
