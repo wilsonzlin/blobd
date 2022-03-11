@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/ip.h>
+#include <netinet/tcp.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>

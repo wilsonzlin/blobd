@@ -1,5 +1,6 @@
 const sacli = require("sacli");
 const waitGroup = require("@xtjs/lib/js/waitGroup").default;
+const readBufferStream = require("@xtjs/lib/js/readBufferStream").default;
 const {TurbostoreClient} = require("@turbostore/client");
 
 const key = (no) => `/random/data/${no}`;
@@ -11,7 +12,7 @@ sacli.Command.new("readAllObjects")
   .action(async (args) => {
     const startTime = process.hrtime.bigint();
     const data = Buffer.from("DEADBEEF".repeat(Math.ceil(args.size / 8)).slice(0, args.size));
-    const pool = Array.from({length: args.concurrency}, () => new TurbostoreClient({unixSocketPath: "/tmp/turbostore.sock", onSocketError: console.error}));
+    const pool = Array.from({length: args.concurrency}, () => new TurbostoreClient({host: "127.0.0.1", port: 9001, onSocketError: console.error}));
     const wg = waitGroup();
     for (let no = 0; no < args.count; no++) {
       wg.add();
@@ -19,8 +20,9 @@ sacli.Command.new("readAllObjects")
       const k = key(no);
       (async () => {
         const read = await conn.readObject(k, 0, 0);
-        if (read.actualStart !== 0 || read.actualLength !== data.length || !data.equals(read.data)) {
-          throw new Error(`Invalid read (wanted length ${args.size}, got length ${read.data.length})`);
+        const readData = await readBufferStream(read.stream);
+        if (read.actualStart !== 0 || read.actualLength !== data.length || !data.equals(readData)) {
+          throw new Error(`Invalid read (wanted length ${args.size}, got length ${readData.length})`);
         }
         wg.done();
       })();

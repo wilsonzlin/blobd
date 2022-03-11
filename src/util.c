@@ -72,25 +72,3 @@ int maybe_write(int fd, uint8_t* in_buf, uint64_t n) {
   }
   return writeno;
 }
-
-// `b_upper` and `b_lower` must be filled with 0.
-bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, __m512i b_lower, __m512i b_upper) {
-  vec_512i_u8_t ino_key;
-  memcpy(ino_key.elems, a, min(a_len, 64));
-  if (a_len < 64) {
-    memset(ino_key.elems + a_len, 0, 64 - a_len);
-  }
-  // WARNING: Both __m512i arguments must be filled with the same character.
-  if (_mm512_cmpneq_epi8_mask(ino_key.vec, b_lower)) {
-    return false;
-  }
-  if (a_len > 64) {
-    memcpy(ino_key.elems, a + 64, a_len - 64);
-    memset(ino_key.elems + (a_len - 64), 0, 128 - (a_len - 64));
-    // WARNING: Both __m512i arguments must be filled with the same character.
-    if (_mm512_cmpneq_epi8_mask(ino_key.vec, b_upper)) {
-      return false;
-    }
-  }
-  return true;
-}

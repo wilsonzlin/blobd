@@ -79,6 +79,9 @@ method_error_t method_common_key_parse(
   method_common_key_t* out
 );
 
+// `b` must be filled with 0.
+bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_data_t b, uint8_t b_len);
+
 inode_t* method_common_find_inode_in_bucket_for_non_management(
   bucket_t* bkt,
   method_common_key_t* key,
@@ -100,5 +103,5 @@ inode_t* method_common_find_inode_in_bucket_for_non_management(
       (atomic_load_explicit(&bkt_ino->state, memory_order_relaxed) & (allowed_states)) && \
       ((required_obj_no_or_zero) == 0 || read_u64(INODE_CUR(dev, bkt_ino) + INO_OFFSETOF_OBJ_NO) == (required_obj_no_or_zero)) && \
       INODE_CUR(dev, bkt_ino)[INO_OFFSETOF_KEY_LEN] == (key)->len && \
-      compare_raw_key_with_vec_key(INODE_CUR(dev, bkt_ino) + INO_OFFSETOF_KEY, INODE_CUR(dev, bkt_ino)[INO_OFFSETOF_KEY_LEN], (key)->data.vecs[0], (key)->data.vecs[1]) \
+      compare_raw_key_with_vec_key(INODE_CUR(dev, bkt_ino) + INO_OFFSETOF_KEY, INODE_CUR(dev, bkt_ino)[INO_OFFSETOF_KEY_LEN], (key)->data, (key)->len) \
     )

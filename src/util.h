@@ -49,5 +49,3 @@ uint64_t uint_divide_ceil(uint64_t a, uint64_t b);
 int maybe_read(int fd, uint8_t* out_buf, uint64_t n);
 
 int maybe_write(int fd, uint8_t* in_buf, uint64_t n);
-
-bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, __m512i b_lower, __m512i b_upper);

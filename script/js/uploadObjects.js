@@ -11,8 +11,8 @@ sacli.Command.new("uploadObjects")
   .action(async (args) => {
     const startTime = process.hrtime.bigint();
     const data = Buffer.from("DEADBEEF".repeat(Math.ceil(args.size / 8)).slice(0, args.size));
-    const poolMgr = Array.from({length: args.concurrency}, () => new TurbostoreClient({unixSocketPath: "/tmp/turbostore-manager.sock", onSocketError: console.error}));
-    const poolWkr = Array.from({length: args.concurrency}, () => new TurbostoreClient({unixSocketPath: "/tmp/turbostore.sock", onSocketError: console.error}));
+    const poolMgr = Array.from({length: args.concurrency}, () => new TurbostoreClient({host: "127.0.0.1", port: 9000, onSocketError: console.error}));
+    const poolWkr = Array.from({length: args.concurrency}, () => new TurbostoreClient({host: "127.0.0.1", port: 9001, onSocketError: console.error}));
     const wg = waitGroup();
     for (let no = 0; no < args.count; no++) {
       wg.add();
@@ -25,7 +25,7 @@ sacli.Command.new("uploadObjects")
           phase = "create";
           const {objectNumber} = await connMgr.createObject(k, args.size);
           phase = "write";
-          await connWkr.writeObject(k, objectNumber, 0, data);
+          await connWkr.writeObjectWithBuffer(k, objectNumber, 0, data);
           phase = "commit";
           await connMgr.commitObject(k, objectNumber);
         } catch (err) {

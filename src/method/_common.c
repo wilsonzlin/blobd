@@ -30,6 +30,35 @@ method_error_t method_common_key_parse(
   return METHOD_ERROR_OK;
 }
 
+#ifdef TURBOSTORE_INODE_KEY_CMP_AVX512
+bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_data_t b, uint8_t b_len) {
+  __m512i b_lower = b.vecs[0];
+  __m512i b_upper = b.vecs[0];
+  vec_512i_u8_t ino_key;
+  memcpy(ino_key.elems, a, min(a_len, 64));
+  if (a_len < 64) {
+    memset(ino_key.elems + a_len, 0, 64 - a_len);
+  }
+  // WARNING: Both __m512i arguments must be filled with the same character.
+  if (_mm512_cmpneq_epi8_mask(ino_key.vec, b_lower)) {
+    return false;
+  }
+  if (a_len > 64) {
+    memcpy(ino_key.elems, a + 64, a_len - 64);
+    memset(ino_key.elems + (a_len - 64), 0, 128 - (a_len - 64));
+    // WARNING: Both __m512i arguments must be filled with the same character.
+    if (_mm512_cmpneq_epi8_mask(ino_key.vec, b_upper)) {
+      return false;
+    }
+  }
+  return true;
+}
+#else
+bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_data_t b, uint8_t b_len) {
+  return a_len == b_len && 0 == memcmp(a, b.bytes, a_len);
+}
+#endif
+
 #ifdef TURBOSTORE_DEBUG_LOG_LOOKUPS
 #define DEBUG_TS_LOG_LOOKUP(fmt, ...) DEBUG_TS_LOG(fmt, ##__VA_ARGS__)
 #else
@@ -66,7 +95,7 @@ inode_t* method_common_find_inode_in_bucket_for_non_management(
       (atomic_load_explicit(&bkt_ino->state, memory_order_acquire) & allowed_states) &&
       (required_obj_no_or_zero == 0 || read_u64(cur + INO_OFFSETOF_OBJ_NO) == required_obj_no_or_zero) &&
       cur[INO_OFFSETOF_KEY_LEN] == key->len &&
-      compare_raw_key_with_vec_key(cur + INO_OFFSETOF_KEY, cur[INO_OFFSETOF_KEY_LEN], key->data.vecs[0], key->data.vecs[1])
+      compare_raw_key_with_vec_key(cur + INO_OFFSETOF_KEY, cur[INO_OFFSETOF_KEY_LEN], key->data, key->len)
     ) {
       // Do NOT decrement refcount if it's the inode we want; we must decrement only once we're done.
       found = bkt_ino;
