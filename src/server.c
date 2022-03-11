@@ -78,8 +78,14 @@ server_t* server_create(
   if (!unix_socket_path) {
     int opt = 1;
     // Set SO_REUSEADDR to allow immediate reuse of address/port combo if we crashed.
-    if (-1 == setsockopt(skt, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+    if (-1 == setsockopt(skt, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int))) {
       perror("Failed to set SO_REUSEADDR");
+      exit(EXIT_INTERNAL);
+    }
+    opt = 1;
+    // Disable Nagle's algorithm.
+    if (-1 == setsockopt(skt, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(int))) {
+      perror("Failed to set TCP_NODELAY");
       exit(EXIT_INTERNAL);
     }
   }

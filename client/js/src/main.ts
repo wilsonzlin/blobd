@@ -3,6 +3,7 @@ import bigIntToNumber from "@xtjs/lib/js/bigIntToNumber";
 import { Readable, Writable } from "stream";
 import Mutex from "@xtjs/lib/js/mutex";
 import util from "util";
+import assertState from "@xtjs/lib/js/assertState";
 
 const buf = Buffer.alloc(8);
 const encodeI64 = (val: number) => {
@@ -68,6 +69,10 @@ const read = async (stream: Readable, n?: number) => {
     const chunk = stream.read(n);
     if (chunk) {
       return chunk;
+    }
+    // Check after .read() as state could technically synchronously change with .read() call, and if it returned null because it's ended (not because it's not readable yet), then we get stuck. Check after `chunk` as it could be nonreadable after final read().
+    if (!stream.readable) {
+      throw new Error("TurbostoreClient socket stream is not readable");
     }
     await new Promise<void>((resolve, reject) => {
       const handler = (error?: Error) => {
@@ -225,7 +230,9 @@ export class TurbostoreClient {
         (chunk = socket.read())
       ) {
         canPush = stream.push(chunk);
-        if ((pushedLen += chunk.length) == actualLength) {
+        pushedLen += chunk.length;
+        assertState(pushedLen <= actualLength, `read ${pushedLen} of ${actualLength} bytes`);
+        if (pushedLen == actualLength) {
           stream.push(null);
           cleanUp();
         }
@@ -311,6 +318,7 @@ export class TurbostoreClient {
           .catch(cb);
       },
       write(chunk, encoding, cb) {
+        // TODO Handle case where too many bytes are written.
         socket.write(chunk, encoding, cb);
       },
     });
