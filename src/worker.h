@@ -1,14 +1,8 @@
 #pragma once
 
-#include <stdbool.h>
+#include <stdint.h>
 #include <pthread.h>
-#include "bucket.h"
-#include "device.h"
-#include "freelist.h"
-#include "flush.h"
-#include "list.h"
-#include "stream.h"
-#include "../ext/klib/khash.h"
+#include "server.h"
 
 /**
 
@@ -24,24 +18,9 @@ We must use ONESHOT to avoid race conditions: [worker] read() EAGAIN => [main] e
 
 **/
 
-typedef struct {
-  buckets_t* bkts;
-  device_t* dev;
-} worker_method_handler_ctx_t;
-
-typedef struct worker_s worker_t;
-
-worker_t* worker_create(
-  char* address,
-  uint16_t port,
-  char* unix_socket_path,
-  device_t* dev,
-  buckets_t* bkts
-);
-
 // Returns a handle that is passed to workers_join.
 void* workers_start(
-  worker_t* worker,
+  server_t* server,
   uint64_t count
 );
 

@@ -2,8 +2,10 @@
 #include <immintrin.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 #include "util.h"
 #include "vec.h"
@@ -71,4 +73,13 @@ int maybe_write(int fd, uint8_t* in_buf, uint64_t n) {
     return -1;
   }
   return writeno;
+}
+
+uint64_t get_monotonic_clock_ms() {
+  struct timespec ts;
+  if (-1 == clock_gettime(CLOCK_MONOTONIC, &ts)) {
+    perror("Failed to get time");
+    exit(EXIT_INTERNAL);
+  }
+  return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }

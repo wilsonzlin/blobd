@@ -44,31 +44,19 @@ u24[16777216] microtile_free_space_in_bytes_or_16777215_if_free_tile_or_16777214
 
 **/
 
-#define FREELIST_RESERVED_SPACE (3 * 16777216)
+#define FREELIST_OFFSETOF_TILE(tile_no) (3 * (tile_no))
 
-typedef struct {
-  uint64_t dev_offset;
-  // Bits are set if they're free.
-  uint64_t tile_bitmap_1;
-  uint64_t tile_bitmap_2[64];
-  uint64_t tile_bitmap_3[64][64];
-  uint64_t tile_bitmap_4[64][64][64];
-  // Storing free amount (instead of used) allows us to initialise these in-memory structures to empty and not available by default, which is faster and more importantly, ensures that all elements including out-of-bound ones that map to invalid tiles are unavailable by default.
-  // For each element, bits [31:8] represent the maximum free amount of all elements in the next layer, [7:7] if the tile is not a microtile, and [6:0] the corresponding index of the maximum in the next layer (although only 4 bits are used as there are only 16 elements per vector).
-  vec_512i_u32_t microtile_free_map_1;
-  vec_512i_u32_t microtile_free_map_2[16];
-  vec_512i_u32_t microtile_free_map_3[16][16];
-  vec_512i_u32_t microtile_free_map_4[16][16][16];
-  vec_512i_u32_t microtile_free_map_5[16][16][16][16];
-  vec_512i_u32_t microtile_free_map_6[16][16][16][16][16];
-  uint64_t dirty_tiles_bitmap_1;
-  // Use one-dimensional arrays instead of multidimensional so we can quickly clear using memset.
-  uint64_t dirty_tiles_bitmap_2[64];
-  uint64_t dirty_tiles_bitmap_3[64 * 64];
-  uint64_t dirty_tiles_bitmap_4[64 * 64 * 64];
-} freelist_t;
+#define FREELIST_TILE_CAP 16777216
+
+#define FREELIST_RESERVED_SPACE FREELIST_OFFSETOF_TILE(FREELIST_TILE_CAP)
+
+typedef struct freelist_s freelist_t;
 
 freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset);
+
+void freelist_lock(freelist_t* fl);
+
+void freelist_unlock(freelist_t* fl);
 
 void freelist_replenish_tiles_of_inode(freelist_t* fl, cursor_t* inode_cur);
 
@@ -76,4 +64,4 @@ void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out
 
 uint32_t freelist_consume_one_tile(freelist_t* fl);
 
-uint64_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed);
+uint64_t freelist_consume_microtile_space(freelist_t* fl, uint32_t bytes_needed);

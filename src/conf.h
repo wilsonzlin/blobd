@@ -14,7 +14,7 @@ a_key_can_have_a_number_value 1384234
 string_values_do_not_need_quoting /a/long/path/with spaces/in the middle
 numerical_values_can_have_decimals 3.141592653589793
 
-***/
+**/
 
 typedef struct {
   // Only used when formatting.

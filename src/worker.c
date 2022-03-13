@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -7,8 +5,10 @@
 #include "exit.h"
 #include "flush.h"
 #include "log.h"
-#include "manager.h"
 #include "method/_common.h"
+#include "method/commit_object.h"
+#include "method/create_object.h"
+#include "method/delete_object.h"
 #include "method/inspect_object.h"
 #include "method/read_object.h"
 #include "method/write_object.h"
@@ -20,86 +20,23 @@
 
 LOGGER("worker");
 
-struct worker_s {
-  server_t* server;
-  worker_method_handler_ctx_t ctx;
-};
-
-void worker_on_client_event(void* worker_raw, svr_client_t* client) {
-  worker_t* worker = (worker_t*) worker_raw;
+void* worker_thread(void* server_raw) {
+  server_t* server = (server_t*) server_raw;
 
   while (true) {
-    svr_client_result_t res = server_process_client_until_result(worker->server, client);
-
-    if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE) {
-      server_rearm_client_to_epoll(worker->server, client, true, false);
-      break;
-    }
-
-    if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
-      server_rearm_client_to_epoll(worker->server, client, false, true);
-      break;
-    }
-
-    if (res == SVR_CLIENT_RESULT_END) {
-      server_client_reset(client);
-      continue;
-    }
-
-    if (res == SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR) {
-      server_close_client(worker->server, client);
-      break;
-    }
-
-    fprintf(stderr, "Unknown client (method=%d) action result: %d\n", server_client_get_method(client), res);
-    exit(EXIT_INTERNAL);
-  }
-}
-
-worker_t* worker_create(
-  char* address,
-  uint16_t port,
-  char* unix_socket_path,
-  device_t* dev,
-  buckets_t* bkts
-) {
-  server_methods_t* methods = server_methods_create();
-  server_methods_add(methods, METHOD_INSPECT_OBJECT, method_inspect_object_state_create, method_inspect_object, method_inspect_object_state_destroy);
-  server_methods_add(methods, METHOD_READ_OBJECT, method_read_object_state_create, method_read_object, method_read_object_state_destroy);
-  server_methods_add(methods, METHOD_WRITE_OBJECT, method_write_object_state_create, method_write_object, method_write_object_state_destroy);
-
-  worker_t* worker = malloc(sizeof(worker_t));
-  worker->server = server_create(
-    address,
-    port,
-    unix_socket_path,
-    worker,
-    worker_on_client_event,
-    &worker->ctx,
-    methods
-  );
-  worker->ctx.bkts = bkts;
-  worker->ctx.dev = dev;
-  return worker;
-}
-
-void* worker_thread(void* worker_raw) {
-  worker_t* worker = (worker_t*) worker_raw;
-
-  while (true) {
-    server_wait_epoll(worker->server, -1);
+    server_wait_epoll(server, -1);
   }
 
   return NULL;
 }
 
 void* workers_start(
-  worker_t* worker,
+  server_t* server,
   uint64_t count
 ) {
   pthread_t* threads = malloc(sizeof(pthread_t) * count);
   for (uint64_t i = 0; i < count; i++) {
-    ASSERT_ERROR_RETVAL_OK(pthread_create(&threads[i], NULL, worker_thread, worker), "create worker");
+    ASSERT_ERROR_RETVAL_OK(pthread_create(&threads[i], NULL, worker_thread, server), "create worker");
   }
   return threads;
 }

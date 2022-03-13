@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <endian.h>
 #include <errno.h>
 #include <immintrin.h>

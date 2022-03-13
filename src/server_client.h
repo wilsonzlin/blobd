@@ -14,27 +14,21 @@ typedef enum {
   SVR_CLIENT_RESULT_END,
 } svr_client_result_t;
 
-typedef void (method_state_destructor_t)(void*);
+typedef enum {
+  SVR_CLIENT_STATE_INIT,
+  SVR_CLIENT_STATE_ARGS_READ,
+} svr_client_state_t;
 
-typedef struct svr_client_s svr_client_t;
+typedef struct svr_client_s {
+  // This doesn't need to be atomic; only one thread can ever see/touch/manage a svr_client_t at one time.
+  int fd;
+  svr_method_args_parser_t args_parser;
+  method_t method;
+  method_state_t method_state;
+  // For server_client.c internal use only.
+  _Atomic(struct svr_client_s*) next_free_in_pool;
+} svr_client_t;
 
-int server_client_get_fd(svr_client_t* client);
-
-svr_method_args_parser_t* server_client_get_args_parser(svr_client_t* client);
-
-void server_client_set_args_parser(svr_client_t* client, svr_method_args_parser_t* args_parser);
-
-method_t server_client_get_method(svr_client_t* client);
-
-void server_client_set_method(svr_client_t* client, method_t method);
-
-void* server_client_get_method_state(svr_client_t* client);
-
-void server_client_set_method_state(svr_client_t* client, void* method_state);
-
-void server_client_set_method_state_destructor(svr_client_t* client, method_state_destructor_t* destructor);
-
-// Allows the client to start handling a new request without having to destroy it and create a new one.
 void server_client_reset(svr_client_t* client);
 
 typedef struct server_clients_s server_clients_t;
@@ -44,5 +38,5 @@ server_clients_t* server_clients_create();
 // Initialises a new svr_client_t and returns it.
 svr_client_t* server_clients_add(server_clients_t* clients, int client_fd);
 
-// Closes the associated FD, destroys any client state (e.g. args_parser, method_state), and frees the svr_client_t.
+// Closes the associated FD, and releases the svr_client_t back to the pool.
 void server_clients_close(server_clients_t* clients, svr_client_t* client);

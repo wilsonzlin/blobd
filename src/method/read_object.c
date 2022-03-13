@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <errno.h>
 #include <immintrin.h>
 #include <stdbool.h>
@@ -23,38 +21,19 @@
 
 LOGGER("method_create_object");
 
-// [u8 error, u64 actual_read_start, u64 actual_read_len, u64 obj_size].
-#define RESPONSE_LEN (1 + 8 + 8 + 8)
-
-struct method_read_object_state_s {
-  uint32_t read_count;
-  // 0 if not found yet.
-  uint64_t obj_no;
-  // -1 if not prepared yet.
-  int response_written;
-  uint8_t response[RESPONSE_LEN];
-  method_common_key_t key;
-  int64_t arg_start;
-  int64_t arg_end;
-  // These are undefiend if not found yet.
-  uint64_t actual_start;
-  uint64_t actual_length;
-  uint64_t object_size;
-};
-
 // Method signature: (u8 key_len, char[] key, i64 start, i64 end_exclusive_or_zero_for_eof).
 // Requested range cannot be empty.
-void* method_read_object_state_create(
-  void* ctx_raw,
+void method_read_object_state_init(
+  void* state_raw,
+  method_ctx_t* ctx,
   svr_method_args_parser_t* parser
 ) {
-  worker_method_handler_ctx_t* ctx = (worker_method_handler_ctx_t*) ctx_raw;
+  method_read_object_state_t* args = (method_read_object_state_t*) state_raw;
 
-  method_read_object_state_t* args = aligned_alloc(64, sizeof(method_read_object_state_t));
   uint8_t* p = NULL;
   args->read_count = 0;
   args->obj_no = 0;
-  INIT_STATE_RESPONSE(args, RESPONSE_LEN);
+  INIT_STATE_RESPONSE(args, METHOD_READ_OBJECT_RESPONSE_LEN);
 
   method_error_t key_parse_error = method_common_key_parse(parser, ctx->bkts, &args->key);
   if (key_parse_error != METHOD_ERROR_OK) {
@@ -76,36 +55,30 @@ void* method_read_object_state_create(
   }
 
   DEBUG_TS_LOG("read_object(key=%s, start=%ld, end=%ld)", args->key.data.bytes, args->arg_start, args->arg_end);
-
-  return args;
-}
-
-void method_read_object_state_destroy(void* state) {
-  free(state);
 }
 
 svr_client_result_t method_read_object(
-  void* ctx_raw,
+  method_ctx_t* ctx,
   void* args_raw,
-  int client_fd
+  svr_client_t* client
 ) {
-  worker_method_handler_ctx_t* ctx = (worker_method_handler_ctx_t*) ctx_raw;
   method_read_object_state_t* args = (method_read_object_state_t*) args_raw;
 
-  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, args->response[0] != METHOD_ERROR_OK);
+  MAYBE_HANDLE_RESPONSE(args, METHOD_READ_OBJECT_RESPONSE_LEN, client, args->response[0] != METHOD_ERROR_OK);
 
   svr_client_result_t res;
-  bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&ctx->bkts->bucket_locks[args->key.bucket]), "lock bucket");
 
-  inode_t* found = method_common_find_inode_in_bucket_for_non_management(
-    bkt,
-    &args->key,
+  uint64_t inode_dev_offset = method_common_find_inode_in_bucket(
     ctx->dev,
+    ctx->bkts,
+    &args->key,
     INO_STATE_READY,
-    args->obj_no
+    args->obj_no,
+    NULL
   );
 
-  if (found == NULL) {
+  if (!inode_dev_offset) {
     if (args->response_written == -1) {
       ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
     }
@@ -115,7 +88,7 @@ svr_client_result_t method_read_object(
     res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
     goto final;
   }
-  cursor_t* inode_cur = INODE_CUR(ctx->dev, found);
+  cursor_t* inode_cur = ctx->dev->mmap + inode_dev_offset;
   if (!args->obj_no) {
     args->obj_no = read_u64(inode_cur + INO_OFFSETOF_OBJ_NO);
     int64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
@@ -179,7 +152,7 @@ svr_client_result_t method_read_object(
     read_part_max_len = TILE_SIZE - read_part_offset;
   }
 
-  int writeno = maybe_write(client_fd, read_offset, read_part_max_len);
+  int writeno = maybe_write(client->fd, read_offset, read_part_max_len);
   if (-1 == writeno) {
     res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
     goto final;
@@ -194,8 +167,6 @@ svr_client_result_t method_read_object(
   goto final;
 
   final:
-  if (found != NULL) {
-    atomic_fetch_sub_explicit(&found->refcount, 1, memory_order_relaxed);
-  }
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&ctx->bkts->bucket_locks[args->key.bucket]), "unlock bucket");
   return res;
 }

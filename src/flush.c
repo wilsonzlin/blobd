@@ -1,13 +1,12 @@
-#define _GNU_SOURCE
-
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
-#include "../ext/coz/include/coz.h"
+#include "../ext/xxHash/xxhash.h"
 #include "bucket.h"
 #include "cursor.h"
 #include "device.h"
@@ -25,403 +24,283 @@
 
 LOGGER("flush");
 
-typedef struct {
-  uint64_t device_offset;
-  uint32_t len;
-  uint32_t offset_in_change_data_pool;
-} change_t;
+#define FUTURE_FLUSH_CLIENTS_CAP_INIT 32
+#define FUTURE_FLUSH_DELETES_CAP_INIT 32
+#define FUTURE_FLUSH_WRITE_BYTES_THRESHOLD (8 * 1024 * 1024)
+// Assuming 300,000 IOPS, we can do 30,000 in 100 ms, so don't wait for next 100 ms tick if we've already got that many pending operations.
+// TODO Tune, verify theory.
+#define FUTURE_FLUSH_WRITE_COUNT_THRESHOLD 30000
 
-LIST_DEF(changes, change_t);
-LIST(changes, change_t);
+LIST_DEF(clients, svr_client_t*);
+LIST(clients, svr_client_t*);
 
-LIST_DEF(inode_list, inode_t*);
-LIST(inode_list, inode_t*);
+LIST_DEF(inode_dev_offsets, uint64_t);
+LIST(inode_dev_offsets, uint64_t);
+
+typedef struct future_flush_s {
+  uint8_t journal[JOURNAL_RESERVED_SPACE];
+  uint32_t journal_entry_count;
+  uint32_t journal_write_next;
+  // Some methods have lots of data for their journal entry, but have strict ordering requirements, so to avoid forcing them to hold a lock for a long time, they can reserve the space and position in the journal first and then inform us when they're done populating the journal data.
+  uint32_t journal_pending_count;
+  // Set to true when the next journal event is on another future_flush_t. Since flush tasks/journal entries are strictly ordered, nothing more will be added to this future_flush_t, so it's ready to be flushed.
+  bool journal_full;
+  // Optimisation: inodes to delete are copied separately for faster iterating.
+  inode_dev_offsets_t* delete_inode_dev_offsets;
+  // Optimisation: clients currently in write_object can be released earlier, before the journal is applied.
+  clients_t* nonwrite_clients;
+  clients_t* write_clients;
+  // Count of clients that are in write_object and pending flush.
+  uint64_t write_count;
+  // Sum of bytes written by clients in write_object pending flush.
+  uint64_t write_bytes;
+  // Internal use only.
+  bool ready;
+  // When in free pool, this points to next free future_flush_t. Otherwise, it points to next future_flush_t to flush once ready.
+  struct future_flush_s* next;
+} future_flush_t;
 
 struct flush_state_s {
-  device_t* dev;
-  journal_t* journal;
-  freelist_t* fl;
-  inodes_state_t* inodes_state;
   buckets_t* buckets;
+  device_t* dev;
+  freelist_t* freelist;
+  journal_t* journal;
+  server_t* server;
   stream_t* stream;
-  inode_list_t* inodes_awaiting_refcount_for_deletion;
-  changes_t* changes;
-  uint8_t* change_data_pool;
-  uint64_t change_data_pool_cap;
+
+  // We can't use svr_client_t directly as a commit_object could have multiple tasks (e.g. commit and delete).
+  // Atomics generally ruin performance, especially with multiple operations. A CPU can run billions of cycles per second but we only expect at most 100K creates/commits/writes/deletes per second, so using a lock would not be considered contentious and atomics would therefore be net negative for performance. Additional reasons we don't use them here:
+  // - A threshold for performing flush is the amount of tasks. If multiple threads realise there are enough tasks, they'll all call flush_maybe_perform, causing contention on the flushing_lock and wasted compute.
+  // - We'd have to use a ring buffer since there's no way to atomically get an index, check the position, conditionally swap task array buffers, get actual readable length, and call flush_maybe_perform.
+  // - With a ring buffer, we'd run the risk of overwriting (once again, no atomic way of checking all variables atomically). We'd also have to allocate a huge buffer upfront as we cannot realloc().
+  pthread_mutex_t futures_lock;
+  pthread_cond_t futures_cond;
+  future_flush_t* future_head;
+  future_flush_t* future_next_writable;
+
+  // The pool is a stack instead of a queue, so we don't need a tail.
+  future_flush_t* future_pool_head;
 };
 
-void flush_mark_inode_for_awaiting_deletion(
-  flush_state_t* state,
-  uint64_t bkt_id,
-  // Pointer to previous inode_t, or NULL if the inode is the head.
-  inode_t* previous_if_inode_or_null_if_head,
-  inode_t* ino
-) {
-  COZ_BEGIN("flush_mark_inode_for_awaiting_deletion");
-  atomic_store_explicit(&ino->state, INO_STATE_DELETED, memory_order_relaxed);
-  cursor_t* inode_cur = INODE_CUR(state->dev, ino);
-  inode_cur[INO_OFFSETOF_STATE] = INO_STATE_DELETED;
-  // We can safely read and write in multiple operations as we're running in a single-threaded manager.
-  inode_t* next = atomic_load_explicit(&ino->next, memory_order_relaxed);
-  if (previous_if_inode_or_null_if_head == NULL) {
-    bucket_t* bkt = buckets_get_bucket(state->buckets, bkt_id);
-    atomic_store_explicit(&bkt->head, next, memory_order_relaxed);
-  } else {
-    atomic_store_explicit(&previous_if_inode_or_null_if_head->next, next, memory_order_relaxed);
+static inline void reset_future(future_flush_t* f) {
+  f->journal_entry_count = 0;
+  f->journal_write_next = JOURNAL_OFFSETOF_ENTRIES;
+  f->journal_pending_count = 0;
+  f->journal_full = false;
+  f->delete_inode_dev_offsets->len = 0;
+  f->nonwrite_clients->len = 0;
+  f->write_clients->len = 0;
+  f->write_count = 0;
+  f->write_bytes = 0;
+  f->ready = false;
+  f->next = NULL;
+}
+
+static inline future_flush_t* create_future() {
+  future_flush_t* f = malloc(sizeof(future_flush_t));
+  f->delete_inode_dev_offsets = inode_dev_offsets_create_with_capacity(FUTURE_FLUSH_DELETES_CAP_INIT);
+  f->nonwrite_clients = clients_create_with_capacity(FUTURE_FLUSH_CLIENTS_CAP_INIT);
+  f->write_clients = clients_create_with_capacity(FUTURE_FLUSH_CLIENTS_CAP_INIT);
+  reset_future(f);
+  return f;
+}
+
+// Must be locked before calling.
+static inline future_flush_t* get_new_future(flush_state_t* state) {
+  future_flush_t* f = state->future_pool_head;
+  if (f != NULL) {
+    state->future_pool_head = f->next;
+    return f;
   }
-  inode_list_append(state->inodes_awaiting_refcount_for_deletion, ino);
-  stream_event_t ev = {
-    .bkt_id = bkt_id,
-    .obj_no = read_u64(inode_cur + INO_OFFSETOF_OBJ_NO),
-    .seq_no = state->stream->next_seq_no++,
-    .typ = STREAM_EVENT_OBJECT_DELETE,
+  return create_future();
+}
+
+void flush_lock_tasks(flush_state_t* state) {
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_lock(&state->futures_lock), "lock futures");
+}
+
+void flush_unlock_tasks(flush_state_t* state) {
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&state->futures_lock), "unlock futures");
+}
+
+// Must be locked before calling.
+static inline void maybe_apply_future(flush_state_t* state, future_flush_t* f) {
+  if (
+    !f->journal_pending_count && (
+      f->journal_full ||
+      f->write_bytes > FUTURE_FLUSH_WRITE_BYTES_THRESHOLD ||
+      f->write_count > FUTURE_FLUSH_WRITE_COUNT_THRESHOLD
+    )
+  ) {
+    f->ready = true;
+    // We can only flush in order, so we can only flush this if it's the next in line.
+    if (f == state->future_head) {
+      ASSERT_ERROR_RETVAL_OK(pthread_cond_signal(&state->futures_cond), "signal cond");
+    }
+  }
+}
+
+// Must be locked before calling.
+// NOTE: Use either (flush_reserve_task() then flush_commit_task()) or flush_add_write_task(), not both.
+flush_task_reserve_t flush_reserve_task(flush_state_t* state, uint32_t len, svr_client_t* client_or_null, uint64_t delete_inode_dev_offset_or_zero) {
+  future_flush_t* f = state->future_next_writable;
+  if (f->journal_write_next + len > JOURNAL_RESERVED_SPACE) {
+    f->journal_full = true;
+    future_flush_t* new_f = get_new_future(state);
+    f->next = new_f;
+    maybe_apply_future(state, f);
+    state->future_next_writable = f;
+    f = new_f;
+  }
+  uint32_t pos = f->journal_write_next;
+  f->journal_entry_count++;
+  f->journal_write_next += len;
+  f->journal_pending_count++;
+  if (client_or_null != NULL) {
+    clients_append(f->nonwrite_clients, client_or_null);
+  }
+  if (delete_inode_dev_offset_or_zero) {
+    inode_dev_offsets_append(f->delete_inode_dev_offsets, delete_inode_dev_offset_or_zero);
+  }
+  flush_task_reserve_t r = {
+    .future = f,
+    .pos = pos,
   };
-  events_pending_flush_append(state->stream->pending_flush, ev);
-  buckets_mark_bucket_as_dirty(state->buckets, bkt_id);
-  COZ_END("flush_mark_inode_for_awaiting_deletion");
+  return r;
 }
 
-void flush_mark_inode_as_committed(
-  flush_state_t* state,
-  uint64_t bkt_id,
-  inode_t* ino
-) {
-  COZ_BEGIN("flush_mark_inode_as_committed");
-  // TODO Do we care that someone could still be writing to the object?
-  atomic_store_explicit(&ino->state, INO_STATE_READY, memory_order_relaxed);
-  cursor_t* inode_cur = INODE_CUR(state->dev, ino);
-  inode_cur[INO_OFFSETOF_STATE] = INO_STATE_INCOMPLETE;
-  stream_event_t ev = {
-    .bkt_id = bkt_id,
-    .obj_no = read_u64(inode_cur + INO_OFFSETOF_OBJ_NO),
-    .seq_no = state->stream->next_seq_no++,
-    .typ = STREAM_EVENT_OBJECT_COMMIT,
-  };
-  events_pending_flush_append(state->stream->pending_flush, ev);
-  buckets_mark_bucket_as_dirty(state->buckets, bkt_id);
-  COZ_END("flush_mark_inode_as_committed");
+cursor_t* flush_get_reserved_cursor(flush_task_reserve_t r) {
+  future_flush_t* fut = (future_flush_t*) r.future;
+  return fut->journal + r.pos;
 }
 
-typedef struct {
-  flush_state_t* state;
-  uint64_t change_data_next;
-} change_data_pool_writer_t;
-
-// Returns 1 if a new change was appended or 0 if the previous change was simply extended.
-// TODO Assert total bytes does not exceed journal space.
-static inline uint8_t append_change(
-  changes_t* changes,
-  uint64_t change_data_offset,
-  uint64_t device_offset,
-  uint32_t len
-) {
-  change_t* last = changes_last_mut(changes);
-  if (last != NULL && last->device_offset + last->len == device_offset && last->offset_in_change_data_pool + last->len == change_data_offset) {
-    ASSERT_STATE(last->len <= 4294967295 - len, "too many bytes changed in one entry");
-    last->len += len;
-    return 0;
-  } else {
-    change_t c = {
-      .device_offset = device_offset,
-      .len = len,
-      .offset_in_change_data_pool = change_data_offset,
-    };
-    changes_append(changes, c);
-    return 1;
-  }
+// Must be locked before calling.
+// NOTE: Use either (flush_reserve_task() then flush_commit_task()) or flush_add_write_task(), not both.
+// WARNING: This may start the flush process, so make sure any client states are updated before calling, as they will be rearmed to the server epoll.
+void flush_commit_task(flush_state_t* state, flush_task_reserve_t r) {
+  future_flush_t* fut = (future_flush_t*) r.future;
+  fut->journal_pending_count--;
+  maybe_apply_future(state, fut);
 }
 
-static inline void change_data_pool_append(change_data_pool_writer_t* writer, uint8_t* data, uint64_t len) {
-  if (writer->change_data_next + len >= writer->state->change_data_pool_cap) {
-    while (writer->state->change_data_pool_cap < writer->change_data_next + len) {
-      writer->state->change_data_pool_cap *= 2;
-    }
-    writer->state->change_data_pool = realloc(writer->state->change_data_pool, writer->state->change_data_pool_cap);
-  }
-  memcpy(writer->state->change_data_pool + writer->change_data_next, data, len);
-  writer->change_data_next += len;
-}
-
-static inline uint32_t change_data_pool_append_u8(change_data_pool_writer_t* writer, uint8_t val) {
-  change_data_pool_append(writer, &val, 1);
-  return 1;
-}
-
-static inline uint32_t change_data_pool_append_u24(change_data_pool_writer_t* writer, uint32_t val) {
-  uint8_t data[3];
-  write_u24(data, val);
-  change_data_pool_append(writer, data, 3);
-  return 3;
-}
-
-static inline uint32_t change_data_pool_append_u40(change_data_pool_writer_t* writer, uint64_t val) {
-  uint8_t data[5];
-  write_u40(data, val);
-  change_data_pool_append(writer, data, 5);
-  return 5;
-}
-
-static inline uint32_t change_data_pool_append_u48(change_data_pool_writer_t* writer, uint64_t val) {
-  uint8_t data[6];
-  write_u48(data, val);
-  change_data_pool_append(writer, data, 6);
-  return 6;
-}
-
-static inline uint32_t change_data_pool_append_u64(change_data_pool_writer_t* writer, uint64_t val) {
-  uint8_t data[8];
-  write_u64(data, val);
-  change_data_pool_append(writer, data, 8);
-  return 8;
-}
-
-// WARNING: Function call argument evaluation order is undefined in C, so we cannot rely on it to simplify this expression. We must get `change_data_next` before evaluating `c1`/`c2`/`c3`.
-// We avoid `(c1) + (c2) + (c3)` as the evaluation order is unspecified.
-// NOTE: This is only supported by GCC (https://gcc.gnu.org/onlinedocs/gcc/Statement-Exprs.html).
-#define __RECORD_CHANGE(dev_offset, c1, c2, c3) \
-  ({ uint64_t __cdn = change_data_writer->change_data_next; uint32_t __len = c1; __len += c2; __len += c3; append_change(state->changes, __cdn, dev_offset, __len); })
-
-#define RECORD_CHANGE1(dev_offset, c1) __RECORD_CHANGE(dev_offset, c1, 0, 0)
-
-#define RECORD_CHANGE2(dev_offset, c1, c2) __RECORD_CHANGE(dev_offset, c1, c2, 0)
-
-#define RECORD_CHANGE3(dev_offset, c1, c2, c3) __RECORD_CHANGE(dev_offset, c1, c2, c3)
-
-static inline void ts_log_debug_writing_change(change_t c, buckets_t* buckets) {
-  uint64_t offset = 0;
-  if (c.device_offset < offset + JOURNAL_RESERVED_SPACE) {
-    DEBUG_TS_LOG("Writing journal area change: %lu, %u bytes", c.device_offset - offset, c.len);
-    return;
-  }
-  offset += JOURNAL_RESERVED_SPACE;
-  if (c.device_offset < offset + STREAM_RESERVED_SPACE) {
-    DEBUG_TS_LOG("Writing stream area change: %lu, %u bytes", c.device_offset - offset, c.len);
-    return;
-  }
-  offset += STREAM_RESERVED_SPACE;
-  if (c.device_offset < offset + FREELIST_RESERVED_SPACE) {
-    DEBUG_TS_LOG("Writing freelist area change: %lu, %u bytes", c.device_offset - offset, c.len);
-    return;
-  }
-  offset += FREELIST_RESERVED_SPACE;
-  uint64_t buckets_space = BUCKETS_RESERVED_SPACE(buckets_get_count(buckets));
-  if (c.device_offset < offset + buckets_space) {
-    DEBUG_TS_LOG("Writing buckets area change: %lu, %u bytes", c.device_offset - offset, c.len);
-    return;
-  }
-  offset += buckets_space;
-  DEBUG_TS_LOG("Writing heap area change: %lu, %u bytes", c.device_offset - offset, c.len);
-}
-
-// This will update bucket head, as well as "next" fields on all inodes in the bucket.
-static inline void record_bucket_change(
-  flush_state_t* state,
-  change_data_pool_writer_t* change_data_writer,
-  uint64_t bkt_id
-) {
-  bucket_t* bkt = buckets_get_bucket(state->buckets, bkt_id);
-  uint64_t dev_offset = buckets_get_device_offset_of_bucket(state->buckets, bkt_id);
-  inode_t* ino = atomic_load_explicit(&bkt->head, memory_order_relaxed);
-  while (true) {
-    RECORD_CHANGE1(
-      dev_offset,
-      change_data_pool_append_u48(change_data_writer, ino == NULL ? 0 : INODE_DEV_OFFSET(ino))
-    );
-    if (ino == NULL) {
-      break;
-    }
-    dev_offset = INODE_DEV_OFFSET(ino) + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
-    ino = atomic_load_explicit(&ino->next, memory_order_relaxed);
-  }
-}
-
-void visit_bucket_dirty_bitmap(
-  flush_state_t* state,
-  change_data_pool_writer_t* change_data_writer,
-  uint64_t bitmap,
-  uint64_t base,
-  uint8_t layer
-) {
-  buckets_t* bkts = state->buckets;
-  array_u8_64_t candidates = vec_find_indices_of_nonzero_bits_64(bitmap);
-  if (layer == buckets_get_dirty_bitmap_layer_count(bkts) - 1) {
-    VEC_ITER_INDICES_OF_NONZERO_BITS_64(candidates, index) {
-      uint64_t bkt_id = base + index;
-      record_bucket_change(state, change_data_writer, bkt_id);
-    }
-  } else {
-    VEC_ITER_INDICES_OF_NONZERO_BITS_64(candidates, index) {
-      uint64_t offset = base + index;
-      visit_bucket_dirty_bitmap(state, change_data_writer, buckets_get_dirty_bitmap_layer(bkts, layer + 1)[offset], offset * 64, layer + 1);
-    }
-  }
-}
-
-void flush_perform(flush_state_t* state) {
-  DEBUG_TS_LOG("Starting flush");
-
-  // In create_object, we specify that we wait until now (flush time) to sync all inode data in heap.
-  // One concern we need to think about is ensuring that metadata and heap data are synced at the same time, to prevent pointers/freelists/etc. from referring to nonexistent/corrupt inodes.
-  // However, we don't need to sync before creating journal, as the journal simply records old data, so even if it gets applied the device will still be in a consistent state.
-  // Therefore, to save msync() calls, we msync() at the same time as after applying new metadata bytes, but before journal is cleared.
-
-  // We collect changes to make first, and then write to journal. This allows two optimisations:
-  // - Avoiding paging in the journal until we need to.
-  // - Compacting contiguous change list entries, before committing final list to journal.
-
-  change_data_pool_writer_t cdw = {
-    .change_data_next = 0,
-    .state = state,
-  };
-  change_data_pool_writer_t* change_data_writer = &cdw;
-
-  // Process inodes pending deletion.
-  uint64_t new_awaiting_deletion_len = 0;
-  for (uint64_t i = 0; i < state->inodes_awaiting_refcount_for_deletion->len; i++) {
-    inode_t* ino = state->inodes_awaiting_refcount_for_deletion->elems[i];
-    if (atomic_load_explicit(&ino->refcount, memory_order_relaxed) == 0) {
-      freelist_replenish_tiles_of_inode(state->fl, INODE_CUR(state->dev, ino));
-      inode_destroy_thread_unsafe(state->inodes_state, ino);
-    } else {
-      state->inodes_awaiting_refcount_for_deletion->elems[new_awaiting_deletion_len] = ino;
-      new_awaiting_deletion_len++;
-    }
-  }
-  state->inodes_awaiting_refcount_for_deletion->len = new_awaiting_deletion_len;
-
-  // Record freelist changes.
-  // NOTE: Do this after processing object deletes, as those can cause space to be freed.
-  if (state->fl->dirty_tiles_bitmap_1) {
-    array_u8_64_t i1_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_1);
-    VEC_ITER_INDICES_OF_NONZERO_BITS_64(i1_candidates, i1) {
-      array_u8_64_t i2_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_2[i1]);
-      VEC_ITER_INDICES_OF_NONZERO_BITS_64(i2_candidates, i2) {
-        array_u8_64_t i3_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_3[i1 * 64 + i2]);
-        VEC_ITER_INDICES_OF_NONZERO_BITS_64(i3_candidates, i3) {
-          array_u8_64_t i4_candidates = vec_find_indices_of_nonzero_bits_64(state->fl->dirty_tiles_bitmap_4[(((i1 * 64) + i2) * 64) + i3]);
-          VEC_ITER_INDICES_OF_NONZERO_BITS_64(i4_candidates, i4) {
-            uint64_t tile_no = ((((i1 * 64) + i2) * 64) + i3) * 64 + i4;
-            uint64_t dev_offset = state->fl->dev_offset + tile_no * 3;
-
-            uint64_t atmp = tile_no;
-            uint64_t a6 = atmp % 16; atmp /= 16;
-            uint64_t a5 = atmp % 16; atmp /= 16;
-            uint64_t a4 = atmp % 16; atmp /= 16;
-            uint64_t a3 = atmp % 16; atmp /= 16;
-            uint64_t a2 = atmp % 16; atmp /= 16;
-            uint64_t a1 = atmp % 16;
-
-            uint32_t new_value;
-
-            uint32_t microtile_state = state->fl->microtile_free_map_6[a1][a2][a3][a4][a5].elems[a6];
-            if (microtile_state == 16) {
-              // This tile is NOT a microtile.
-              bool is_free = state->fl->tile_bitmap_4[i1][i2][i3] & (1llu << i4);
-              if (is_free) {
-                new_value = 16777215;
-              } else {
-                new_value = 16777214;
-              }
-            } else {
-              // This tile is a microtile.
-              uint32_t free = microtile_state >> 8;
-              // Avoid invalid special values. Note that microtiles cannot have usages of 0, 1, or 2 bytes, because they must have at least one inode which are at least 29 bytes.
-              if (free >= 16777214) {
-                fprintf(stderr, "Microtile %zu has free space of %u bytes\n", atmp, free);
-                exit(EXIT_INTERNAL);
-              }
-              new_value = free;
-            }
-            RECORD_CHANGE1(dev_offset, change_data_pool_append_u24(change_data_writer, new_value));
-          }
-        }
-      }
-    }
-  }
-
-  // Record stream changes.
-  if (state->stream->pending_flush->len) {
-    uint64_t new_obj_no = atomic_load_explicit(&state->stream->next_obj_no, memory_order_relaxed);
-    uint64_t new_seq_no = atomic_load_explicit(&state->stream->next_seq_no, memory_order_relaxed);
-    DEBUG_TS_LOG("New object number is %lu, sequence number %lu", new_obj_no, new_seq_no);
-    RECORD_CHANGE2(
-      state->stream->dev_offset,
-      change_data_pool_append_u64(change_data_writer, new_obj_no),
-      change_data_pool_append_u64(change_data_writer, new_seq_no)
-    );
-    for (uint64_t i = 0; i < state->stream->pending_flush->len; i++) {
-      stream_event_t* ev = state->stream->pending_flush->elems + i;
-      uint64_t ring_idx = ev->seq_no % STREAM_EVENTS_BUF_LEN;
-      RECORD_CHANGE3(
-        state->stream->dev_offset + 8 + 8 + (ring_idx * (1 + 5 + 8)),
-        change_data_pool_append_u8(change_data_writer, ev->typ),
-        change_data_pool_append_u40(change_data_writer, ev->bkt_id),
-        change_data_pool_append_u64(change_data_writer, ev->obj_no)
-      );
-    }
-    state->stream->pending_flush->len = 0;
-  }
-
-  // Record bucket pointer changes.
-  if (buckets_get_dirty_bitmap_layer(state->buckets, 0)[0]) {
-    visit_bucket_dirty_bitmap(state, change_data_writer, buckets_get_dirty_bitmap_layer(state->buckets, 0)[0], 0, 0);
-  }
-
-  // Write and flush journal.
-  for (uint64_t i = 0; i < state->changes->len; i++) {
-    change_t c = state->changes->elems[i];
-    journal_append(state->journal, c.device_offset, c.len);
-  }
-  // Ensure journal has been flushed to disk and written successfully.
-  journal_flush(state->journal);
-
-  // Write changes to mmap and flush.
-  for (uint64_t i = 0; i < state->changes->len; i++) {
-    change_t c = state->changes->elems[i];
-    #ifdef TURBOSTORE_DEBUG_LOG_FLUSH_DELTAS
-      ts_log_debug_writing_change(c, state->buckets);
-    #endif
-    memcpy(state->dev->mmap + c.device_offset, state->change_data_pool + c.offset_in_change_data_pool, c.len);
-  }
-  // We must ensure changes have been written successfully BEFORE erasing journal.
-  // TODO Is granular but more frequent msync() calls better or worse?
-  device_sync(state->dev, 0, state->dev->size);
-  state->changes->len = 0;
-
-  // Erase and flush journal.
-  journal_clear(state->journal);
-
-  // Clear dirty bitmaps.
-  state->fl->dirty_tiles_bitmap_1 = 0;
-  memset(state->fl->dirty_tiles_bitmap_2, 0, 64 * sizeof(uint64_t));
-  memset(state->fl->dirty_tiles_bitmap_3, 0, 64 * 64 * sizeof(uint64_t));
-  memset(state->fl->dirty_tiles_bitmap_4, 0, 64 * 64 * 64 * sizeof(uint64_t));
-  // Use uint64_t for `l`.
-  for (uint64_t i = 0, l = 1; i < buckets_get_dirty_bitmap_layer_count(state->buckets); i++, l *= 64) {
-    memset(buckets_get_dirty_bitmap_layer(state->buckets, i), 0, l * sizeof(uint64_t));
-  }
-
-  DEBUG_TS_LOG("Flush ended");
+// Must be locked before calling.
+// NOTE: Use either (flush_reserve_task() then flush_commit_task()) or flush_add_write_task(), not both.
+// WARNING: This may start the flush process, so make sure any client states are updated before calling, as they will be rearmed to the server epoll.
+void flush_add_write_task(flush_state_t* state, svr_client_t* client, uint64_t write_bytes) {
+  future_flush_t* f = state->future_next_writable;
+  f->write_count++;
+  f->write_bytes += write_bytes;
+  clients_append(f->write_clients, client);
+  maybe_apply_future(state, f);
 }
 
 flush_state_t* flush_state_create(
-  device_t* dev,
-  journal_t* journal,
-  freelist_t* fl,
-  inodes_state_t* inodes_state,
   buckets_t* buckets,
+  device_t* dev,
+  freelist_t* freelist,
+  journal_t* journal,
+  server_t* server,
   stream_t* stream
 ) {
   flush_state_t* state = malloc(sizeof(flush_state_t));
   state->dev = dev;
   state->journal = journal;
-  state->fl = fl;
-  state->inodes_state = inodes_state;
+  state->freelist = freelist;
   state->buckets = buckets;
+  state->server = server;
   state->stream = stream;
-  state->inodes_awaiting_refcount_for_deletion = inode_list_create();
-  state->changes = changes_create_with_capacity(128);
-  state->change_data_pool_cap = 2048;
-  state->change_data_pool = malloc(state->change_data_pool_cap);
+
+  pthread_mutex_init(&state->futures_lock, NULL);
+  pthread_condattr_t condattr;
+  ASSERT_ERROR_RETVAL_OK(pthread_condattr_init(&condattr), "init condattr");
+  ASSERT_ERROR_RETVAL_OK(pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC), "set condattr clock");
+  ASSERT_ERROR_RETVAL_OK(pthread_cond_init(&state->futures_cond, &condattr), "init cond");
+  ASSERT_ERROR_RETVAL_OK(pthread_condattr_destroy(&condattr), "destroy condattr");
+  state->future_head = state->future_next_writable = create_future();
+
+  state->future_pool_head = NULL;
   return state;
+}
+
+void flush_worker_start(flush_state_t* state) {
+  future_flush_t* fut = NULL;
+  while (true) {
+    ASSERT_ERROR_RETVAL_OK(pthread_mutex_lock(&state->futures_lock), "lock futures");
+
+    // If `fut` is not NULL, it came from a previous iteration and we need to release it back to the pool.
+    if (fut != NULL) {
+      if (state->future_pool_head == NULL) {
+        state->future_pool_head = NULL;
+      } else {
+        state->future_pool_head->next = fut;
+      }
+    }
+
+    while ((fut = state->future_head) == NULL || !fut->ready) {
+      // Get timestamp inside loop, since significant time can pass between iterations.
+      struct timespec wakets;
+      if (-1 == clock_gettime(CLOCK_MONOTONIC, &wakets)) {
+        perror("Failed to get monotonic timestamp");
+        exit(EXIT_INTERNAL);
+      }
+      // Aim to flush at least every 100 ms.
+      if ((wakets.tv_nsec += 100000000) >= 1000000000) {
+        wakets.tv_sec++;
+        wakets.tv_nsec %= 1000000000;
+      }
+      int condres = pthread_cond_timedwait(&state->futures_cond, &state->futures_lock, &wakets);
+      if (ETIMEDOUT == condres && fut != NULL && !fut->journal_pending_count && (
+        fut->write_clients->len || fut->nonwrite_clients->len
+      )) {
+        // We force-flush the future anyway due to timeout.
+        fut->ready = true;
+        state->future_head = fut->next;
+        break;
+      }
+      ASSERT_ERROR_RETVAL_OK(condres, "wait cond");
+    }
+    ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&state->futures_lock), "unlock futures");
+
+    DEBUG_TS_LOG("Starting flush");
+
+    if (fut->journal_entry_count) {
+      // Write journal.
+      write_u32(fut->journal + JOURNAL_OFFSETOF_COUNT, fut->journal_entry_count);
+      uint64_t checksum = XXH3_64bits(fut->journal + JOURNAL_OFFSETOF_COUNT, fut->journal_write_next - JOURNAL_OFFSETOF_COUNT);
+      write_u64(fut->journal + JOURNAL_OFFSETOF_CHECKSUM, checksum);
+      memcpy(state->journal->mmap, fut->journal, fut->journal_write_next);
+      // Sync entire device to also sync pending write_object writes.
+      device_sync(state->dev, 0, state->dev->size);
+    }
+
+    // Optimisation: release write clients earlier than others.
+    for (uint64_t i = 0; i < fut->write_clients->len; i++) {
+      svr_client_t* client = fut->write_clients->elems[i];
+      server_rearm_client_to_epoll(state->server, client, false, true);
+    }
+
+    if (fut->journal_entry_count) {
+      // Apply changes.
+      journal_apply_online_then_clear(state->journal, state->buckets, state->stream);
+
+      // Release deleted space.
+      // We release deleted space AFTER journaling, applying, and syncing changes to device as otherwise some create_object call could immediately convert a tile to a microtile and overwrite data.
+      for (uint64_t i = 0; i < fut->delete_inode_dev_offsets->len; i++) {
+        uint64_t inode_dev_offset = fut->delete_inode_dev_offsets->elems[i];
+        freelist_replenish_tiles_of_inode(state->freelist, state->dev->mmap + inode_dev_offset);
+      }
+    }
+
+    // Release remaining clients.
+    for (uint64_t i = 0; i < fut->nonwrite_clients->len; i++) {
+      svr_client_t* client = fut->nonwrite_clients->elems[i];
+      server_rearm_client_to_epoll(state->server, client, false, true);
+    }
+
+    // Reset future and release to pool.
+    reset_future(fut);
+    // We'll release to pool in the next iteration, where we'll have the lock.
+
+    DEBUG_TS_LOG("Flush ended");
+  }
 }

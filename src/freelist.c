@@ -1,15 +1,13 @@
-#define _GNU_SOURCE
-
 #include <immintrin.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include "../ext/coz/include/coz.h"
 #include "cursor.h"
 #include "device.h"
 #include "exit.h"
+#include "flush.h"
 #include "freelist.h"
 #include "inode.h"
 #include "log.h"
@@ -17,6 +15,24 @@
 #include "util.h"
 
 LOGGER("freelist");
+
+struct freelist_s {
+  uint64_t dev_offset;
+  // Bits are set if they're free.
+  uint64_t tile_bitmap_1;
+  uint64_t tile_bitmap_2[64];
+  uint64_t tile_bitmap_3[64][64];
+  uint64_t tile_bitmap_4[64][64][64];
+  // Storing free amount (instead of used) allows us to initialise these in-memory structures to empty and not available by default, which is faster and more importantly, ensures that all elements including out-of-bound ones that map to invalid tiles are unavailable by default.
+  // For each element, bits [31:8] represent the maximum free amount of all elements in the next layer, [7:7] if the tile is not a microtile, and [6:0] the corresponding index of the maximum in the next layer (although only 4 bits are used as there are only 16 elements per vector).
+  vec_512i_u32_t microtile_free_map_1;
+  vec_512i_u32_t microtile_free_map_2[16];
+  vec_512i_u32_t microtile_free_map_3[16][16];
+  vec_512i_u32_t microtile_free_map_4[16][16][16];
+  vec_512i_u32_t microtile_free_map_5[16][16][16][16];
+  vec_512i_u32_t microtile_free_map_6[16][16][16][16][16];
+  pthread_mutex_t lock;
+};
 
 freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) {
   cursor_t* cur = dev->mmap + dev_offset;
@@ -95,6 +111,14 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
   return fl;
 }
 
+void freelist_lock(freelist_t* fl) {
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_lock(&fl->lock), "lock freelist");
+}
+
+void freelist_unlock(freelist_t* fl) {
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&fl->lock), "unlock freelist");
+}
+
 typedef struct {
   vec_512i_u8_t tiles;
   uint64_t new_bitmap;
@@ -124,14 +148,6 @@ static inline free_tiles_t find_free_tiles_in_region(uint64_t region_tile_bitmap
   return result;
 }
 
-static inline void mark_tile_as_dirty(freelist_t* fl, uint32_t tile) {
-  uint64_t itmp = tile;
-  fl->dirty_tiles_bitmap_4[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
-  fl->dirty_tiles_bitmap_3[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
-  fl->dirty_tiles_bitmap_2[itmp / 64] |= (1llu << (itmp % 64)); itmp /= 64;
-  fl->dirty_tiles_bitmap_1 |= (1llu << itmp);
-}
-
 static inline void propagate_tile_bitmap_change(freelist_t* fl, uint64_t new_bitmap, uint64_t i1, uint64_t i2, uint64_t i3) {
   if (!(fl->tile_bitmap_4[i1][i2][i3] = new_bitmap)) {
     if (!(fl->tile_bitmap_3[i1][i2] &= ~(1llu << i3))) {
@@ -143,7 +159,6 @@ static inline void propagate_tile_bitmap_change(freelist_t* fl, uint64_t new_bit
 }
 
 uint32_t fast_allocate_one_tile(freelist_t* fl) {
-  COZ_BEGIN("fast_allocate_one_tile");
   uint64_t i1 = _tzcnt_u64(fl->tile_bitmap_1);
   if (i1 == 64) {
     ts_log(CRIT, "Failed to allocate one tile");
@@ -158,34 +173,28 @@ uint32_t fast_allocate_one_tile(freelist_t* fl) {
 
   propagate_tile_bitmap_change(fl, fl->tile_bitmap_4[i1][i2][i3] & ~(1llu << i4), i1, i2, i3);
   uint32_t tile = (((((i1 * 64) + i2) * 64) + i3) * 64) + i4;
-  mark_tile_as_dirty(fl, tile);
 
-  COZ_END("fast_allocate_one_tile");
   return tile;
 }
 
-// Lock must be already acquired.
+// Lock must be already acquired before calling.
 void freelist_replenish_tiles_of_inode(freelist_t* fl, cursor_t* inode_cur) {
   uint8_t key_len = inode_cur[INO_OFFSETOF_KEY_LEN];
-  uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
-  ino_last_tile_mode_t ltm = inode_cur[INO_OFFSETOF_LAST_TILE_MODE];
-  uint64_t tile_count = size / TILE_SIZE + (ltm == INO_LAST_TILE_MODE_TILE ? 1 : 0);
-  cursor_t* tiles_cur = inode_cur + INO_OFFSETOF_TILES(key_len);
+  uint64_t tile_count = INODE_TILE_COUNT(inode_cur);
   for (uint64_t i = 0; i < tile_count; i++) {
-    uint32_t tile_no = consume_u24(&tiles_cur);
+    uint32_t tile_no = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(key_len, i));
     uint64_t itmp = tile_no;
     uint64_t i4 = itmp % 64; itmp /= 64;
     uint64_t i3 = itmp % 64; itmp /= 64;
     uint64_t i2 = itmp % 64; itmp /= 64;
     uint64_t i1 = itmp % 64;
     fl->tile_bitmap_4[i1][i2][i3] |= 1llu << i4;
-    mark_tile_as_dirty(fl, tile_no);
   }
 }
 
 // tiles_needed must be nonzero.
+// Lock must be already acquired before calling.
 void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out) {
-  COZ_BEGIN("freelist_consume_tiles");
   uint64_t tiles_needed_orig = tiles_needed;
 
   array_u8_64_t i1_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_1);
@@ -198,7 +207,6 @@ void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out
         for (uint64_t i = 0; i < 64 && result.tiles.elems[i] != 64; i++) {
           uint32_t tile = (((((i1 * 64) + i2) * 64) + i3) * 64) + result.tiles.elems[i];
           produce_u24(&out, tile);
-          mark_tile_as_dirty(fl, tile);
           tiles_needed--;
         }
         propagate_tile_bitmap_change(fl, result.new_bitmap, i1, i2, i3);
@@ -217,15 +225,15 @@ void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out
   }
 
   DEBUG_TS_LOG("Allocated %zu tiles", tiles_needed_orig);
-  COZ_END("freelist_consume_tiles");
 }
 
+// Lock must be already acquired before calling.
 uint32_t freelist_consume_one_tile(freelist_t* fl) {
   return fast_allocate_one_tile(fl);
 }
 
-uint64_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed) {
-  COZ_BEGIN("freelist_consume_microtiles");
+// Lock must be already acquired before calling.
+uint64_t freelist_consume_microtile_space(freelist_t* fl, uint32_t bytes_needed) {
   __m512i y512 = _mm512_set1_epi32(bytes_needed << 8);
 
   uint32_t m1 = _mm512_cmpge_epu32_mask(fl->microtile_free_map_1.vec, y512);
@@ -283,11 +291,10 @@ uint64_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed) {
     i6 = meta & 127;
     DEBUG_ASSERT_STATE(i6 <= 15, "invalid microtile free map i6 %u", i4);
     microtile_addr = (((((((((i1 * 16) + i2) * 16) + i3) * 16) + i4) * 16) + i5) * 16) + i6;
-    mark_tile_as_dirty(fl, microtile_addr);
     DEBUG_TS_LOG("Found microtile %u with %u free space", microtile_addr, cur_free);
   }
 
-  // TODO assert cur_usage >= bytes_needed.
+  // TODO assert cur_free >= bytes_needed.
   uint32_t new_free = cur_free - bytes_needed;
   DEBUG_TS_LOG("Microtile %u now has %u free space", microtile_addr, new_free);
   fl->microtile_free_map_6[i1][i2][i3][i4][i5].elems[i6] = (new_free << 8) | i6;
@@ -297,6 +304,5 @@ uint64_t freelist_consume_microtiles(freelist_t* fl, uint32_t bytes_needed) {
   fl->microtile_free_map_2[i1].elems[i2] = (_mm512_reduce_max_epu32(fl->microtile_free_map_3[i1][i2].vec) & ~15) | i2;
   fl->microtile_free_map_1.elems[i1] = (_mm512_reduce_max_epu32(fl->microtile_free_map_2[i1].vec) & ~15) | i1;
 
-  COZ_END("freelist_consume_microtiles");
   return ((uint64_t) microtile_addr) * TILE_SIZE + (TILE_SIZE - cur_free);
 }

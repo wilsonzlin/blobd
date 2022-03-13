@@ -22,6 +22,12 @@
     exit(EXIT_INTERNAL); \
   }
 
+#define ASSERT_UNREACHABLE(msg, ...) \
+  { \
+    ts_log(CRIT, "Unreachable: " msg, ##__VA_ARGS__); \
+    exit(EXIT_INTERNAL); \
+  }
+
 #ifdef TURBOSTORE_DEBUG
 #define DEBUG_ASSERT_STATE(chk, msg, ...) ASSERT_STATE(chk, msg, ##__VA_ARGS__)
 #else
@@ -49,3 +55,5 @@ uint64_t uint_divide_ceil(uint64_t a, uint64_t b);
 int maybe_read(int fd, uint8_t* out_buf, uint64_t n);
 
 int maybe_write(int fd, uint8_t* in_buf, uint64_t n);
+
+uint64_t get_monotonic_clock_ms();

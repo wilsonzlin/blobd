@@ -1,10 +1,10 @@
 #pragma once
 
-#include <stdatomic.h>
+#include <pthread.h>
 #include <stdint.h>
 #include "device.h"
 #include "inode.h"
-#include "../ext/klib/khash.h"
+#include "../ext/xxHash/xxhash.h"
 
 /**
 
@@ -25,27 +25,19 @@ u48[] dev_offset_or_zero
 
 **/
 
-#define BUCKETS_RESERVED_SPACE(bkt_cnt) (1 + (bkt_cnt) * 6)
+#define BUCKETS_OFFSETOF_BUCKET(bkt_id) (1 + (bkt_id) * 6)
+
+#define BUCKETS_RESERVED_SPACE(bkt_cnt) BUCKETS_OFFSETOF_BUCKET(bkt_cnt)
+
+#define BUCKET_ID_FOR_KEY(key, key_len, mask) (XXH3_64bits(key, key_len) & (mask))
 
 typedef struct {
-  _Atomic(inode_t*) head;
-} bucket_t;
+  uint64_t count;
+  uint64_t dev_offset;
+  uint64_t key_mask;
+  pthread_rwlock_t* bucket_locks;
+} buckets_t;
 
-typedef struct buckets_s buckets_t;
+uint64_t buckets_read_count(device_t* dev, uint64_t dev_offset);
 
-buckets_t* buckets_create_from_disk_state(inodes_state_t* inodes_state, device_t* dev, uint64_t dev_offset);
-
-uint64_t buckets_get_count(buckets_t* bkts);
-
-uint64_t buckets_get_bucket_id_for_key(buckets_t* bkts, uint8_t* key, uint8_t key_len);
-
-bucket_t* buckets_get_bucket(buckets_t* bkts, uint64_t bkt_id);
-
-uint8_t buckets_get_dirty_bitmap_layer_count(buckets_t* bkts);
-
-uint64_t* buckets_get_dirty_bitmap_layer(buckets_t* bkts, uint8_t layer);
-
-// A bucket is dirty if the head, or any inode's "next" field value, has changed.
-void buckets_mark_bucket_as_dirty(buckets_t* bkts, uint64_t bkt_id);
-
-uint64_t buckets_get_device_offset_of_bucket(buckets_t* bkts, uint64_t bkt_id);
+buckets_t* buckets_create_from_disk_state(device_t* dev, uint64_t dev_offset);

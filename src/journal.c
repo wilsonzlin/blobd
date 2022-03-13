@@ -2,30 +2,36 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include "../ext/xxHash/xxhash.h"
+#include "bucket.h"
 #include "device.h"
+#include "freelist.h"
 #include "journal.h"
 #include "log.h"
-#include "../ext/xxHash/xxhash.h"
+#include "stream.h"
+#include "util.h"
 
 LOGGER("journal");
-
-struct journal_s {
-  device_t* dev;
-  cursor_t* mmap;
-  cursor_t* cursor_next;
-  uint32_t entry_count;
-  uint64_t xxhash_u32_0;
-};
 
 static inline void sync_journal(journal_t* jnl) {
   device_sync(jnl->dev, 0, JOURNAL_RESERVED_SPACE);
 }
 
-journal_t* journal_create(device_t* dev, uint64_t dev_offset) {
+journal_t* journal_create(
+  device_t* dev,
+  uint64_t dev_offset,
+  uint64_t buckets_dev_offset,
+  uint64_t buckets_key_mask,
+  uint64_t freelist_dev_offset,
+  uint64_t stream_dev_offset
+) {
   journal_t* journal = malloc(sizeof(journal_t));
   journal->dev = dev;
+  journal->buckets_dev_offset = buckets_dev_offset;
+  journal->buckets_key_mask = buckets_key_mask;
+  journal->freelist_dev_offset = freelist_dev_offset;
+  journal->stream_dev_offset = stream_dev_offset;
   journal->mmap = dev->mmap + dev_offset;
-  journal->cursor_next = dev->mmap + dev_offset + 8 + 4;
   journal->entry_count = 0;
   uint8_t u32_0[4];
   write_u32(u32_0, 0);
@@ -33,21 +39,7 @@ journal_t* journal_create(device_t* dev, uint64_t dev_offset) {
   return journal;
 }
 
-void journal_append(journal_t* jnl, uint64_t dev_offset, uint32_t len) {
-  produce_u48(&jnl->cursor_next, dev_offset);
-  produce_u32(&jnl->cursor_next, len);
-  produce_n(&jnl->cursor_next, jnl->dev->mmap + dev_offset, len);
-}
-
-void journal_flush(journal_t* jnl) {
-  write_u32(jnl->mmap + 8, jnl->entry_count);
-  uint64_t journal_checksum = XXH3_64bits(jnl->mmap + 8, jnl->cursor_next - (jnl->mmap + 8));
-  write_u64(jnl->mmap, journal_checksum);
-  sync_journal(jnl);
-}
-
-void journal_clear(journal_t* jnl) {
-  jnl->cursor_next = jnl->mmap + 8 + 4;
+static void journal_clear(journal_t* jnl) {
   jnl->entry_count = 0;
   write_u64(jnl->mmap, jnl->xxhash_u32_0);
   write_u32(jnl->mmap + 4, 0);
@@ -55,32 +47,150 @@ void journal_clear(journal_t* jnl) {
   sync_journal(jnl);
 }
 
-typedef struct {
-  uint64_t dev_offset;
-  uint32_t len;
-  cursor_t* data;
-} change_t;
+#define RECORD_STREAM_EVENT(event_type) { \
+    if (stream != NULL) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&stream->rwlock), "lock stream"); \
+    cursor_t* stream_event_cur = jnl->dev->mmap + jnl->stream_dev_offset + STREAM_OFFSETOF_EVENT(stream_seq_no % STREAM_EVENTS_BUF_LEN); \
+    produce_u8(&stream_event_cur, event_type); \
+    produce_u40(&stream_event_cur, bkt_id); \
+    produce_u64(&stream_event_cur, stream_seq_no); \
+    produce_u64(&stream_event_cur, obj_no); \
+    if (stream != NULL) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&stream->rwlock), "unlock stream"); \
+  }
 
-void journal_apply_or_clear(journal_t* jnl) {
-  uint64_t checksum_recorded = read_u64(jnl->mmap);
+static void journal_apply_and_clear(
+  journal_t* jnl,
+  // The following must be NULL if offline and not NULL if online.
+  buckets_t* buckets,
+  stream_t* stream
+) {
   cursor_t* start = jnl->mmap + 8;
   cursor_t* cur = start;
   uint32_t count = consume_u32(&cur);
-  // We can't apply the changes until we verify the checksum is accurate, but we cannot verify the checksum until we get the byte length which requires reading them.
-  change_t* changes = malloc(sizeof(change_t) * count);
+  uint64_t max_obj_no = 0;
+  uint64_t max_seq_no = 0;
   for (uint32_t i = 0; i < count; i++) {
-    // TODO Assert cursor doesn't go past JOURNAL_RESERVED_SPACE.
-    uint64_t dev_offset = consume_u48(&cur);
-    uint32_t len = consume_u32(&cur);
-    cursor_t* data = cur;
-    change_t c = {
-      .data = data,
-      .dev_offset = dev_offset,
-      .len = len,
-    };
-    changes[i] = c;
+    journal_entry_type_t typ = *cur++;
+    uint64_t inode_dev_offset = consume_u48(&cur);
+    cursor_t* inode_cur = jnl->dev->mmap + inode_dev_offset;
+
+    if (JOURNAL_ENTRY_TYPE_CREATE == typ) {
+      uint64_t inode_len = consume_u24(&cur);
+      cursor_t* read_cur = cur - INO_OFFSETOF_LAST_TILE_MODE;
+      uint64_t obj_size = read_u40(read_cur + INO_OFFSETOF_SIZE);
+      uint64_t obj_no = read_u64(read_cur + INO_OFFSETOF_OBJ_NO);
+      // TODO Should we also check against existing next_obj_no on device?
+      max_obj_no = max(max_obj_no, obj_no);
+      uint8_t key_len = read_cur[INO_OFFSETOF_KEY_LEN];
+      ino_last_tile_mode_t ltm = read_cur[INO_OFFSETOF_LAST_TILE_MODE];
+      uint64_t tile_count;
+      uint64_t inline_data_len;
+      if (ltm == INO_LAST_TILE_MODE_INLINE) {
+        tile_count = obj_size / TILE_SIZE;
+        inline_data_len = obj_size % TILE_SIZE;
+      } else {
+        tile_count = uint_divide_ceil(obj_size, TILE_SIZE);
+        inline_data_len = 0;
+      }
+      uint32_t ino_size = INO_SIZE(key_len, tile_count, inline_data_len);
+
+      // Update microtile free space.
+      // WARNING: Journal events must be recorded and applied in order of creates as otherwise microtile value will be corrupted. If B is created after A but gets recorded in an earlier journal, then when A is applied the microtile free space value will become corrupted.
+      write_u24(
+        jnl->dev->mmap + FREELIST_OFFSETOF_TILE(inode_dev_offset / TILE_SIZE),
+        TILE_SIZE - inode_dev_offset - ino_size
+      );
+
+      // Mark tiles as used.
+      for (uint64_t i = 0; i < tile_count; i++) {
+        uint32_t tile_no = read_u24(read_cur + INO_OFFSETOF_TILE_NO(key_len, i));
+        write_u24(jnl->dev->mmap + FREELIST_OFFSETOF_TILE(tile_no), 16777214);
+      }
+
+      // Write inode to heap.
+      memcpy(jnl->dev->mmap + inode_dev_offset + INO_OFFSETOF_LAST_TILE_MODE, cur, inode_len);
+      *(jnl->dev->mmap + inode_dev_offset + INO_OFFSETOF_STATE) = INO_STATE_INCOMPLETE;
+    } else {
+      uint64_t stream_seq_no = consume_u64(&cur);
+      max_seq_no = max(max_seq_no, stream_seq_no);
+      uint64_t old_data = consume_u48(&cur);
+      uint8_t key_len = inode_cur[INO_OFFSETOF_KEY_LEN];
+      uint64_t bkt_id = BUCKET_ID_FOR_KEY(inode_cur + INO_OFFSETOF_KEY, key_len, jnl->buckets_key_mask);
+      uint64_t obj_no = read_u64(inode_cur + INO_OFFSETOF_OBJ_NO);
+
+      if (JOURNAL_ENTRY_TYPE_COMMIT == typ) {
+        // Update state. No locks necessary; reading/writing one byte is always atomic.
+        inode_cur[INO_OFFSETOF_STATE] = INO_STATE_READY;
+
+        // Update bucket head.
+        write_u48(
+          jnl->dev->mmap + jnl->buckets_dev_offset + BUCKETS_OFFSETOF_BUCKET(bkt_id),
+          inode_dev_offset
+        );
+
+        // Record stream event.
+        RECORD_STREAM_EVENT(STREAM_EVENT_OBJECT_COMMIT);
+      } else if (JOURNAL_ENTRY_TYPE_DELETE == typ) {
+        uint64_t tile_count = INODE_TILE_COUNT(inode_cur);
+
+        // Update state. No locks necessary; reading/writing one byte is always atomic.
+        inode_cur[INO_OFFSETOF_STATE] = INO_STATE_DELETED;
+
+        // Update previous inode or bucket head.
+        uint64_t next_inode_dev_offset = read_u48(inode_cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET);
+        if (buckets != NULL) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&buckets->bucket_locks[bkt_id]), "lock bucket");
+        if (old_data) {
+          // `old_data` represents inode dev offset of previous inode.
+          cursor_t* prev_inode_cur = jnl->dev->mmap + old_data;
+          write_u48(
+            prev_inode_cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET,
+            next_inode_dev_offset
+          );
+        } else {
+          // Deleted inode was head, so update bucket head.
+          write_u48(
+            jnl->dev->mmap + jnl->buckets_dev_offset + BUCKETS_OFFSETOF_BUCKET(bkt_id),
+            next_inode_dev_offset
+          );
+        }
+        if (buckets != NULL) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&buckets->bucket_locks[bkt_id]), "lock bucket");
+
+        // Release tiles back to freelist on device.
+        // NOTE: In-memory freelist_t values/data structures not affected/updated/synced/reloaded.
+        for (uint64_t i = 0; i < tile_count; i++) {
+          uint32_t tile_no = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(key_len, i));
+          write_u24(jnl->dev->mmap + FREELIST_OFFSETOF_TILE(tile_no), 16777215);
+        }
+
+        // Record stream event.
+        RECORD_STREAM_EVENT(STREAM_EVENT_OBJECT_DELETE);
+      } else {
+        ASSERT_UNREACHABLE("journal entry type: %d", typ);
+      }
+    }
   }
-  uint64_t checksum_actual = XXH3_64bits(start, cur - start);
+
+  if (max_seq_no) {
+    write_u64(jnl->dev->mmap + jnl->stream_dev_offset + STREAM_OFFSETOF_NEXT_SEQ_NO, max_seq_no + 1);
+  }
+  if (max_obj_no) {
+    write_u64(jnl->dev->mmap + jnl->stream_dev_offset + STREAM_OFFSETOF_NEXT_OBJ_NO, max_obj_no + 1);
+  }
+
+  // Ensure sync BEFORE clearing journal.
+  device_sync(jnl->dev, 0, jnl->dev->size);
+  journal_clear(jnl);
+}
+
+void journal_apply_online_then_clear(journal_t* jnl, buckets_t* buckets, stream_t* stream) {
+  journal_apply_and_clear(jnl, buckets, stream);
+}
+
+void journal_apply_offline_then_clear(journal_t* jnl) {
+  uint64_t checksum_recorded = read_u64(jnl->mmap);
+  cursor_t* start = jnl->mmap + 8;
+  // TODO Ensure not greater than JOURNAL_ENTRIES_CAP.
+  uint32_t count = read_u32(start);
+  uint64_t checksum_actual = XXH3_64bits(start, 8 + count * (1 + 8 + 3));
   if (checksum_recorded != checksum_actual) {
     // Just because the checksum doesn't match doesn't mean there's corruption:
     // - The process might've crashed while writing the journal.
@@ -89,15 +199,6 @@ void journal_apply_or_clear(journal_t* jnl) {
     // For extra safety, don't clear journal in case we want to look at it.
   } else if (count) {
     ts_log(WARN, "Intact journal found, applying");
-    for (uint32_t i = 0; i < count; i++) {
-      change_t c = changes[i];
-      memcpy(jnl->dev->mmap + c.dev_offset, c.data, c.len);
-    }
-    // Ensure sync BEFORE clearing journal.
-    sync_journal(jnl);
-    ts_log(INFO, "Journal applied");
-    journal_clear(jnl);
-    ts_log(INFO, "Journal cleared");
+    journal_apply_and_clear(jnl, NULL, NULL);
   }
-  free(changes);
 }

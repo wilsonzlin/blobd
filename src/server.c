@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/ip.h>
@@ -15,8 +13,14 @@
 #include "exit.h"
 #include "log.h"
 #include "method/_common.h"
-#include "server.h"
+#include "method/commit_object.h"
+#include "method/create_object.h"
+#include "method/delete_object.h"
+#include "method/inspect_object.h"
+#include "method/read_object.h"
+#include "method/write_object.h"
 #include "server_client.h"
+#include "server.h"
 
 // Make sure this is big enough as we flush after each epoll_wait(), and we don't want to do too many flushes in a short timespan (inefficient use of disk I/O).
 #define SERVER_EPOLL_EVENTS_MAX 8192
@@ -24,37 +28,23 @@
 
 LOGGER("server");
 
-struct server_methods_s {
-  server_method_state_creator* state_creators[256];
+// Called with method_state, method_ctx and args_parser.
+typedef void (server_method_state_initialiser)(void*, method_ctx_t*, svr_method_args_parser_t*);
+
+// Called with method_ctx, method_state, and client; returns client_result.
+typedef svr_client_result_t (server_method_handler)(method_ctx_t*, void*, svr_client_t*);
+
+typedef struct {
+  server_method_state_initialiser* state_initialisers[256];
   server_method_handler* handlers[256];
-  server_method_state_destructor* destructors[256];
-};
-
-server_methods_t* server_methods_create() {
-  // NULL is not guaranteed to be 0, so cannot simply use calloc.
-  server_methods_t* methods = malloc(sizeof(server_methods_t));
-  for (int i = 0; i < 256; i++) {
-    methods->state_creators[i] = NULL;
-    methods->handlers[i] = NULL;
-    methods->destructors[i] = NULL;
-  }
-  return methods;
-}
-
-void server_methods_add(server_methods_t* methods, method_t method, server_method_state_creator* state_creator, server_method_handler* handler, server_method_state_destructor* destructor) {
-  methods->state_creators[method] = state_creator;
-  methods->handlers[method] = handler;
-  methods->destructors[method] = destructor;
-}
+} server_methods_t;
 
 struct server_s {
   server_clients_t* clients;
   int socket_fd;
   int epoll_fd;
-  void* callback_state;
-  server_on_client_event_handler* on_client_event;
-  void* method_ctx;
-  server_methods_t* methods;
+  method_ctx_t* method_ctx;
+  server_methods_t methods;
 };
 
 server_t* server_create(
@@ -64,14 +54,9 @@ server_t* server_create(
   uint16_t port,
   // Can be NULL.
   char* unix_socket_path,
-  void* callback_state,
-  server_on_client_event_handler* on_client_event,
-  void* method_ctx,
-  server_methods_t* methods
+  method_ctx_t* method_ctx
 ) {
-  int family = unix_socket_path ? AF_UNIX : AF_INET;
-
-  int skt = socket(family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+  int skt = socket(unix_socket_path ? AF_UNIX : AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
   if (-1 == skt) {
     perror("Failed to open socket");
     exit(EXIT_INTERNAL);
@@ -156,11 +141,92 @@ server_t* server_create(
   svr->clients = server_clients_create();
   svr->socket_fd = skt;
   svr->epoll_fd = epfd;
-  svr->callback_state = callback_state;
-  svr->on_client_event = on_client_event;
   svr->method_ctx = method_ctx;
-  svr->methods = methods;
+  // NULL is not guaranteed to be 0, so cannot simply use calloc.
+  for (int i = 0; i < 256; i++) {
+    svr->methods.state_initialisers[i] = NULL;
+    svr->methods.handlers[i] = NULL;
+  }
+  svr->methods.state_initialisers[METHOD_COMMIT_OBJECT] = method_commit_object_state_init;
+  svr->methods.handlers[METHOD_COMMIT_OBJECT] = method_commit_object;
+  svr->methods.state_initialisers[METHOD_CREATE_OBJECT] = method_create_object_state_init;
+  svr->methods.handlers[METHOD_CREATE_OBJECT] = method_create_object;
+  svr->methods.state_initialisers[METHOD_DELETE_OBJECT] = method_delete_object_state_init;
+  svr->methods.handlers[METHOD_DELETE_OBJECT] = method_delete_object;
+  svr->methods.state_initialisers[METHOD_INSPECT_OBJECT] = method_inspect_object_state_init;
+  svr->methods.handlers[METHOD_INSPECT_OBJECT] = method_inspect_object;
+  svr->methods.state_initialisers[METHOD_READ_OBJECT] = method_read_object_state_init;
+  svr->methods.handlers[METHOD_READ_OBJECT] = method_read_object;
+  svr->methods.state_initialisers[METHOD_WRITE_OBJECT] = method_write_object_state_init;
+  svr->methods.handlers[METHOD_WRITE_OBJECT] = method_write_object;
   return svr;
+}
+
+static inline svr_client_result_t server_process_client_until_result(server_t* server, svr_client_t* client) {
+  while (true) {
+    int fd = client->fd;
+    svr_method_args_parser_t* ap = &client->args_parser;
+    method_t method = client->method;
+    if (method == METHOD__UNKNOWN) {
+      // We haven't parsed the args yet.
+      int readlen = maybe_read(fd, ap->raw + ap->write_next, 255 - ap->write_next);
+      if (!readlen) { \
+        return SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;
+      }
+      if (readlen < 0) {
+        return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
+      }
+      if ((ap->write_next += readlen) == 255) {
+        ap->raw_len = ap->raw[0];
+        // We'll validdate this when we get `init_fn`.
+        client->method = ap->raw[1];
+        ap->read_next = 2;
+        // Parse the args.
+        server_method_state_initialiser* init_fn = server->methods.state_initialisers[method];
+        if (init_fn == NULL) {
+          return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
+        }
+        init_fn(&client->method_state, server->method_ctx, ap);
+      }
+    } else {
+      // The method must exist.
+      server_method_handler* fn = server->methods.handlers[method];
+      return fn(server->method_ctx, &client->method_state, client);
+    }
+  }
+}
+
+static void on_client_event(server_t* server, svr_client_t* client) {
+  while (true) {
+    svr_client_result_t res = server_process_client_until_result(server, client);
+
+    if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE) {
+      server_rearm_client_to_epoll(server, client, true, false);
+      break;
+    }
+
+    if (res == SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE) {
+      server_rearm_client_to_epoll(server, client, false, true);
+      break;
+    }
+
+    if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH) {
+      break;
+    }
+
+    if (res == SVR_CLIENT_RESULT_END) {
+      server_client_reset(client);
+      continue;
+    }
+
+    if (res == SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR) {
+      server_clients_close(server->clients, client);
+      break;
+    }
+
+    fprintf(stderr, "Unknown client (method=%d) action result: %d\n", client->method, res);
+    exit(EXIT_INTERNAL);
+  }
 }
 
 void server_wait_epoll(server_t* server, int timeout) {
@@ -200,7 +266,7 @@ void server_wait_epoll(server_t* server, int timeout) {
         exit(EXIT_INTERNAL);
       }
     } else {
-      server->on_client_event(server->callback_state, svr_epoll_events[n].data.ptr);
+      on_client_event(server, svr_epoll_events[n].data.ptr);
     }
   }
 }
@@ -209,68 +275,8 @@ void server_rearm_client_to_epoll(server_t* server, svr_client_t* client, bool r
   struct epoll_event ev;
   ev.events = EPOLLET | EPOLLONESHOT | (read ? EPOLLIN : 0) | (write ? EPOLLOUT : 0);
   ev.data.ptr = client;
-  if (-1 == epoll_ctl(server->epoll_fd, EPOLL_CTL_MOD, server_client_get_fd(client), &ev)) {
+  if (-1 == epoll_ctl(server->epoll_fd, EPOLL_CTL_MOD, client->fd, &ev)) {
     perror("Failed to add connection to epoll");
     exit(EXIT_INTERNAL);
   }
-}
-
-#define READ_OR_RELEASE(readres, fd, buf, n) \
-  readres = maybe_read(fd, buf, n); \
-  if (!readres) { \
-    return SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE; \
-  } \
-  if (readres < 0) { \
-    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR; \
-  }
-
-svr_client_result_t server_process_client_until_result(server_t* server, svr_client_t* client) {
-  while (true) {
-    int fd = server_client_get_fd(client);
-    method_t method = server_client_get_method(client);
-    void* method_state = server_client_get_method_state(client);
-    if (method == METHOD__UNKNOWN) {
-      // We haven't parsed the method yet.
-      uint8_t buf[1];
-      int readlen;
-      READ_OR_RELEASE(readlen, fd, buf, 1);
-      // TODO Validate.
-      server_client_set_method(client, buf[0]);
-    } else if (method_state == NULL) {
-      // NOTE: args_parser may be NULL if we've freed it after parsing and creating method_state.
-      svr_method_args_parser_t* ap = server_client_get_args_parser(client);
-      if (ap == NULL) {
-        // We haven't got the args length.
-        uint8_t buf[1];
-        int readlen;
-        READ_OR_RELEASE(readlen, fd, buf, 1);
-        server_client_set_args_parser(client, server_method_args_parser_create(buf[0]));
-      } else {
-        if (ap->write_next < ap->raw_len) {
-          // We haven't received all args.
-          int readlen;
-          READ_OR_RELEASE(readlen, fd, ap->raw + ap->write_next, ap->raw_len - ap->write_next);
-          ap->write_next += readlen;
-        } else {
-          // We haven't parsed the args.
-          server_method_state_creator* fn = server->methods->state_creators[method];
-          if (fn == NULL) {
-            return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
-          }
-          server_client_set_method_state(client, fn(server->method_ctx, ap));
-          server_client_set_method_state_destructor(client, server->methods->destructors[method]);
-          server_method_args_parser_destroy(ap);
-          server_client_set_args_parser(client, NULL);
-        }
-      }
-    } else {
-      // The method must exist.
-      server_method_handler* fn = server->methods->handlers[method];
-      return fn(server->method_ctx, method_state, fd);
-    }
-  }
-}
-
-void server_close_client(server_t* server, svr_client_t* client) {
-  server_clients_close(server->clients, client);
 }

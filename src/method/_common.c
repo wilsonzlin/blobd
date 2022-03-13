@@ -1,7 +1,7 @@
-#define _GNU_SOURCE
-
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
 #include "_common.h"
-#include "../../ext/coz/include/coz.h"
 #include "../bucket.h"
 #include "../cursor.h"
 #include "../device.h"
@@ -25,7 +25,7 @@ method_error_t method_common_key_parse(
   if ((p = svr_method_args_parser_parse(parser, out->len)) == NULL) return METHOD_ERROR_NOT_ENOUGH_ARGS;
   memcpy(out->data.bytes, p, out->len);
   memset(out->data.bytes + out->len, 0, 129 - out->len);
-  out->bucket = buckets_get_bucket_id_for_key(bkts, out->data.bytes, out->len);
+  out->bucket = BUCKET_ID_FOR_KEY(out->data.bytes, out->len, bkts->key_mask);
 
   return METHOD_ERROR_OK;
 }
@@ -55,7 +55,9 @@ bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_d
 }
 #else
 bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_data_t b, uint8_t b_len) {
-  return a_len == b_len && 0 == memcmp(a, b.bytes, a_len);
+  // We assume a_len == b_len.
+  (void) b_len;
+  return 0 == memcmp(a, b.bytes, a_len);
 }
 #endif
 
@@ -65,45 +67,34 @@ bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_d
 #define DEBUG_TS_LOG_LOOKUP(fmt, ...) ((void) 0)
 #endif
 
-// Returns NULL if not found.
-// WARNING: Run `atomic_fetch_sub_explicit(&inode->refcount, 1, memory_order_relaxed)` after completing read/write/inspect/etc.
-inode_t* method_common_find_inode_in_bucket_for_non_management(
-  bucket_t* bkt,
-  method_common_key_t* key,
+// Returns 0 if not found.
+uint64_t method_common_find_inode_in_bucket(
   device_t* dev,
+  buckets_t* buckets,
+  method_common_key_t* key,
+  // Bitwise OR of all allowed states.
   ino_state_t allowed_states,
-  uint64_t required_obj_no_or_zero
+  uint64_t required_obj_no_or_zero,
+  // Will not be updated if returned inode is head, or if 0 is returned (i.e. not found).
+  uint64_t* out_prev_inode_dev_offset_or_null
 ) {
-  COZ_BEGIN("method_common_find_inode_in_bucket_for_non_management");
-  // WARNING: There are very subtle behaviours here that prevent race conditions:
-  // - Incrementing the refcount must be done BEFORE looking up the state. If we don't, it's possible for the inode and tile spaces to be freed and overwritten with other data, before we read the state and other fields or object data in tiles.
-  // - The inode_t must always point to a valid address (e.g. using a pool). If we allocated it using malloc(), it's possible that we get to the value before the previous "next" is updated, but it gets free()'d before we manage to increment the refcount. If it's a pool value, it's possible the value has changed, but it's still safe to read the fields and detect that it's changed.
+  uint64_t dev_offset = read_u48(dev->mmap + buckets->dev_offset + BUCKETS_OFFSETOF_BUCKET(key->bucket));
   DEBUG_TS_LOG_LOOKUP("Trying to find %s with state %d and object number %lu", key->data.bytes, allowed_states, required_obj_no_or_zero);
-  inode_t* found = NULL;
-  for (
-    inode_t* bkt_ino = atomic_load_explicit(&bkt->head, memory_order_relaxed);
-    bkt_ino != NULL;
-    bkt_ino = atomic_load_explicit(&bkt_ino->next, memory_order_relaxed)
-  ) {
-    cursor_t* cur = INODE_CUR(dev, bkt_ino);
-    DEBUG_TS_LOG_LOOKUP("Looking at inode with object number %lu, state %d, and key %s", read_u64(cur + INO_OFFSETOF_OBJ_NO), atomic_load_explicit(&bkt_ino->state, memory_order_relaxed), cur + INO_OFFSETOF_KEY);
-    atomic_fetch_add_explicit(&bkt_ino->refcount, 1, memory_order_relaxed);
-    DEBUG_ASSERT_STATE(INODE_STATE_IS_VALID(cur[INO_OFFSETOF_STATE]), "inode at device offset %lu does not have a valid state (%u)", INODE_DEV_OFFSET(bkt_ino), cur[INO_OFFSETOF_STATE]);
-    DEBUG_ASSERT_STATE(cur[INO_OFFSETOF_KEY_NULL_TERM(cur[INO_OFFSETOF_KEY_LEN])] == 0, "inode at device offset %lu does not have key null terminator", INODE_DEV_OFFSET(bkt_ino));
+  while (dev_offset) {
+    cursor_t* cur = dev->mmap + dev_offset;
+    DEBUG_TS_LOG_LOOKUP("Looking at inode with object number %lu, state %d, and key %s", read_u64(cur + INO_OFFSETOF_OBJ_NO), cur[INO_OFFSETOF_STATE], cur + INO_OFFSETOF_KEY);
+    DEBUG_ASSERT_STATE(INODE_STATE_IS_VALID(cur[INO_OFFSETOF_STATE]), "inode at device offset %lu does not have a valid state (%u)", dev_offset, cur[INO_OFFSETOF_STATE]);
+    DEBUG_ASSERT_STATE(cur[INO_OFFSETOF_KEY_NULL_TERM(cur[INO_OFFSETOF_KEY_LEN])] == 0, "inode at device offset %lu does not have key null terminator", dev_offset);
     if (
-      // Use memory_order_acquire to ensure all inode field values read from mmap are latest.
-      (atomic_load_explicit(&bkt_ino->state, memory_order_acquire) & allowed_states) &&
+      (cur[INO_OFFSETOF_STATE] & allowed_states) &&
       (required_obj_no_or_zero == 0 || read_u64(cur + INO_OFFSETOF_OBJ_NO) == required_obj_no_or_zero) &&
       cur[INO_OFFSETOF_KEY_LEN] == key->len &&
       compare_raw_key_with_vec_key(cur + INO_OFFSETOF_KEY, cur[INO_OFFSETOF_KEY_LEN], key->data, key->len)
     ) {
-      // Do NOT decrement refcount if it's the inode we want; we must decrement only once we're done.
-      found = bkt_ino;
-      break;
+      return dev_offset;
     }
-    atomic_fetch_sub_explicit(&bkt_ino->refcount, 1, memory_order_relaxed);
+    if (out_prev_inode_dev_offset_or_null != NULL) *out_prev_inode_dev_offset_or_null = dev_offset;
   }
-  if (found == NULL) DEBUG_TS_LOG_LOOKUP("%s not found", key->data.bytes);
-  COZ_END("method_common_find_inode_in_bucket_for_non_management");
-  return found;
+  DEBUG_TS_LOG_LOOKUP("%s not found", key->data.bytes);
+  return 0;
 }

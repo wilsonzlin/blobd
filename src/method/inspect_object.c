@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <errno.h>
 #include <immintrin.h>
 #include <stdbool.h>
@@ -23,25 +21,15 @@
 
 LOGGER("method_create_object");
 
-// [u8 error, u8 state, u64 size].
-#define RESPONSE_LEN (1 + 1 + 8)
-
-struct method_inspect_object_state_s {
-  // -1 if not prepared yet.
-  int response_written;
-  uint8_t response[RESPONSE_LEN];
-  method_common_key_t key;
-};
-
 // Method signature: (u8 key_len, char[] key).
-void* method_inspect_object_state_create(
-  void* ctx_raw,
+void method_inspect_object_state_init(
+  void* state_raw,
+  method_ctx_t* ctx,
   svr_method_args_parser_t* parser
 ) {
-  worker_method_handler_ctx_t* ctx = (worker_method_handler_ctx_t*) ctx_raw;
+  method_inspect_object_state_t* args = (method_inspect_object_state_t*) state_raw;
 
-  method_inspect_object_state_t* args = aligned_alloc(64, sizeof(method_inspect_object_state_t));
-  INIT_STATE_RESPONSE(args, RESPONSE_LEN);
+  INIT_STATE_RESPONSE(args, METHOD_INSPECT_OBJECT_RESPONSE_LEN);
 
   method_error_t key_parse_error = method_common_key_parse(parser, ctx->bkts, &args->key);
   if (key_parse_error != METHOD_ERROR_OK) {
@@ -53,47 +41,42 @@ void* method_inspect_object_state_create(
   }
 
   DEBUG_TS_LOG("inspect_object(key=%s)", args->key.data.bytes);
-
-  return args;
-}
-
-void method_inspect_object_state_destroy(void* state) {
-  free(state);
 }
 
 svr_client_result_t method_inspect_object(
-  void* ctx_raw,
+  method_ctx_t* ctx,
   void* args_raw,
-  int client_fd
+  svr_client_t* client
 ) {
-  worker_method_handler_ctx_t* ctx = (worker_method_handler_ctx_t*) ctx_raw;
   method_inspect_object_state_t* args = (method_inspect_object_state_t*) args_raw;
 
-  MAYBE_HANDLE_RESPONSE(args, RESPONSE_LEN, client_fd, true);
+  MAYBE_HANDLE_RESPONSE(args, METHOD_INSPECT_OBJECT_RESPONSE_LEN, client, true);
 
-  bucket_t* bkt = buckets_get_bucket(ctx->bkts, args->key.bucket);
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&ctx->bkts->bucket_locks[args->key.bucket]), "lock bucket");
 
-  inode_t* found = method_common_find_inode_in_bucket_for_non_management(
-    bkt,
-    &args->key,
+  uint64_t inode_dev_offset = method_common_find_inode_in_bucket(
     ctx->dev,
+    ctx->bkts,
+    &args->key,
     INO_STATE_READY,
-    0
+    0,
+    NULL
   );
 
   args->response_written = 0;
   cursor_t* res_cur = args->response;
-  if (found == NULL) {
+  if (!inode_dev_offset) {
     produce_u8(&res_cur, METHOD_ERROR_NOT_FOUND);
     produce_u8(&res_cur, 0);
     produce_u64(&res_cur, 0);
   } else {
-    cursor_t* inode_cur = INODE_CUR(ctx->dev, found);
+    cursor_t* inode_cur = ctx->dev->mmap + inode_dev_offset;
     produce_u8(&res_cur, METHOD_ERROR_OK);
     produce_u8(&res_cur, inode_cur[INO_OFFSETOF_STATE]);
     produce_u64(&res_cur, read_u40(inode_cur + INO_OFFSETOF_SIZE));
-    atomic_fetch_sub_explicit(&found->refcount, 1, memory_order_relaxed);
   }
+
+  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&ctx->bkts->bucket_locks[args->key.bucket]), "unlock bucket");
 
   return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
 }

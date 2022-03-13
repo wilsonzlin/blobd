@@ -4,16 +4,10 @@
 #include <stdlib.h>
 #include "server_method_args.h"
 
-svr_method_args_parser_t* server_method_args_parser_create(uint64_t raw_len) {
-  svr_method_args_parser_t* p = malloc(sizeof(svr_method_args_parser_t) + raw_len);
+void server_method_args_parser_reset(svr_method_args_parser_t* p) {
   p->read_next = 0;
   p->write_next = 0;
-  p->raw_len = raw_len;
-  return p;
-}
-
-void server_method_args_parser_destroy(svr_method_args_parser_t* p) {
-  free(p);
+  p->raw_len = 0;
 }
 
 uint8_t* svr_method_args_parser_parse(svr_method_args_parser_t* parser, uint64_t want_bytes) {

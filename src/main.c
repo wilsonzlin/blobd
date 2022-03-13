@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fs.h>
@@ -20,7 +18,6 @@
 #include "freelist.h"
 #include "inode.h"
 #include "log.h"
-#include "manager.h"
 #include "tile.h"
 #include "util.h"
 #include "worker.h"
@@ -130,50 +127,48 @@ int main(int argc, char** argv) {
     worker_count = v;
   }
 
-  journal_t* journal = journal_create(dev, 0);
+  uint64_t journal_dev_offset = 0;
+  uint64_t stream_dev_offset = JOURNAL_RESERVED_SPACE;
+  uint64_t freelist_dev_offset = stream_dev_offset + STREAM_RESERVED_SPACE;
+  uint64_t buckets_dev_offset = freelist_dev_offset + FREELIST_RESERVED_SPACE;
 
-  journal_apply_or_clear(journal);
+  journal_t* journal = journal_create(
+    dev,
+    journal_dev_offset,
+    freelist_dev_offset,
+    buckets_read_count(dev, buckets_dev_offset),
+    freelist_dev_offset,
+    stream_dev_offset
+  );
 
-  stream_t* stream = stream_create_from_device(dev, JOURNAL_RESERVED_SPACE);
+  journal_apply_offline_then_clear(journal);
 
-  freelist_t* freelist = freelist_create_from_disk_state(dev, JOURNAL_RESERVED_SPACE + STREAM_RESERVED_SPACE);
+  stream_t* stream = stream_create_from_device(dev, stream_dev_offset);
 
-  inodes_state_t* inodes_state = inodes_state_create();
+  freelist_t* freelist = freelist_create_from_disk_state(dev, freelist_dev_offset);
 
-  buckets_t* buckets = buckets_create_from_disk_state(inodes_state, dev, JOURNAL_RESERVED_SPACE + STREAM_RESERVED_SPACE + FREELIST_RESERVED_SPACE);
+  buckets_t* buckets = buckets_create_from_disk_state(dev, buckets_dev_offset);
 
-  flush_state_t* flush_state = flush_state_create(dev, journal, freelist, inodes_state, buckets, stream);
+  method_ctx_t* method_ctx = malloc(sizeof(method_ctx_t));
 
-  worker_t* worker = worker_create(
+  server_t* server = server_create(
     conf->worker_address,
     conf->worker_port,
     conf->worker_unix_socket_path,
-    dev,
-    buckets
+    method_ctx
   );
 
-  manager_t* manager = manager_create(
-    conf->manager_address,
-    conf->manager_port,
-    conf->manager_unix_socket_path,
-    buckets,
-    dev,
-    flush_state,
-    freelist,
-    inodes_state,
-    stream
-  );
+  flush_state_t* flush_state = flush_state_create(buckets, dev, freelist, journal, server, stream);
 
-  void* manager_handle = manager_start(manager);
+  method_ctx->bkts = buckets;
+  method_ctx->dev = dev;
+  method_ctx->fl = freelist;
+  method_ctx->flush_state = flush_state;
+  method_ctx->stream = stream;
 
-  void* workers_handle = workers_start(
-    worker,
-    worker_count
-  );
+  void* workers_handle = workers_start(server, worker_count);
 
   workers_join(workers_handle, worker_count);
-
-  manager_join(manager_handle);
 
   return 0;
 }
