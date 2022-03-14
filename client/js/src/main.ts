@@ -16,7 +16,12 @@ const encodeU64 = (val: number) => {
 };
 
 const buildArgs = (method: number, rawBytes: number[]) =>
-  Buffer.from([rawBytes.length, method, ...rawBytes, ...Array(255 - rawBytes.length - 2).fill(0)]);
+  Buffer.from([
+    rawBytes.length,
+    method,
+    ...rawBytes,
+    ...Array(255 - rawBytes.length - 2).fill(0),
+  ]);
 
 const commit_object = (key: string, objNo: number) => {
   const keyBytes = Buffer.from(key);
@@ -231,7 +236,10 @@ export class TurbostoreClient {
       ) {
         canPush = stream.push(chunk);
         pushedLen += chunk.length;
-        assertState(pushedLen <= actualLength, `read ${pushedLen} of ${actualLength} bytes`);
+        assertState(
+          pushedLen <= actualLength,
+          `read ${pushedLen} of ${actualLength} bytes`
+        );
         if (pushedLen == actualLength) {
           stream.push(null);
           cleanUp();
