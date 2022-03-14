@@ -13,7 +13,6 @@
 #include "../log.h"
 #include "../object.h"
 #include "../server_client.h"
-#include "../server_method_args.h"
 #include "../stream.h"
 #include "../tile.h"
 #include "../util.h"
@@ -22,32 +21,21 @@
 
 LOGGER("method_create_object");
 
-// Method signature: (u8 key_len, char[] key, u64 size).
-void method_create_object_state_init(
-  void* state_raw,
+method_error_t method_create_object_parse(
   method_ctx_t* ctx,
-  svr_method_args_parser_t* parser
+  method_create_object_state_t* state,
+  uint8_t* args_cur
 ) {
-  method_create_object_state_t* args = (method_create_object_state_t*) state_raw;
-
-  INIT_STATE_RESPONSE(args, METHOD_CREATE_OBJECT_RESPONSE_LEN);
-  uint8_t* p = NULL;
-
-  method_error_t key_parse_error = method_common_key_parse(parser, ctx->bkts, &args->key);
+  method_error_t key_parse_error = method_common_key_parse(&args_cur, ctx->bkts, &state->key);
   if (key_parse_error != METHOD_ERROR_OK) {
-    PARSE_ERROR(args, key_parse_error);
+    return key_parse_error;
   }
 
-  if ((p = svr_method_args_parser_parse(parser, 8)) == NULL) {
-    PARSE_ERROR(args, METHOD_ERROR_NOT_ENOUGH_ARGS);
-  }
-  args->size = read_u64(p);
+  state->size = consume_u64(&args_cur);
 
-  if (!svr_method_args_parser_end(parser)) {
-    PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
-  }
+  DEBUG_TS_LOG("create_object(key=%s, size=%zu)", state->key.data.bytes, state->size);
 
-  DEBUG_TS_LOG("create_object(key=%s, size=%zu)", args->key.data.bytes, args->size);
+  return METHOD_ERROR_OK;
 }
 
 typedef enum {
@@ -56,21 +44,18 @@ typedef enum {
   ALLOC_MICROTILE_WITH_INLINE_LAST_TILE,
 } alloc_strategy_t;
 
-svr_client_result_t method_create_object(
+svr_client_result_t method_create_object_response(
   method_ctx_t* ctx,
-  void* args_raw,
-  svr_client_t* client
+  method_create_object_state_t* state,
+  svr_client_t* client,
+  uint8_t* out_response
 ) {
-  method_create_object_state_t* args = (method_create_object_state_t*) args_raw;
-
-  MAYBE_HANDLE_RESPONSE(args, METHOD_CREATE_OBJECT_RESPONSE_LEN, client, true);
-
-  uint64_t full_tiles = args->size / TILE_SIZE;
-  uint64_t last_tile_size = args->size % TILE_SIZE;
+  uint64_t full_tiles = state->size / TILE_SIZE;
+  uint64_t last_tile_size = state->size % TILE_SIZE;
 
   ino_last_tile_mode_t ltm;
   alloc_strategy_t alloc_strategy;
-  uint32_t ino_size_excluding_last_tile = INO_OFFSETOF_LAST_TILE_INLINE_DATA(args->key.len, full_tiles);
+  uint32_t ino_size_excluding_last_tile = INO_OFFSETOF_LAST_TILE_INLINE_DATA(state->key.len, full_tiles);
   uint32_t ino_size_if_inline = ino_size_excluding_last_tile + last_tile_size;
   uint32_t ino_size_excl_any_inline_data;
   uint32_t ino_size;
@@ -107,7 +92,7 @@ svr_client_result_t method_create_object(
   cursor_t* flush_cur = flush_get_reserved_cursor(flush_task);
   cursor_t* inode_cur = flush_cur + JOURNAL_ENTRY_CREATE_OFFSETOF_INODE_DATA - INO_OFFSETOF_LAST_TILE_MODE;
   if (full_tiles) {
-    freelist_consume_tiles(ctx->fl, full_tiles + ((ltm == INO_LAST_TILE_MODE_TILE) ? 1 : 0), inode_cur + INO_OFFSETOF_TILES(args->key.len));
+    freelist_consume_tiles(ctx->fl, full_tiles + ((ltm == INO_LAST_TILE_MODE_TILE) ? 1 : 0), inode_cur + INO_OFFSETOF_TILES(state->key.len));
   }
   freelist_unlock(ctx->fl);
 
@@ -119,16 +104,15 @@ svr_client_result_t method_create_object(
 
   inode_cur[INO_OFFSETOF_STATE] = INO_STATE_INCOMPLETE;
   inode_cur[INO_OFFSETOF_LAST_TILE_MODE] = ltm;
-  write_u40(inode_cur + INO_OFFSETOF_SIZE, args->size);
+  write_u40(inode_cur + INO_OFFSETOF_SIZE, state->size);
   write_u64(inode_cur + INO_OFFSETOF_OBJ_NO, obj_no);
-  inode_cur[INO_OFFSETOF_KEY_LEN] = args->key.len;
-  memcpy(inode_cur + INO_OFFSETOF_KEY, args->key.data.bytes, args->key.len);
-  inode_cur[INO_OFFSETOF_KEY_NULL_TERM(args->key.len)] = 0;
+  inode_cur[INO_OFFSETOF_KEY_LEN] = state->key.len;
+  memcpy(inode_cur + INO_OFFSETOF_KEY, state->key.data.bytes, state->key.len);
+  inode_cur[INO_OFFSETOF_KEY_NULL_TERM(state->key.len)] = 0;
 
   // Set BEFORE possibly committing to flush tasks as it's technically allowed to immediately resume request processing.
-  args->response[0] = METHOD_ERROR_OK;
-  write_u64(args->response + 1, obj_no);
-  args->response_written = 0;
+  produce_u8(&out_response, METHOD_ERROR_OK);
+  produce_u64(&out_response, obj_no);
 
   flush_lock_tasks(ctx->flush_state);
   flush_commit_task(ctx->flush_state, flush_task);
@@ -136,5 +120,5 @@ svr_client_result_t method_create_object(
 
   DEBUG_TS_LOG("Using %zu tiles and last tile mode %d", full_tiles, ltm);
 
-  return SVR_CLIENT_RESULT_AWAITING_FLUSH;
+  return SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE;
 }

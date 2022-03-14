@@ -26,6 +26,8 @@ uint32_t consume_u32(cursor_t** cur);
 
 uint64_t consume_u48(cursor_t** cur);
 
+int64_t consume_i64(cursor_t** cur);
+
 uint64_t consume_u64(cursor_t** cur);
 
 void write_u16(cursor_t* cur, uint16_t v);

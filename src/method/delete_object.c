@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "_common.h"
+#include "../bucket.h"
 #include "../cursor.h"
 #include "../device.h"
 #include "../exit.h"
@@ -14,7 +15,6 @@
 #include "../log.h"
 #include "../object.h"
 #include "../server_client.h"
-#include "../server_method_args.h"
 #include "../tile.h"
 #include "../util.h"
 #include "../worker.h"
@@ -22,65 +22,50 @@
 
 LOGGER("method_delete_object");
 
-struct method_delete_object_state_s ;
-
-// Method signature: (u8 key_len, char[] key, u64 obj_no_or_zero).
-void method_delete_object_state_init(
-  void* state_raw,
+method_error_t method_delete_object_parse(
   method_ctx_t* ctx,
-  svr_method_args_parser_t* parser
+  method_delete_object_state_t* state,
+  uint8_t* args_cur
 ) {
-  method_delete_object_state_t* args = (method_delete_object_state_t*) state_raw;
-
-  INIT_STATE_RESPONSE(args, METHOD_DELETE_OBJECT_RESPONSE_LEN);
-  uint8_t* p = NULL;
-
-  method_error_t key_parse_error = method_common_key_parse(parser, ctx->bkts, &args->key);
+  method_error_t key_parse_error = method_common_key_parse(&args_cur, ctx->bkts, &state->key);
   if (key_parse_error != METHOD_ERROR_OK) {
-    PARSE_ERROR(args, key_parse_error);
+    return key_parse_error;
   }
 
-  if ((p = svr_method_args_parser_parse(parser, 8)) == NULL) {
-    PARSE_ERROR(args, METHOD_ERROR_NOT_ENOUGH_ARGS);
-  }
-  args->obj_no_or_zero = read_u64(p);
+  state->obj_no_or_zero = consume_u64(&args_cur);
 
-  if (!svr_method_args_parser_end(parser)) {
-    PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
-  }
+  DEBUG_TS_LOG("delete_object(key=%s, obj_no=%lu)", state->key.data.bytes, state->obj_no_or_zero);
 
-  DEBUG_TS_LOG("delete_object(key=%s, obj_no=%lu)", args->key.data.bytes, args->obj_no_or_zero);
+  return METHOD_ERROR_OK;
 }
 
-svr_client_result_t method_delete_object(
+svr_client_result_t method_delete_object_response(
   method_ctx_t* ctx,
-  void* args_raw,
-  svr_client_t* client
+  method_delete_object_state_t* state,
+  svr_client_t* client,
+  uint8_t* out_response
 ) {
-  method_delete_object_state_t* args = (method_delete_object_state_t*) args_raw;
-
-  MAYBE_HANDLE_RESPONSE(args, METHOD_DELETE_OBJECT_RESPONSE_LEN, client, true);
-
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&ctx->bkts->bucket_locks[args->key.bucket]), "lock bucket");
+  svr_client_result_t res = SVR_CLIENT_RESULT_WRITE_RESPONSE;
+  BUCKET_LOCK_WRITE(ctx->bkts, state->key.bucket);
 
   uint64_t prev_inode_dev_offset_or_zero_if_head = 0;
   uint64_t inode_dev_offset = method_common_find_inode_in_bucket(
     ctx->dev,
     ctx->bkts,
-    &args->key,
+    &state->key,
     // TODO Can we delete PENDING_COMMIT in same journal/flush?
-    (args->obj_no_or_zero ? (INO_STATE_INCOMPLETE | INO_STATE_PENDING_COMMIT) : 0) | INO_STATE_READY,
-    args->obj_no_or_zero,
+    (state->obj_no_or_zero ? (INO_STATE_INCOMPLETE | INO_STATE_PENDING_COMMIT) : 0) | INO_STATE_READY,
+    state->obj_no_or_zero,
     &prev_inode_dev_offset_or_zero_if_head
   );
 
   if (!inode_dev_offset) {
-    ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
+    produce_u8(&out_response, METHOD_ERROR_NOT_FOUND);
+    goto final;
   }
 
   // Set BEFORE possibly adding to flush tasks as it's technically allowed to immediately resume request processing.
-  args->response[0] = METHOD_ERROR_OK;
-  args->response_written = 0;
+  produce_u8(&out_response, METHOD_ERROR_OK);
   flush_lock_tasks(ctx->flush_state);
   flush_task_reserve_t flush_task = flush_reserve_task(
     ctx->flush_state,
@@ -96,8 +81,10 @@ svr_client_result_t method_delete_object(
   produce_u48(&flush_cur, prev_inode_dev_offset_or_zero_if_head);
   flush_commit_task(ctx->flush_state, flush_task);
   flush_unlock_tasks(ctx->flush_state);
+  res = SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE;
+  goto final;
 
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&ctx->bkts->bucket_locks[args->key.bucket]), "unlock bucket");
-
-  return SVR_CLIENT_RESULT_AWAITING_FLUSH;
+  final:
+  BUCKET_UNLOCK(ctx->bkts, state->key.bucket);
+  return res;
 }

@@ -14,16 +14,14 @@
 LOGGER("method_common");
 
 method_error_t method_common_key_parse(
-  svr_method_args_parser_t* parser,
+  uint8_t** args_raw,
   buckets_t* bkts,
   method_common_key_t* out
 ) {
-  uint8_t* p = NULL;
-
-  if ((p = svr_method_args_parser_parse(parser, 1)) == NULL) return METHOD_ERROR_NOT_ENOUGH_ARGS;
-  if ((out->len = *p) > 128) return METHOD_ERROR_KEY_TOO_LONG;
-  if ((p = svr_method_args_parser_parse(parser, out->len)) == NULL) return METHOD_ERROR_NOT_ENOUGH_ARGS;
-  memcpy(out->data.bytes, p, out->len);
+  if ((out->len = **args_raw) > 128) return METHOD_ERROR_KEY_TOO_LONG;
+  *args_raw += 1;
+  memcpy(out->data.bytes, *args_raw, out->len);
+  *args_raw += out->len;
   memset(out->data.bytes + out->len, 0, 129 - out->len);
   out->bucket = BUCKET_ID_FOR_KEY(out->data.bytes, out->len, bkts->key_mask);
 
@@ -31,7 +29,7 @@ method_error_t method_common_key_parse(
 }
 
 #ifdef TURBOSTORE_INODE_KEY_CMP_AVX512
-bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_data_t b, uint8_t b_len) {
+bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_data_t b) {
   __m512i b_lower = b.vecs[0];
   __m512i b_upper = b.vecs[0];
   vec_512i_u8_t ino_key;
@@ -54,9 +52,7 @@ bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_d
   return true;
 }
 #else
-bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_data_t b, uint8_t b_len) {
-  // We assume a_len == b_len.
-  (void) b_len;
+bool compare_raw_key_with_vec_key(uint8_t* a, uint8_t a_len, method_common_key_data_t b) {
   return 0 == memcmp(a, b.bytes, a_len);
 }
 #endif
@@ -89,7 +85,7 @@ uint64_t method_common_find_inode_in_bucket(
       (cur[INO_OFFSETOF_STATE] & allowed_states) &&
       (required_obj_no_or_zero == 0 || read_u64(cur + INO_OFFSETOF_OBJ_NO) == required_obj_no_or_zero) &&
       cur[INO_OFFSETOF_KEY_LEN] == key->len &&
-      compare_raw_key_with_vec_key(cur + INO_OFFSETOF_KEY, cur[INO_OFFSETOF_KEY_LEN], key->data, key->len)
+      compare_raw_key_with_vec_key(cur + INO_OFFSETOF_KEY, cur[INO_OFFSETOF_KEY_LEN], key->data)
     ) {
       return dev_offset;
     }

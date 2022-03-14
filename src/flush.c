@@ -285,10 +285,12 @@ void flush_worker_start(flush_state_t* state) {
 
       // Release deleted space.
       // We release deleted space AFTER journaling, applying, and syncing changes to device as otherwise some create_object call could immediately convert a tile to a microtile and overwrite data.
+      freelist_lock(state->freelist);
       for (uint64_t i = 0; i < fut->delete_inode_dev_offsets->len; i++) {
         uint64_t inode_dev_offset = fut->delete_inode_dev_offsets->elems[i];
         freelist_replenish_tiles_of_inode(state->freelist, state->dev->mmap + inode_dev_offset);
       }
+      freelist_unlock(state->freelist);
     }
 
     // Release remaining clients.

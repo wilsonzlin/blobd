@@ -3,28 +3,27 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include "method/_common.h"
-#include "server_method_args.h"
 
 typedef enum {
   SVR_CLIENT_RESULT__UNKNOWN,
   SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE,
   SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE,
-  SVR_CLIENT_RESULT_AWAITING_FLUSH,
+  SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE,
+  SVR_CLIENT_RESULT_WRITE_RESPONSE,
   SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR,
   SVR_CLIENT_RESULT_END,
 } svr_client_result_t;
 
-typedef enum {
-  SVR_CLIENT_STATE_INIT,
-  SVR_CLIENT_STATE_ARGS_READ,
-} svr_client_state_t;
-
 typedef struct svr_client_s {
   // This doesn't need to be atomic; only one thread can ever see/touch/manage a svr_client_t at one time.
   int fd;
-  svr_method_args_parser_t args_parser;
+  // Used to store both args and response.
+  uint8_t buf[255];
+  uint8_t args_recvd;
   method_t method;
   method_state_t method_state;
+  uint8_t res_len;
+  int8_t res_sent;
   // For server_client.c internal use only.
   _Atomic(struct svr_client_s*) next_free_in_pool;
 } svr_client_t;

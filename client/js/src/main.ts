@@ -16,7 +16,7 @@ const encodeU64 = (val: number) => {
 };
 
 const buildArgs = (method: number, rawBytes: number[]) =>
-  Buffer.from([method, rawBytes.length, ...rawBytes]);
+  Buffer.from([rawBytes.length, method, ...rawBytes, ...Array(255 - rawBytes.length - 2).fill(0)]);
 
 const commit_object = (key: string, objNo: number) => {
   const keyBytes = Buffer.from(key);

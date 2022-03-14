@@ -79,6 +79,12 @@ uint64_t consume_u48(cursor_t** cur) {
   return v;
 }
 
+int64_t consume_i64(cursor_t** cur) {
+  int64_t v = read_i64(*cur);
+  *cur += 8;
+  return v;
+}
+
 uint64_t consume_u64(cursor_t** cur) {
   uint64_t v = read_u64(*cur);
   *cur += 8;

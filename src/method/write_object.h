@@ -1,17 +1,16 @@
 #pragma once
 
 #include "../server_client.h"
-#include "../server_method_args.h"
-#include "../worker.h"
 
-void method_write_object_state_init(
-  void* state_raw,
+method_error_t method_write_object_parse(
   method_ctx_t* ctx,
-  svr_method_args_parser_t* parser
+  method_write_object_state_t* state,
+  uint8_t* args_raw
 );
 
-svr_client_result_t method_write_object(
+svr_client_result_t method_write_object_response(
   method_ctx_t* ctx,
-  void* args_raw,
-  svr_client_t* client
+  method_write_object_state_t* state,
+  svr_client_t* client,
+  uint8_t* out_response
 );

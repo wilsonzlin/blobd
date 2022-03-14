@@ -1,16 +1,16 @@
 #pragma once
 
 #include "../server_client.h"
-#include "../server_method_args.h"
 
-void method_delete_object_state_init(
-  void* state_raw,
+method_error_t method_delete_object_parse(
   method_ctx_t* ctx,
-  svr_method_args_parser_t* parser
+  method_delete_object_state_t* state,
+  uint8_t* args_cur
 );
 
-svr_client_result_t method_delete_object(
+svr_client_result_t method_delete_object_response(
   method_ctx_t* ctx,
-  void* state_raw,
-  svr_client_t* client
+  method_delete_object_state_t* state,
+  svr_client_t* client,
+  uint8_t* out_response
 );

@@ -10,8 +10,11 @@ struct server_clients_s {
 };
 
 void server_client_reset(svr_client_t* client) {
+  client->fd = -1;
+  client->args_recvd = 0;
   client->method = METHOD__UNKNOWN;
-  server_method_args_parser_reset(&client->args_parser);
+  client->res_len = 0;
+  client->res_sent = -1;
 }
 
 server_clients_t* server_clients_create() {
@@ -39,8 +42,8 @@ svr_client_t* server_clients_add(server_clients_t* clients, int client_fd) {
     client = aligned_alloc(sizeof(svr_client_t), 64);
     atomic_init(&client->next_free_in_pool, NULL);
   }
-  client->fd = client_fd;
   server_client_reset(client);
+  client->fd = client_fd;
 
   return client;
 }

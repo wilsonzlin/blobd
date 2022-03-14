@@ -51,9 +51,6 @@ conf_parser_t* conf_parser_create() {
   khint_t kh_it;
   FIELD(bucket_count, FT_U64, 4096llu, 281474976710656llu);
   FIELD(device_path, FT_STR, 1, 4096);
-  FIELD(manager_address, FT_STR, 1, 4096);
-  FIELD(manager_port, FT_U16, 1, 65535);
-  FIELD(manager_unix_socket_path, FT_STR, 1, 4096);
   FIELD(worker_address, FT_STR, 1, 4096);
   FIELD(worker_port, FT_U16, 1, 65535);
   FIELD(worker_threads, FT_U16, 1, 65535);
@@ -74,10 +71,6 @@ conf_t* conf_parse(conf_parser_t* parser, char* raw, uint64_t len) {
   conf->bucket_count = 0;
 
   conf->device_path = NULL;
-
-  conf->manager_address = NULL;
-  conf->manager_port = 0;
-  conf->manager_unix_socket_path = NULL;
 
   conf->worker_address = NULL;
   conf->worker_port = 0;

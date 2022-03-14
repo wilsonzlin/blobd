@@ -31,6 +31,12 @@ u48[] dev_offset_or_zero
 
 #define BUCKET_ID_FOR_KEY(key, key_len, mask) (XXH3_64bits(key, key_len) & (mask))
 
+#define BUCKET_LOCK_READ(buckets, bucket_id) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&(buckets)->bucket_locks[bucket_id]), "read-lock bucket")
+
+#define BUCKET_LOCK_WRITE(buckets, bucket_id) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&(buckets)->bucket_locks[bucket_id]), "write-lock bucket")
+
+#define BUCKET_UNLOCK(buckets, bucket_id) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&(buckets)->bucket_locks[bucket_id]), "unlock bucket")
+
 typedef struct {
   uint64_t count;
   uint64_t dev_offset;

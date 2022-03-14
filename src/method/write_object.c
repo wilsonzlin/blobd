@@ -14,7 +14,6 @@
 #include "../log.h"
 #include "../object.h"
 #include "../server_client.h"
-#include "../server_method_args.h"
 #include "../tile.h"
 #include "../util.h"
 #include "../worker.h"
@@ -25,134 +24,96 @@
 
 LOGGER("method_write_object");
 
-// Method signature: (u8 key_len, char[] key, u64 obj_no, u64 start).
-// Only INCOMPLETE objects can be written to. Objects can only be written in TILE_SIZE chunks, except for the last. Each chunk must start at a multiple of TILE_SIZE.
-void method_write_object_state_init(
-  void* state_raw,
+method_error_t method_write_object_parse(
   method_ctx_t* ctx,
-  svr_method_args_parser_t* parser
+  method_write_object_state_t* state,
+  uint8_t* args_raw
 ) {
-  method_write_object_state_t* args = (method_write_object_state_t*) state_raw;
+  (void) ctx;
+  
+  state->written = 0;
 
-  args->written = 0;
-  INIT_STATE_RESPONSE(args, METHOD_WRITE_OBJECT_RESPONSE_LEN);
-  uint8_t* p = NULL;
-
-  method_error_t key_parse_error = method_common_key_parse(parser, ctx->bkts, &args->key);
-  if (key_parse_error != METHOD_ERROR_OK) {
-    PARSE_ERROR(args, key_parse_error);
+  state->inode_dev_offset = consume_u64(&args_raw);
+  state->obj_no = consume_u64(&args_raw);
+  state->start = consume_u64(&args_raw);
+  if ((state->start % TILE_SIZE) != 0) {
+    return METHOD_ERROR_INVALID_START;
   }
 
-  if ((p = svr_method_args_parser_parse(parser, 8)) == NULL) {
-    PARSE_ERROR(args, METHOD_ERROR_NOT_ENOUGH_ARGS);
-  }
-  args->obj_no = read_u64(p);
+  DEBUG_TS_LOG("write_object(inode_dev_offset=%lu, obj_no=%lu, start=%ld)", state->inode_dev_offset, state->obj_no, state->start);
 
-  if ((p = svr_method_args_parser_parse(parser, 8)) == NULL) {
-    PARSE_ERROR(args, METHOD_ERROR_NOT_ENOUGH_ARGS);
-  }
-  args->start = read_u64(p);
-  if ((args->start % TILE_SIZE) != 0) {
-    PARSE_ERROR(args, METHOD_ERROR_INVALID_START);
-  }
-
-  if (!svr_method_args_parser_end(parser)) {
-    PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
-  }
-
-  DEBUG_TS_LOG("write_object(key=%s, obj_no=%lu, start=%ld)", args->key.data.bytes, args->obj_no, args->start);
+  return METHOD_ERROR_OK;
 }
 
-svr_client_result_t method_write_object(
+svr_client_result_t method_write_object_response(
   method_ctx_t* ctx,
-  void* args_raw,
-  svr_client_t* client
+  method_write_object_state_t* state,
+  svr_client_t* client,
+  uint8_t* out_response
 ) {
-  method_write_object_state_t* args = (method_write_object_state_t*) args_raw;
+  (void) ctx;
 
-  MAYBE_HANDLE_RESPONSE(args, METHOD_WRITE_OBJECT_RESPONSE_LEN, client, true);
+  cursor_t* inode_cur = ctx->dev->mmap + state->inode_dev_offset;
 
-  svr_client_result_t res;
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&ctx->bkts->bucket_locks[args->key.bucket]), "lock bucket");
-
-  uint64_t inode_dev_offset = method_common_find_inode_in_bucket(
-    ctx->dev,
-    ctx->bkts,
-    &args->key,
-    INO_STATE_INCOMPLETE,
-    args->obj_no,
-    NULL
-  );
-
-  if (!inode_dev_offset) {
-    // We close the connection in case the client has already written data, and ending without disconnecting would cause the queued data to be interpreted as the start of the next request.
-    // TODO Should we use some framing protocol or format so we don't have to close the connection?
-    ts_log(DEBUG, "Connection attempting to write to non-existent object with key %s will be disconnected", args->key.data.bytes);
+  if (inode_cur[INO_OFFSETOF_STATE] != INO_STATE_INCOMPLETE) {
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
-  cursor_t* inode_cur = ctx->dev->mmap + inode_dev_offset;
-  uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
-  if (args->start >= size) {
-    // We close the connection in case the client has already written data, and ending without disconnecting would cause the queued data to be interpreted as the start of the next request.
-    // TODO Should we use some framing protocol or format so we don't have to close the connection?
-    ts_log(DEBUG, "Connection attempting to write past end of object with key %s will be disconnected", args->key.data.bytes);
-    res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
-    goto final;
+  if (read_u64(inode_cur + INO_OFFSETOF_OBJ_NO) != state->obj_no) {
+    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
+  uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
+  if (state->start >= size) {
+    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
+  }
+
+  uint8_t key_len = inode_cur[INO_OFFSETOF_KEY_LEN];
   uint8_t ltm = inode_cur[INO_OFFSETOF_LAST_TILE_MODE];
 
-  uint64_t tile_no = args->start / TILE_SIZE;
+  uint64_t tile_no = state->start / TILE_SIZE;
   uint64_t full_tile_count = size / TILE_SIZE;
-  uint64_t write_dev_offset;
-  uint64_t write_max_len;
+  uint64_t resolved_write_dev_offset;
+  uint64_t resolved_write_len;
   if (ltm == INO_LAST_TILE_MODE_INLINE) {
     // We're writing to the last tile.
-    write_dev_offset = inode_dev_offset + INO_OFFSETOF_LAST_TILE_INLINE_DATA(args->key.len, full_tile_count);
-    write_max_len = size % TILE_SIZE;
+    resolved_write_dev_offset = state->inode_dev_offset + INO_OFFSETOF_LAST_TILE_INLINE_DATA(key_len, full_tile_count);
+    resolved_write_len = size % TILE_SIZE;
   } else {
-    uint32_t tile_addr = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(args->key.len, tile_no));
-    write_dev_offset = tile_addr * TILE_SIZE;
-    write_max_len = TILE_SIZE;
+    uint32_t tile_addr = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(key_len, tile_no));
+    resolved_write_dev_offset = tile_addr * TILE_SIZE;
+    resolved_write_len = TILE_SIZE;
   }
 
-  uint64_t dest_dev_offset = write_dev_offset + args->written;
-  uint64_t dest_max_len = write_max_len - args->written;
-  int readno = maybe_read(client->fd, ctx->dev->mmap + dest_dev_offset, dest_max_len);
+  int readno = maybe_read(
+    client->fd,
+    ctx->dev->mmap + resolved_write_dev_offset + state->written,
+    resolved_write_len - state->written
+  );
   if (-1 == readno) {
-    res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
-    goto final;
+    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
   if (readno > 0) {
     // This is a trade off:
     // - msync() all writes (not just metadata) only at flush times will mean that the device will be totally idle the remaining time and overutilised during flush.
     // - Doing this here means we don't have to make this a manager request, which is single-threaded.
     // - It is better to sync at flush time if the write length is exceptionally small (e.g. less than 1 KiB).
-    args->written += readno;
-    ASSERT_STATE(args->written <= write_max_len, "wrote past maximum length");
-    if (args->written == write_max_len) {
+    state->written += readno;
+    ASSERT_STATE(state->written <= resolved_write_len, "wrote past maximum length");
+    if (state->written == resolved_write_len) {
       // Set BEFORE possibly adding to flush tasks as it's technically allowed to immediately resume request processing.
-      args->response_written = 0;
-      args->response[0] = METHOD_ERROR_OK;
+      produce_u8(&out_response, METHOD_ERROR_OK);
 
-      if (args->written < IMMEDIATE_SYNC_THRESHOLD) {
+      if (state->written < IMMEDIATE_SYNC_THRESHOLD) {
         flush_lock_tasks(ctx->flush_state);
-        flush_add_write_task(ctx->flush_state, client, args->written);
+        flush_add_write_task(ctx->flush_state, client, state->written);
         flush_unlock_tasks(ctx->flush_state);
-        res = SVR_CLIENT_RESULT_AWAITING_FLUSH;
+        return SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE;
       } else {
-        device_sync(ctx->dev, write_dev_offset, write_dev_offset + args->written);
-        res = SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
+        device_sync(ctx->dev, resolved_write_dev_offset, resolved_write_dev_offset + state->written);
+        return SVR_CLIENT_RESULT_WRITE_RESPONSE;
       }
-
-      goto final;
     }
   }
-  res = SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;
-  goto final;
-
-  final:
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&ctx->bkts->bucket_locks[args->key.bucket]), "unlock bucket");
-  return res;
+  return SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;
 }

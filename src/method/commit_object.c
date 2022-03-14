@@ -13,7 +13,6 @@
 #include "../log.h"
 #include "../object.h"
 #include "../server_client.h"
-#include "../server_method_args.h"
 #include "../tile.h"
 #include "../util.h"
 #include "../worker.h"
@@ -21,46 +20,37 @@
 
 LOGGER("method_commit_object");
 
-// Method signature: (u8 key_len, u64 dev_offset, u64 obj_no).
-void method_commit_object_state_init(
-  void* state_raw,
+method_error_t method_commit_object_parse(
   method_ctx_t* ctx,
-  svr_method_args_parser_t* parser
+  method_commit_object_state_t* state,
+  uint8_t* args_cur
 ) {
-  method_commit_object_state_t* args = (method_commit_object_state_t*) state_raw;
-
   (void) ctx;
 
-  INIT_STATE_RESPONSE(args, METHOD_COMMIT_OBJECT_RESPONSE_LEN);
-  uint8_t* p = NULL;
+  state->inode_dev_offset = consume_u64(&args_cur);
+  state->obj_no = consume_u64(&args_cur);
 
-  if ((p = svr_method_args_parser_parse(parser, 8)) == NULL) {
-    PARSE_ERROR(args, METHOD_ERROR_NOT_ENOUGH_ARGS);
-  }
-  args->inode_dev_offset = read_u64(p);
+  DEBUG_TS_LOG("commit_object(inode_dev_offset=%lu, obj_no=%lu)", state->inode_dev_offset, state->obj_no);
 
-  if ((p = svr_method_args_parser_parse(parser, 8)) == NULL) {
-    PARSE_ERROR(args, METHOD_ERROR_NOT_ENOUGH_ARGS);
-  }
-  args->obj_no = read_u64(p);
-
-  if (!svr_method_args_parser_end(parser)) {
-    PARSE_ERROR(args, METHOD_ERROR_TOO_MANY_ARGS);
-  }
-
-  DEBUG_TS_LOG("commit_object(inode_dev_offset=%lu, obj_no=%lu)", args->inode_dev_offset, args->obj_no);
+  return METHOD_ERROR_OK;
 }
 
-svr_client_result_t method_commit_object(
+svr_client_result_t method_commit_object_response(
   method_ctx_t* ctx,
-  void* args_raw,
-  svr_client_t* client
+  method_commit_object_state_t* state,
+  svr_client_t* client,
+  uint8_t* out_response
 ) {
-  method_commit_object_state_t* args = (method_commit_object_state_t*) args_raw;
+  cursor_t* inode_cur = ctx->dev->mmap + state->inode_dev_offset;
 
-  MAYBE_HANDLE_RESPONSE(args, METHOD_COMMIT_OBJECT_RESPONSE_LEN, client, true);
+  if (
+    inode_cur[INO_OFFSETOF_STATE] != INO_STATE_INCOMPLETE ||
+    read_u64(inode_cur + INO_OFFSETOF_OBJ_NO) != state->obj_no
+  ) {
+    produce_u8(&out_response, METHOD_ERROR_NOT_FOUND);
+    return SVR_CLIENT_RESULT_WRITE_RESPONSE;
+  }
 
-  cursor_t* inode_cur = ctx->dev->mmap + args->inode_dev_offset;
   uint8_t key_len = inode_cur[INO_OFFSETOF_KEY_LEN];
   uint64_t bkt_id = BUCKET_ID_FOR_KEY(
     inode_cur + INO_OFFSETOF_KEY,
@@ -68,14 +58,8 @@ svr_client_result_t method_commit_object(
     ctx->bkts->key_mask
   );
 
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&ctx->bkts->bucket_locks[bkt_id]), "lock bucket");
+  BUCKET_LOCK_WRITE(ctx->bkts, bkt_id);
 
-  if (
-    inode_cur[INO_OFFSETOF_STATE] != INO_STATE_INCOMPLETE ||
-    read_u64(inode_cur + INO_OFFSETOF_OBJ_NO) != args->obj_no
-  ) {
-    ERROR_RESPONSE(METHOD_ERROR_NOT_FOUND);
-  }
   inode_cur[INO_OFFSETOF_STATE] = INO_STATE_PENDING_COMMIT;
 
   // Ensure object is found first before deleting other objects.
@@ -87,7 +71,7 @@ svr_client_result_t method_commit_object(
     cursor_t* cur = ctx->dev->mmap + delete_inode_dev_offset;
     // TODO Can we delete PENDING_COMMIT in same journal/flush?
     if (
-      delete_inode_dev_offset != args->inode_dev_offset &&
+      delete_inode_dev_offset != state->inode_dev_offset &&
       (cur[INO_OFFSETOF_STATE] & (INO_STATE_READY | INO_STATE_PENDING_COMMIT)) &&
       (cur[INO_OFFSETOF_KEY_LEN] == key_len) &&
       (0 == memcmp(cur + INO_OFFSETOF_KEY, inode_cur + INO_OFFSETOF_KEY, key_len))
@@ -99,9 +83,7 @@ svr_client_result_t method_commit_object(
   }
 
   // Set BEFORE possibly adding to flush tasks as it's technically allowed to immediately resume request processing.
-  args->response[0] = METHOD_ERROR_OK;
-  args->response_written = 0;
-
+  produce_u8(&out_response, METHOD_ERROR_OK);
 
   flush_lock_tasks(ctx->flush_state);
   // If there is a delete, it needs to be in the same journal/flush, so do not call twice.
@@ -113,7 +95,7 @@ svr_client_result_t method_commit_object(
   );
   cursor_t* flush_cur = flush_get_reserved_cursor(flush_task);
   produce_u8(&flush_cur, JOURNAL_ENTRY_TYPE_COMMIT);
-  produce_u48(&flush_cur, args->inode_dev_offset);
+  produce_u48(&flush_cur, state->inode_dev_offset);
   // Because we hold a lock, we do not need to increment atomically.
   produce_u64(&flush_cur, ctx->stream->next_seq_no++);
   if (delete_inode_dev_offset) {
@@ -126,7 +108,7 @@ svr_client_result_t method_commit_object(
   flush_commit_task(ctx->flush_state, flush_task);
   flush_unlock_tasks(ctx->flush_state);
 
-  ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&ctx->bkts->bucket_locks[bkt_id]), "unlock bucket");
+  BUCKET_UNLOCK(ctx->bkts, bkt_id);
 
-  return SVR_CLIENT_RESULT_AWAITING_FLUSH;
+  return SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE;
 }

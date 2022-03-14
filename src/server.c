@@ -22,29 +22,16 @@
 #include "server_client.h"
 #include "server.h"
 
-// Make sure this is big enough as we flush after each epoll_wait(), and we don't want to do too many flushes in a short timespan (inefficient use of disk I/O).
-#define SERVER_EPOLL_EVENTS_MAX 8192
-#define SERVER_LISTEN_BACKLOG 65536
+#define SERVER_EPOLL_EVENTS_MAX 65536
+#define SERVER_LISTEN_BACKLOG 1024
 
 LOGGER("server");
-
-// Called with method_state, method_ctx and args_parser.
-typedef void (server_method_state_initialiser)(void*, method_ctx_t*, svr_method_args_parser_t*);
-
-// Called with method_ctx, method_state, and client; returns client_result.
-typedef svr_client_result_t (server_method_handler)(method_ctx_t*, void*, svr_client_t*);
-
-typedef struct {
-  server_method_state_initialiser* state_initialisers[256];
-  server_method_handler* handlers[256];
-} server_methods_t;
 
 struct server_s {
   server_clients_t* clients;
   int socket_fd;
   int epoll_fd;
   method_ctx_t* method_ctx;
-  server_methods_t methods;
 };
 
 server_t* server_create(
@@ -142,56 +129,90 @@ server_t* server_create(
   svr->socket_fd = skt;
   svr->epoll_fd = epfd;
   svr->method_ctx = method_ctx;
-  // NULL is not guaranteed to be 0, so cannot simply use calloc.
-  for (int i = 0; i < 256; i++) {
-    svr->methods.state_initialisers[i] = NULL;
-    svr->methods.handlers[i] = NULL;
-  }
-  svr->methods.state_initialisers[METHOD_COMMIT_OBJECT] = method_commit_object_state_init;
-  svr->methods.handlers[METHOD_COMMIT_OBJECT] = method_commit_object;
-  svr->methods.state_initialisers[METHOD_CREATE_OBJECT] = method_create_object_state_init;
-  svr->methods.handlers[METHOD_CREATE_OBJECT] = method_create_object;
-  svr->methods.state_initialisers[METHOD_DELETE_OBJECT] = method_delete_object_state_init;
-  svr->methods.handlers[METHOD_DELETE_OBJECT] = method_delete_object;
-  svr->methods.state_initialisers[METHOD_INSPECT_OBJECT] = method_inspect_object_state_init;
-  svr->methods.handlers[METHOD_INSPECT_OBJECT] = method_inspect_object;
-  svr->methods.state_initialisers[METHOD_READ_OBJECT] = method_read_object_state_init;
-  svr->methods.handlers[METHOD_READ_OBJECT] = method_read_object;
-  svr->methods.state_initialisers[METHOD_WRITE_OBJECT] = method_write_object_state_init;
-  svr->methods.handlers[METHOD_WRITE_OBJECT] = method_write_object;
   return svr;
 }
 
+#define CALL_PARSER(response_len, method) { \
+    client->res_len = response_len; \
+    method_error_t err = method_##method##_parse(server->method_ctx, &client->method_state.method, client->buf + 1); \
+    memset(client->buf, 0, response_len); \
+    if (err != METHOD_ERROR_OK) { \
+      client->buf[0] = err; \
+      client->res_sent = 0; \
+    } else { \
+      svr_client_result_t res = method_##method##_response(server->method_ctx, &client->method_state.method, client, client->buf); \
+      if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE || res == SVR_CLIENT_RESULT_WRITE_RESPONSE) { \
+        client->res_sent = 0; \
+      } \
+      if (res != SVR_CLIENT_RESULT_WRITE_RESPONSE) { \
+        return res; \
+      } \
+    } \
+  } \
+  break \
+
+#define CALL_HANDLER(method) { \
+    svr_client_result_t res = method_##method##_response(server->method_ctx, &client->method_state.method, client, client->buf); \
+    if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE || res == SVR_CLIENT_RESULT_WRITE_RESPONSE) { \
+      client->res_sent = 0; \
+    } \
+    if (res != SVR_CLIENT_RESULT_WRITE_RESPONSE) { \
+      return res; \
+    } \
+  } \
+  break
+
 static inline svr_client_result_t server_process_client_until_result(server_t* server, svr_client_t* client) {
   while (true) {
-    int fd = client->fd;
-    svr_method_args_parser_t* ap = &client->args_parser;
-    method_t method = client->method;
-    if (method == METHOD__UNKNOWN) {
+    if (client->method == METHOD__UNKNOWN) {
       // We haven't parsed the args yet.
-      int readlen = maybe_read(fd, ap->raw + ap->write_next, 255 - ap->write_next);
-      if (!readlen) { \
-        return SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;
-      }
+      int readlen = maybe_read(client->fd, client->buf + client->args_recvd, 255 - client->args_recvd);
       if (readlen < 0) {
         return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
       }
-      if ((ap->write_next += readlen) == 255) {
-        ap->raw_len = ap->raw[0];
-        // We'll validdate this when we get `init_fn`.
-        client->method = ap->raw[1];
-        ap->read_next = 2;
+      if (!readlen) {
+        return SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;
+      }
+      if ((client->args_recvd += readlen) == 255) {
         // Parse the args.
-        server_method_state_initialiser* init_fn = server->methods.state_initialisers[method];
-        if (init_fn == NULL) {
-          return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
+        switch ((client->method = client->buf[0])) {
+        case METHOD_COMMIT_OBJECT: CALL_PARSER(METHOD_COMMIT_OBJECT_RESPONSE_LEN, commit_object);
+        case METHOD_CREATE_OBJECT: CALL_PARSER(METHOD_CREATE_OBJECT_RESPONSE_LEN, create_object);
+        case METHOD_DELETE_OBJECT: CALL_PARSER(METHOD_DELETE_OBJECT_RESPONSE_LEN, delete_object);
+        case METHOD_INSPECT_OBJECT: CALL_PARSER(METHOD_INSPECT_OBJECT_RESPONSE_LEN, inspect_object);
+        case METHOD_READ_OBJECT: CALL_PARSER(METHOD_READ_OBJECT_RESPONSE_LEN, read_object);
+        case METHOD_WRITE_OBJECT: CALL_PARSER(METHOD_WRITE_OBJECT_RESPONSE_LEN, write_object);
+        default: return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
         }
-        init_fn(&client->method_state, server->method_ctx, ap);
+      }
+    } else if (client->res_sent == -1) {
+      // We need to keep calling the method handler.
+      switch (client->method) {
+      case METHOD_COMMIT_OBJECT: CALL_HANDLER(commit_object);
+      case METHOD_CREATE_OBJECT: CALL_HANDLER(create_object);
+      case METHOD_DELETE_OBJECT: CALL_HANDLER(delete_object);
+      case METHOD_INSPECT_OBJECT: CALL_HANDLER(inspect_object);
+      case METHOD_READ_OBJECT: CALL_HANDLER(read_object);
+      case METHOD_WRITE_OBJECT: CALL_HANDLER(write_object);
+      default: ASSERT_UNREACHABLE("method %d", client->method);
+      }
+    } else if (client->res_sent >= 0 && client->res_sent < client->res_len) {
+      int writeno = maybe_write(client->fd, client->buf + client->res_sent, client->res_len - client->res_len);
+      if (-1 == writeno) {
+        return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
+      }
+      if (0 == writeno) {
+        return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
+      }
+      if ((client->res_sent += writeno) < client->res_len) {
+        return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
+      }
+      if (client->method != METHOD_READ_OBJECT) {
+        return SVR_CLIENT_RESULT_END;
       }
     } else {
-      // The method must exist.
-      server_method_handler* fn = server->methods.handlers[method];
-      return fn(server->method_ctx, &client->method_state, client);
+      ASSERT_STATE(client->method == METHOD_READ_OBJECT, "method %d does not have postresponse", client->method);
+      return method_read_object_postresponse(server->method_ctx, &client->method_state.read_object, client);
     }
   }
 }
@@ -210,7 +231,7 @@ static void on_client_event(server_t* server, svr_client_t* client) {
       break;
     }
 
-    if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH) {
+    if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE) {
       break;
     }
 
