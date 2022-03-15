@@ -5,11 +5,13 @@
 #include "list.h"
 #include "log.h"
 #include "stream.h"
+#include "util.h"
 
 LOGGER("stream");
 
 stream_t* stream_create_from_device(device_t* dev, uint64_t dev_offset) {
-  stream_t* st = aligned_alloc(16, sizeof(stream_t));
+  stream_t* st;
+  ASSERT_ERROR_RETVAL_OK(posix_memalign((void**) &st, 16, sizeof(stream_t)), "alloc stream");
   st->dev = dev;
   st->dev_offset = dev_offset;
 

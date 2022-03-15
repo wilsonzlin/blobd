@@ -58,6 +58,11 @@ conf_parser_t* conf_parser_create() {
   return parser;
 }
 
+void conf_parser_destroy(conf_parser_t* parser) {
+  kh_destroy_field_parsers(parser->fields);
+  free(parser);
+}
+
 static inline void invalid_key(char* raw, uint64_t len) {
   for (uint64_t i = 0; i < len; i++) fputc(raw[i], stderr);
   fprintf(stderr, " is not a valid key or does not have a valid value\n");
@@ -145,4 +150,11 @@ conf_t* conf_parse(conf_parser_t* parser, char* raw, uint64_t len) {
   free(key_buf);
 
   return conf;
+}
+
+void conf_destroy(conf_t* conf) {
+  free(conf->device_path);
+  free(conf->worker_address);
+  free(conf->worker_unix_socket_path);
+  free(conf);
 }

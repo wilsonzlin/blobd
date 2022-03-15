@@ -5,7 +5,7 @@ set -Eeuxo pipefail
 pushd "$(dirname "$0")"
 
 if [[ "${DEBUG:-}" == "1" ]]; then
-  cc_args="-O0 -g -D TURBOSTORE_DEBUG"
+  cc_args="-O0 -g -fsanitize=address -D TURBOSTORE_DEBUG"
 else
   cc_args="-O3 -flto"
 fi

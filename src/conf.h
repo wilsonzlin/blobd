@@ -22,10 +22,6 @@ typedef struct {
 
   char* device_path;
 
-  char* manager_address;
-  uint16_t manager_port;
-  char* manager_unix_socket_path;
-
   char* worker_address;
   uint16_t worker_port;
   uint16_t worker_threads;
@@ -36,4 +32,8 @@ typedef struct conf_parser_s conf_parser_t;
 
 conf_parser_t* conf_parser_create();
 
+void conf_parser_destroy(conf_parser_t* parser);
+
 conf_t* conf_parse(conf_parser_t* parser, char* raw, uint64_t len);
+
+void conf_destroy(conf_t* conf);

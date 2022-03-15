@@ -38,7 +38,11 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
   cursor_t* cur = dev->mmap + dev_offset;
 
   // `malloc` aligns on word size (i.e. 8), but we need to align on __m512i.
-  freelist_t* fl = aligned_alloc(64, sizeof(freelist_t));
+  freelist_t* fl;
+  ASSERT_ERROR_RETVAL_OK(
+    posix_memalign((void**) &fl, 64, sizeof(freelist_t)),
+    "alloc freelist"
+  );
   memset(fl, 0, sizeof(freelist_t));
   fl->dev_offset = dev_offset;
 
