@@ -139,14 +139,6 @@ server_t* server_create(
     if (err != METHOD_ERROR_OK) { \
       client->buf[0] = err; \
       client->res_sent = 0; \
-    } else { \
-      svr_client_result_t res = method_##method##_response(server->method_ctx, &client->method_state.method, client, client->buf); \
-      if (res == SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE || res == SVR_CLIENT_RESULT_WRITE_RESPONSE) { \
-        client->res_sent = 0; \
-      } \
-      if (res != SVR_CLIENT_RESULT_WRITE_RESPONSE) { \
-        return res; \
-      } \
     } \
   } \
   break \
@@ -170,20 +162,18 @@ static inline svr_client_result_t server_process_client_until_result(server_t* s
       if (readlen < 0) {
         return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
       }
-      if (!readlen) {
+      if ((client->args_recvd += readlen) < 255) {
         return SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;
       }
-      if ((client->args_recvd += readlen) == 255) {
-        // Parse the args.
-        switch ((client->method = client->buf[0])) {
-        case METHOD_COMMIT_OBJECT: CALL_PARSER(METHOD_COMMIT_OBJECT_RESPONSE_LEN, commit_object);
-        case METHOD_CREATE_OBJECT: CALL_PARSER(METHOD_CREATE_OBJECT_RESPONSE_LEN, create_object);
-        case METHOD_DELETE_OBJECT: CALL_PARSER(METHOD_DELETE_OBJECT_RESPONSE_LEN, delete_object);
-        case METHOD_INSPECT_OBJECT: CALL_PARSER(METHOD_INSPECT_OBJECT_RESPONSE_LEN, inspect_object);
-        case METHOD_READ_OBJECT: CALL_PARSER(METHOD_READ_OBJECT_RESPONSE_LEN, read_object);
-        case METHOD_WRITE_OBJECT: CALL_PARSER(METHOD_WRITE_OBJECT_RESPONSE_LEN, write_object);
-        default: return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
-        }
+      // Parse the args.
+      switch ((client->method = client->buf[0])) {
+      case METHOD_COMMIT_OBJECT: CALL_PARSER(METHOD_COMMIT_OBJECT_RESPONSE_LEN, commit_object);
+      case METHOD_CREATE_OBJECT: CALL_PARSER(METHOD_CREATE_OBJECT_RESPONSE_LEN, create_object);
+      case METHOD_DELETE_OBJECT: CALL_PARSER(METHOD_DELETE_OBJECT_RESPONSE_LEN, delete_object);
+      case METHOD_INSPECT_OBJECT: CALL_PARSER(METHOD_INSPECT_OBJECT_RESPONSE_LEN, inspect_object);
+      case METHOD_READ_OBJECT: CALL_PARSER(METHOD_READ_OBJECT_RESPONSE_LEN, read_object);
+      case METHOD_WRITE_OBJECT: CALL_PARSER(METHOD_WRITE_OBJECT_RESPONSE_LEN, write_object);
+      default: return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
       }
     } else if (client->res_sent == -1) {
       // We need to keep calling the method handler.
@@ -197,12 +187,9 @@ static inline svr_client_result_t server_process_client_until_result(server_t* s
       default: ASSERT_UNREACHABLE("method %d", client->method);
       }
     } else if (client->res_sent >= 0 && client->res_sent < client->res_len) {
-      int writeno = maybe_write(client->fd, client->buf + client->res_sent, client->res_len - client->res_len);
+      int writeno = maybe_write(client->fd, client->buf + client->res_sent, client->res_len - client->res_sent);
       if (-1 == writeno) {
         return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
-      }
-      if (0 == writeno) {
-        return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;
       }
       if ((client->res_sent += writeno) < client->res_len) {
         return SVR_CLIENT_RESULT_AWAITING_CLIENT_WRITABLE;

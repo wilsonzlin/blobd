@@ -61,7 +61,7 @@ svr_client_result_t method_create_object_response(
   uint32_t ino_size;
   if (ino_size_if_inline >= TILE_SIZE) {
     alloc_strategy = ALLOC_MICROTILE_WITH_FULL_LAST_TILE;
-    ino_size_excl_any_inline_data = ino_size_excluding_last_tile + 11;
+    ino_size_excl_any_inline_data = ino_size_excluding_last_tile + 3;
     ino_size = ino_size_excl_any_inline_data;
     ltm = INO_LAST_TILE_MODE_TILE;
   } else if (ino_size_if_inline + INO_OFFSETOF_LAST_TILE_INLINE_DATA(128, 1) >= TILE_SIZE) {
@@ -81,7 +81,7 @@ svr_client_result_t method_create_object_response(
   // To prevent microtile metadata corruption, we must append to journal in the same order as microtile allocations.
   // Therefore, we reserve inside freelist lock.
   flush_lock_tasks(ctx->flush_state);
-  flush_task_reserve_t flush_task = flush_reserve_task(ctx->flush_state, JOURNAL_ENTRY_CREATE_LEN(ino_size_excl_any_inline_data - INO_OFFSETOF_LAST_TILE_MODE), client, false);
+  flush_task_reserve_t flush_task = flush_reserve_task(ctx->flush_state, JOURNAL_ENTRY_CREATE_LEN(ino_size_excl_any_inline_data), client, 0);
   flush_unlock_tasks(ctx->flush_state);
   uint64_t ino_dev_offset;
   if (alloc_strategy == ALLOC_FULL_TILE) {
@@ -90,7 +90,7 @@ svr_client_result_t method_create_object_response(
     ino_dev_offset = freelist_consume_microtile_space(ctx->fl, ino_size);
   }
   cursor_t* flush_cur = flush_get_reserved_cursor(flush_task);
-  cursor_t* inode_cur = flush_cur + JOURNAL_ENTRY_CREATE_OFFSETOF_INODE_DATA - INO_OFFSETOF_LAST_TILE_MODE;
+  cursor_t* inode_cur = flush_cur + JOURNAL_ENTRY_CREATE_OFFSETOF_INODE_DATA;
   if (full_tiles) {
     freelist_consume_tiles(ctx->fl, full_tiles + ((ltm == INO_LAST_TILE_MODE_TILE) ? 1 : 0), inode_cur + INO_OFFSETOF_TILES(state->key.len));
   }
@@ -98,7 +98,7 @@ svr_client_result_t method_create_object_response(
 
   flush_cur[JOURNAL_ENTRY_OFFSETOF_TYPE] = JOURNAL_ENTRY_TYPE_CREATE;
   write_u48(flush_cur + JOURNAL_ENTRY_CREATE_OFFSETOF_INODE_DEV_OFFSET, ino_dev_offset);
-  write_u24(flush_cur + JOURNAL_ENTRY_CREATE_OFFSETOF_INODE_LEN, ino_size_excl_any_inline_data - INO_OFFSETOF_LAST_TILE_MODE);
+  write_u24(flush_cur + JOURNAL_ENTRY_CREATE_OFFSETOF_INODE_LEN, ino_size_excl_any_inline_data);
 
   uint64_t obj_no = atomic_fetch_add_explicit(&ctx->stream->next_obj_no, 1, memory_order_relaxed);
 
@@ -112,6 +112,7 @@ svr_client_result_t method_create_object_response(
 
   // Set BEFORE possibly committing to flush tasks as it's technically allowed to immediately resume request processing.
   produce_u8(&out_response, METHOD_ERROR_OK);
+  produce_u64(&out_response, ino_dev_offset);
   produce_u64(&out_response, obj_no);
 
   flush_lock_tasks(ctx->flush_state);

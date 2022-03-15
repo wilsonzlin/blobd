@@ -30,7 +30,7 @@ method_error_t method_write_object_parse(
   uint8_t* args_raw
 ) {
   (void) ctx;
-  
+
   state->written = 0;
 
   state->inode_dev_offset = consume_u64(&args_raw);
@@ -38,6 +38,10 @@ method_error_t method_write_object_parse(
   state->start = consume_u64(&args_raw);
   if ((state->start % TILE_SIZE) != 0) {
     return METHOD_ERROR_INVALID_START;
+  }
+  state->len = consume_u64(&args_raw);
+  if (state->len > TILE_SIZE) {
+    return METHOD_ERROR_INVALID_LENGTH;
   }
 
   DEBUG_TS_LOG("write_object(inode_dev_offset=%lu, obj_no=%lu, start=%ld)", state->inode_dev_offset, state->obj_no, state->start);
@@ -65,6 +69,7 @@ svr_client_result_t method_write_object_response(
 
   uint64_t size = read_u40(inode_cur + INO_OFFSETOF_SIZE);
   if (state->start >= size) {
+    ts_log(DEBUG, "start %lu is past size %lu", state->start, size);
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
@@ -75,7 +80,7 @@ svr_client_result_t method_write_object_response(
   uint64_t full_tile_count = size / TILE_SIZE;
   uint64_t resolved_write_dev_offset;
   uint64_t resolved_write_len;
-  if (ltm == INO_LAST_TILE_MODE_INLINE) {
+  if (ltm == INO_LAST_TILE_MODE_INLINE && tile_no == full_tile_count) {
     // We're writing to the last tile.
     resolved_write_dev_offset = state->inode_dev_offset + INO_OFFSETOF_LAST_TILE_INLINE_DATA(key_len, full_tile_count);
     resolved_write_len = size % TILE_SIZE;
@@ -83,6 +88,11 @@ svr_client_result_t method_write_object_response(
     uint32_t tile_addr = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(key_len, tile_no));
     resolved_write_dev_offset = tile_addr * TILE_SIZE;
     resolved_write_len = TILE_SIZE;
+  }
+
+  if (state->len != resolved_write_len) {
+    ts_log(DEBUG, "write length is unexpected (wanted %lu but requested %lu)", resolved_write_len, state->len);
+    return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
   int readno = maybe_read(
@@ -106,11 +116,11 @@ svr_client_result_t method_write_object_response(
 
       if (state->written < IMMEDIATE_SYNC_THRESHOLD) {
         flush_lock_tasks(ctx->flush_state);
-        flush_add_write_task(ctx->flush_state, client, state->written);
+        flush_add_write_task(ctx->flush_state, client, resolved_write_len);
         flush_unlock_tasks(ctx->flush_state);
         return SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE;
       } else {
-        device_sync(ctx->dev, resolved_write_dev_offset, resolved_write_dev_offset + state->written);
+        device_sync(ctx->dev, resolved_write_dev_offset, resolved_write_dev_offset + resolved_write_len);
         return SVR_CLIENT_RESULT_WRITE_RESPONSE;
       }
     }

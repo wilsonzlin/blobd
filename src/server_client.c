@@ -9,8 +9,8 @@ struct server_clients_s {
   _Atomic(svr_client_t*) pool_head;
 };
 
+// Don't clear FD as we're resetting for the same client.
 void server_client_reset(svr_client_t* client) {
-  client->fd = -1;
   client->args_recvd = 0;
   client->method = METHOD__UNKNOWN;
   client->res_len = 0;

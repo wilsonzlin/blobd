@@ -75,7 +75,7 @@ static void journal_apply_and_clear(
 
     if (JOURNAL_ENTRY_TYPE_CREATE == typ) {
       uint64_t inode_len = consume_u24(&cur);
-      cursor_t* read_cur = cur - INO_OFFSETOF_LAST_TILE_MODE;
+      cursor_t* read_cur = cur;
       uint64_t obj_size = read_u40(read_cur + INO_OFFSETOF_SIZE);
       uint64_t obj_no = read_u64(read_cur + INO_OFFSETOF_OBJ_NO);
       // TODO Should we also check against existing next_obj_no on device?
@@ -107,8 +107,7 @@ static void journal_apply_and_clear(
       }
 
       // Write inode to heap.
-      memcpy(jnl->dev->mmap + inode_dev_offset + INO_OFFSETOF_LAST_TILE_MODE, cur, inode_len);
-      *(jnl->dev->mmap + inode_dev_offset + INO_OFFSETOF_STATE) = INO_STATE_INCOMPLETE;
+      memcpy(jnl->dev->mmap + inode_dev_offset, cur, inode_len);
     } else {
       uint64_t stream_seq_no = consume_u64(&cur);
       max_seq_no = max(max_seq_no, stream_seq_no);

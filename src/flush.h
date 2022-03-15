@@ -38,4 +38,6 @@ flush_state_t* flush_state_create(
   stream_t* stream
 );
 
-void flush_worker_start(flush_state_t* state);
+void* flush_worker_start(flush_state_t* state);
+
+void flush_worker_join(void* handle);

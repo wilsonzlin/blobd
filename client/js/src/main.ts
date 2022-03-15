@@ -17,15 +17,13 @@ const encodeU64 = (val: number) => {
 
 const buildArgs = (method: number, rawBytes: number[]) =>
   Buffer.from([
-    rawBytes.length,
     method,
     ...rawBytes,
-    ...Array(255 - rawBytes.length - 2).fill(0),
+    ...Array(255 - rawBytes.length - 1).fill(0),
   ]);
 
-const commit_object = (key: string, objNo: number) => {
-  const keyBytes = Buffer.from(key);
-  const argsRaw = [keyBytes.length, ...keyBytes, ...encodeU64(objNo)];
+const commit_object = (inodeDevOffset: number, objNo: number) => {
+  const argsRaw = [...encodeU64(inodeDevOffset), ...encodeU64(objNo)];
   return buildArgs(5, argsRaw);
 };
 
@@ -58,13 +56,17 @@ const read_object = (key: string, start: number, end: number) => {
   return buildArgs(3, argsRaw);
 };
 
-const write_object = (key: string, objNo: number, start: number) => {
-  const keyBytes = Buffer.from(key);
+const write_object = (
+  inodeDevOffset: number,
+  objNo: number,
+  start: number,
+  len: number
+) => {
   const argsRaw = [
-    keyBytes.length,
-    ...keyBytes,
+    ...encodeU64(inodeDevOffset),
     ...encodeU64(objNo),
     ...encodeU64(start),
+    ...encodeU64(len),
   ];
   return buildArgs(4, argsRaw);
 };
@@ -155,10 +157,10 @@ export class TurbostoreClient {
     return new Promise<void>((resolve) => this.socket.end(resolve));
   }
 
-  async commitObject(key: string, objNo: number) {
+  async commitObject(inodeDevOffset: number, objNo: number) {
     const l = await this.mutex.lock();
     try {
-      this.socket.write(commit_object(key, objNo));
+      this.socket.write(commit_object(inodeDevOffset, objNo));
       const chunk = await read(this.socket, 1);
       assertValidResponse("commit_object", chunk, 1);
     } finally {
@@ -170,10 +172,11 @@ export class TurbostoreClient {
     const l = await this.mutex.lock();
     try {
       this.socket.write(create_object(key, size));
-      const chunk = await read(this.socket, 9);
-      assertValidResponse("create_object", chunk, 9);
+      const chunk = await read(this.socket, 17);
+      assertValidResponse("create_object", chunk, 17);
       return {
-        objectNumber: bigIntToNumber(chunk.readBigUInt64BE(1)),
+        inodeDeviceOffset: bigIntToNumber(chunk.readBigUInt64BE(1)),
+        objectNumber: bigIntToNumber(chunk.readBigUInt64BE(9)),
       };
     } finally {
       l.unlock();
@@ -280,14 +283,16 @@ export class TurbostoreClient {
   }
 
   async writeObjectWithBuffer(
-    key: string,
+    inodeDevOffset: number,
     objNo: number,
     start: number,
     data: Uint8Array
   ) {
     const l = await this.mutex.lock();
     try {
-      this.socket.write(write_object(key, objNo, start));
+      this.socket.write(
+        write_object(inodeDevOffset, objNo, start, data.length)
+      );
       this.socket.write(data);
       const chunk = await read(this.socket, 1);
       assertValidResponse("write_object", chunk, 1);
@@ -296,11 +301,16 @@ export class TurbostoreClient {
     }
   }
 
-  async writeObjectWithStream(key: string, objNo: number, start: number) {
+  async writeObjectWithStream(
+    inodeDevOffset: number,
+    objNo: number,
+    start: number,
+    len: number
+  ) {
     const l = await this.mutex.lock();
     const { socket } = this;
     try {
-      socket.write(write_object(key, objNo, start));
+      socket.write(write_object(inodeDevOffset, objNo, start, len));
     } catch (err) {
       l.unlock();
       throw err;

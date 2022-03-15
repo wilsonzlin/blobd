@@ -48,6 +48,7 @@ typedef enum {
   METHOD_ERROR_NOT_FOUND = 4,
   METHOD_ERROR_INVALID_START = 5,
   METHOD_ERROR_INVALID_END = 6,
+  METHOD_ERROR_INVALID_LENGTH = 7,
 } method_error_t;
 
 method_error_t method_common_key_parse(
@@ -69,6 +70,7 @@ uint64_t method_common_find_inode_in_bucket(
 );
 
 // Method signature: (u64 inode_dev_offset, u64 obj_no).
+// Response: [u8 error].
 #define METHOD_COMMIT_OBJECT_RESPONSE_LEN 1
 typedef struct {
   uint64_t inode_dev_offset;
@@ -76,13 +78,15 @@ typedef struct {
 } method_commit_object_state_t;
 
 // Method signature: (u8 key_len, char[] key, u64 size).
-#define METHOD_CREATE_OBJECT_RESPONSE_LEN 9
+// Response: [u8 error, u64 inode_dev_offset, u64 obj_no].
+#define METHOD_CREATE_OBJECT_RESPONSE_LEN (1 + 8 + 8)
 typedef struct {
   method_common_key_t key;
   uint64_t size;
 } method_create_object_state_t;
 
 // Method signature: (u8 key_len, char[] key, u64 obj_no_or_zero).
+// Response: [u8 error].
 #define METHOD_DELETE_OBJECT_RESPONSE_LEN 1
 typedef struct {
   method_common_key_t key;
@@ -114,14 +118,17 @@ typedef struct {
   uint64_t object_size;
 } method_read_object_state_t;
 
-// Method signature: (u64 inode_dev_offset, u64 obj_no, u64 start).
+// Method signature: (u64 inode_dev_offset, u64 obj_no, u64 start, u64 len).
+// `len` is provided for extra assurance: if the server's computed value does not match `len`, the client will be dropped.
 // Only INCOMPLETE objects can be written to. Objects can only be written in TILE_SIZE chunks, except for the last. Each chunk must start at a multiple of TILE_SIZE.
+// Response: [u8 error].
 #define METHOD_WRITE_OBJECT_RESPONSE_LEN 1
 typedef struct {
   uint32_t written;
   uint64_t inode_dev_offset;
   uint64_t obj_no;
   uint64_t start;
+  uint64_t len;
 } method_write_object_state_t;
 
 // To avoid cyclic dependencies, define this union as well as all member structs in this file.

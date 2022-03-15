@@ -3,6 +3,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
@@ -222,7 +223,8 @@ flush_state_t* flush_state_create(
   return state;
 }
 
-void flush_worker_start(flush_state_t* state) {
+void* thread(void* state_raw) {
+  flush_state_t* state = (flush_state_t*) state_raw;
   future_flush_t* fut = NULL;
   while (true) {
     ASSERT_ERROR_RETVAL_OK(pthread_mutex_lock(&state->futures_lock), "lock futures");
@@ -249,15 +251,16 @@ void flush_worker_start(flush_state_t* state) {
         wakets.tv_nsec %= 1000000000;
       }
       int condres = pthread_cond_timedwait(&state->futures_cond, &state->futures_lock, &wakets);
-      if (ETIMEDOUT == condres && fut != NULL && !fut->journal_pending_count && (
-        fut->write_clients->len || fut->nonwrite_clients->len
-      )) {
-        // We force-flush the future anyway due to timeout.
-        fut->ready = true;
-        state->future_head = fut->next;
-        break;
+      if (ETIMEDOUT == condres) {
+        if (fut != NULL && !fut->journal_pending_count && (fut->write_clients->len || fut->nonwrite_clients->len)) {
+          // We force-flush the future anyway due to timeout.
+          fut->ready = true;
+          state->future_head = fut->next;
+          break;
+        }
+      } else {
+        ASSERT_ERROR_RETVAL_OK(condres, "wait cond");
       }
-      ASSERT_ERROR_RETVAL_OK(condres, "wait cond");
     }
     ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&state->futures_lock), "unlock futures");
 
@@ -305,4 +308,16 @@ void flush_worker_start(flush_state_t* state) {
 
     DEBUG_TS_LOG("Flush ended");
   }
+}
+
+void* flush_worker_start(flush_state_t* state) {
+  pthread_t* t = malloc(sizeof(pthread_t));
+  ASSERT_ERROR_RETVAL_OK(pthread_create(t, NULL, thread, state), "create flush thread");
+  return t;
+}
+
+void flush_worker_join(void* handle) {
+  pthread_t* t = (pthread_t*) handle;
+  ASSERT_ERROR_RETVAL_OK(pthread_join(*t, NULL), "join flush thread");
+  free(t);
 }

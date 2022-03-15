@@ -166,9 +166,13 @@ int main(int argc, char** argv) {
   method_ctx->flush_state = flush_state;
   method_ctx->stream = stream;
 
+  void* flush_handle = flush_worker_start(flush_state);
+
   void* workers_handle = workers_start(server, worker_count);
 
   workers_join(workers_handle, worker_count);
+
+  flush_worker_join(flush_handle);
 
   return 0;
 }
