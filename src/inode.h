@@ -70,6 +70,7 @@ typedef enum {
 
 #define INODE_TILE_COUNT(inode_cur) ((read_u40((inode_cur) + INO_OFFSETOF_SIZE) / TILE_SIZE) + ((inode_cur)[INO_OFFSETOF_STATE] == INO_LAST_TILE_MODE_TILE ? 1 : 0))
 
+#ifdef TURBOSTORE_DEBUG
 #define DEBUG_ASSERT_INODE_IS_VALID(dev, inode_dev_offset) { \
   cursor_t* cur = (dev)->mmap + (inode_dev_offset); \
   DEBUG_ASSERT_STATE( \
@@ -96,3 +97,6 @@ typedef enum {
     inode_dev_offset \
   ); \
 }
+#else
+#define DEBUG_ASSERT_INODE_IS_VALID(dev, inode_dev_offset) ((void) 0)
+#endif
