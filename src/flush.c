@@ -76,8 +76,10 @@ struct flush_state_s {
   // - With a ring buffer, we'd run the risk of overwriting (once again, no atomic way of checking all variables atomically). We'd also have to allocate a huge buffer upfront as we cannot realloc().
   pthread_mutex_t futures_lock;
   pthread_cond_t futures_cond;
+  // The head is the next future to flush.
   future_flush_t* future_head;
-  future_flush_t* future_next_writable;
+  // The tail is the next future to write tasks to.
+  future_flush_t* future_tail;
 
   // The pool is a stack instead of a queue, so we don't need a tail.
   future_flush_t* future_pool_head;
@@ -109,11 +111,12 @@ static inline future_flush_t* create_future() {
 // Must be locked before calling.
 static inline future_flush_t* get_new_future(flush_state_t* state) {
   future_flush_t* f = state->future_pool_head;
-  if (f != NULL) {
+  if (f == NULL) {
+    f = create_future();
+  } else {
     state->future_pool_head = f->next;
-    return f;
   }
-  return create_future();
+  return f;
 }
 
 void flush_lock_tasks(flush_state_t* state) {
@@ -144,13 +147,13 @@ static inline void maybe_apply_future(flush_state_t* state, future_flush_t* f) {
 // Must be locked before calling.
 // NOTE: Use either (flush_reserve_task() then flush_commit_task()) or flush_add_write_task(), not both.
 flush_task_reserve_t flush_reserve_task(flush_state_t* state, uint32_t len, svr_client_t* client_or_null, uint64_t delete_inode_dev_offset_or_zero) {
-  future_flush_t* f = state->future_next_writable;
+  future_flush_t* f = state->future_tail;
   if (f->journal_write_next + len > JOURNAL_RESERVED_SPACE) {
     f->journal_full = true;
     future_flush_t* new_f = get_new_future(state);
     f->next = new_f;
     maybe_apply_future(state, f);
-    state->future_next_writable = f;
+    state->future_tail = f;
     f = new_f;
   }
   uint32_t pos = f->journal_write_next;
@@ -188,7 +191,7 @@ void flush_commit_task(flush_state_t* state, flush_task_reserve_t r) {
 // NOTE: Use either (flush_reserve_task() then flush_commit_task()) or flush_add_write_task(), not both.
 // WARNING: This may start the flush process, so make sure any client states are updated before calling, as they will be rearmed to the server epoll.
 void flush_add_write_task(flush_state_t* state, svr_client_t* client, uint64_t write_bytes) {
-  future_flush_t* f = state->future_next_writable;
+  future_flush_t* f = state->future_tail;
   f->write_count++;
   f->write_bytes += write_bytes;
   clients_append(f->write_clients, client);
@@ -217,7 +220,7 @@ flush_state_t* flush_state_create(
   ASSERT_ERROR_RETVAL_OK(pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC), "set condattr clock");
   ASSERT_ERROR_RETVAL_OK(pthread_cond_init(&state->futures_cond, &condattr), "init cond");
   ASSERT_ERROR_RETVAL_OK(pthread_condattr_destroy(&condattr), "destroy condattr");
-  state->future_head = state->future_next_writable = create_future();
+  state->future_head = state->future_tail = create_future();
 
   state->future_pool_head = NULL;
   return state;
@@ -255,12 +258,15 @@ void* thread(void* state_raw) {
         if (fut != NULL && !fut->journal_pending_count && (fut->write_clients->len || fut->nonwrite_clients->len)) {
           // We force-flush the future anyway due to timeout.
           fut->ready = true;
-          state->future_head = fut->next;
           break;
         }
       } else {
         ASSERT_ERROR_RETVAL_OK(condres, "wait cond");
       }
+    }
+    ;
+    if ((state->future_head = fut->next) == NULL) {
+      state->future_head = state->future_tail = get_new_future(state);
     }
     ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&state->futures_lock), "unlock futures");
 

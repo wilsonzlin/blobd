@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
       dev,
       journal_dev_offset,
       freelist_dev_offset,
-      buckets_read_count(dev, buckets_dev_offset),
+      buckets_read_count(dev, buckets_dev_offset) - 1,
       freelist_dev_offset,
       stream_dev_offset
     );

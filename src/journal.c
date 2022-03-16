@@ -111,7 +111,6 @@ static void journal_apply_and_clear(
     } else {
       uint64_t stream_seq_no = consume_u64(&cur);
       max_seq_no = max(max_seq_no, stream_seq_no);
-      uint64_t old_data = consume_u48(&cur);
       uint8_t key_len = inode_cur[INO_OFFSETOF_KEY_LEN];
       uint64_t bkt_id = BUCKET_ID_FOR_KEY(inode_cur + INO_OFFSETOF_KEY, key_len, jnl->buckets_key_mask);
       uint64_t obj_no = read_u64(inode_cur + INO_OFFSETOF_OBJ_NO);
@@ -136,10 +135,10 @@ static void journal_apply_and_clear(
 
         // Update previous inode or bucket head.
         uint64_t next_inode_dev_offset = read_u48(inode_cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET);
-        if (buckets != NULL) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&buckets->bucket_locks[bkt_id]), "lock bucket");
-        if (old_data) {
-          // `old_data` represents inode dev offset of previous inode.
-          cursor_t* prev_inode_cur = jnl->dev->mmap + old_data;
+        if (buckets != NULL) BUCKET_LOCK_WRITE(buckets, bkt_id);
+        uint64_t prev_inode_dev_offset_or_zero_if_was_head = consume_u48(&cur);
+        if (prev_inode_dev_offset_or_zero_if_was_head) {
+          cursor_t* prev_inode_cur = jnl->dev->mmap + prev_inode_dev_offset_or_zero_if_was_head;
           write_u48(
             prev_inode_cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET,
             next_inode_dev_offset
@@ -151,7 +150,7 @@ static void journal_apply_and_clear(
             next_inode_dev_offset
           );
         }
-        if (buckets != NULL) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&buckets->bucket_locks[bkt_id]), "lock bucket");
+        if (buckets != NULL) BUCKET_UNLOCK(buckets, bkt_id);
 
         // Release tiles back to freelist on device.
         // NOTE: In-memory freelist_t values/data structures not affected/updated/synced/reloaded.
