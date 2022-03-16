@@ -60,10 +60,13 @@ svr_client_result_t method_write_object_response(
   cursor_t* inode_cur = ctx->dev->mmap + state->inode_dev_offset;
 
   if (inode_cur[INO_OFFSETOF_STATE] != INO_STATE_INCOMPLETE) {
+    ts_log(DEBUG, "state is %d", inode_cur[INO_OFFSETOF_STATE]);
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
-  if (read_u64(inode_cur + INO_OFFSETOF_OBJ_NO) != state->obj_no) {
+  uint64_t obj_no = read_u64(inode_cur + INO_OFFSETOF_OBJ_NO);
+  if (obj_no != state->obj_no) {
+    ts_log(DEBUG, "object number doesn't match (wanted %lu, recorded %lu)", state->obj_no, obj_no);
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
 
@@ -94,20 +97,19 @@ svr_client_result_t method_write_object_response(
     ctx->dev->mmap + resolved_write_dev_offset + state->written,
     resolved_write_len - state->written
   );
-  if (-1 == readno) {
+  if (readno < 0) {
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
-  if (readno > 0) {
-    // This is a trade off:
-    // - msync() all writes (not just metadata) only at flush times will mean that the device will be totally idle the remaining time and overutilised during flush.
-    // - Doing this here means we don't have to make this a manager request, which is single-threaded.
-    // - It is better to sync at flush time if the write length is exceptionally small (e.g. less than 1 KiB).
-    state->written += readno;
+  if ((state->written += readno) > 0) {
     ASSERT_STATE(state->written <= resolved_write_len, "wrote past maximum length");
     if (state->written == resolved_write_len) {
       // Set BEFORE possibly adding to flush tasks as it's technically allowed to immediately resume request processing.
       produce_u8(&out_response, METHOD_ERROR_OK);
 
+      // This is a trade off:
+      // - msync() all writes (not just metadata) only at flush times will mean that the device will be totally idle the remaining time and overutilised during flush.
+      // - Doing this here means we don't have to make this a manager request, which is single-threaded.
+      // - It is better to sync at flush time if the write length is exceptionally small (e.g. less than 1 KiB).
       if (state->written < IMMEDIATE_SYNC_THRESHOLD) {
         flush_lock_tasks(ctx->flush_state);
         flush_add_write_task(ctx->flush_state, client, resolved_write_len);

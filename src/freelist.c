@@ -45,6 +45,7 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
   );
   memset(fl, 0, sizeof(freelist_t));
   fl->dev_offset = dev_offset;
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_init(&fl->lock, NULL), "init freelist lock");
 
   ts_log(INFO, "Loading %zu tiles", dev->tile_count);
   for (uint64_t tile_no = 0; tile_no < dev->tile_count; tile_no++) {
@@ -123,14 +124,9 @@ void freelist_unlock(freelist_t* fl) {
   ASSERT_ERROR_RETVAL_OK(pthread_mutex_unlock(&fl->lock), "unlock freelist");
 }
 
-typedef struct {
-  vec_512i_u8_t tiles;
-  uint64_t new_bitmap;
-} free_tiles_t;
-
 // `bitmap` must be nonzero.
 // `want` must be in the range [1, 64].
-static inline free_tiles_t find_free_tiles_in_region(uint64_t region_tile_bitmap, uint8_t tile_count_wanted) {
+static inline vec_512i_u8_t find_free_tiles_in_region(uint64_t region_tile_bitmap, uint8_t tile_count_wanted) {
   uint8_t indices_raw[64] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63};
   __m512i indices = _mm512_loadu_epi8(indices_raw);
   __m512i fill = _mm512_set1_epi8(64);
@@ -138,18 +134,9 @@ static inline free_tiles_t find_free_tiles_in_region(uint64_t region_tile_bitmap
   // Find tiles that are available.
   vec_512i_u8_t available;
   available.vec = _mm512_mask_compress_epi8(fill, region_tile_bitmap, indices);
-  // Get index of highest tile found.
-  uint8_t highest_bit_idx = min(63 - _lzcnt_u64(region_tile_bitmap), available.elems[(tile_count_wanted - 1)]);
-  // We use shifts as building a mask using ((1 << (highest_bit_idx + 1)) - 1) requires special handling if highest_bit_idx is 63, and the same for ~(0x8000000000000000 >> (63 - highest_bit_idx)).
-  uint64_t shift_avail = highest_bit_idx + 1;
-  uint64_t new_bitmap = (region_tile_bitmap >> shift_avail) << shift_avail;
   // Limit tile count to tile_count_wanted.
   available.vec = _mm512_mask_blend_epi8((1llu << tile_count_wanted) - 1, fill, available.vec);
-  free_tiles_t result = {
-    .tiles = available,
-    .new_bitmap = new_bitmap,
-  };
-  return result;
+  return available;
 }
 
 static inline void propagate_tile_bitmap_change(freelist_t* fl, uint64_t new_bitmap, uint64_t i1, uint64_t i2, uint64_t i3) {
@@ -207,13 +194,15 @@ void freelist_consume_tiles(freelist_t* fl, uint64_t tiles_needed, cursor_t* out
     VEC_ITER_INDICES_OF_NONZERO_BITS_64(i2_candidates, i2) {
       array_u8_64_t i3_candidates = vec_find_indices_of_nonzero_bits_64(fl->tile_bitmap_3[i1][i2]);
       VEC_ITER_INDICES_OF_NONZERO_BITS_64(i3_candidates, i3) {
-        free_tiles_t result = find_free_tiles_in_region(fl->tile_bitmap_4[i1][i2][i3], min(tiles_needed, 64));
-        for (uint64_t i = 0; i < 64 && result.tiles.elems[i] != 64; i++) {
-          uint32_t tile = (((((i1 * 64) + i2) * 64) + i3) * 64) + result.tiles.elems[i];
+        uint64_t bitmap = fl->tile_bitmap_4[i1][i2][i3];
+        vec_512i_u8_t result = find_free_tiles_in_region(bitmap, min(tiles_needed, 64));
+        for (uint64_t i = 0; i < 64 && result.elems[i] != 64; i++) {
+          bitmap &= ~(1llu << result.elems[i]);
+          uint32_t tile = (((((i1 * 64) + i2) * 64) + i3) * 64) + result.elems[i];
           produce_u24(&out, tile);
           tiles_needed--;
         }
-        propagate_tile_bitmap_change(fl, result.new_bitmap, i1, i2, i3);
+        propagate_tile_bitmap_change(fl, bitmap, i1, i2, i3);
 
         if (!tiles_needed) {
           goto postloop;

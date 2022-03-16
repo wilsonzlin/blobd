@@ -119,7 +119,7 @@ svr_client_result_t method_create_object_response(
   flush_commit_task(ctx->flush_state, flush_task);
   flush_unlock_tasks(ctx->flush_state);
 
-  DEBUG_TS_LOG("Using %zu tiles and last tile mode %d", full_tiles, ltm);
+  DEBUG_TS_LOG("Created inode at %lu using %zu tiles and last tile mode %d", ino_dev_offset, full_tiles, ltm);
 
   return SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE;
 }
