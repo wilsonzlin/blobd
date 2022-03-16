@@ -1,13 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom";
 
-const INO_OFFSETOF_INODE_SIZE = 0;
-const INO_OFFSETOF_NEXT_INODE_DEV_OFFSET = INO_OFFSETOF_INODE_SIZE + 3;
-const INO_OFFSETOF_OBJ_NO = INO_OFFSETOF_NEXT_INODE_DEV_OFFSET + 6;
-const INO_OFFSETOF_STATE = INO_OFFSETOF_OBJ_NO + 8;
-const INO_OFFSETOF_SIZE = INO_OFFSETOF_STATE + 1;
-const INO_OFFSETOF_LAST_TILE_MODE = INO_OFFSETOF_SIZE + 5;
-const INO_OFFSETOF_KEY_LEN = INO_OFFSETOF_LAST_TILE_MODE + 1;
+const INO_OFFSETOF_NEXT_INODE_DEV_OFFSET = 0;
+const INO_OFFSETOF_STATE = INO_OFFSETOF_NEXT_INODE_DEV_OFFSET + 6;
+const INO_OFFSETOF_LAST_TILE_MODE = INO_OFFSETOF_STATE + 1;
+const INO_OFFSETOF_SIZE = INO_OFFSETOF_LAST_TILE_MODE + 1;
+const INO_OFFSETOF_OBJ_NO = INO_OFFSETOF_SIZE + 5;
+const INO_OFFSETOF_KEY_LEN = INO_OFFSETOF_OBJ_NO + 8;
 const INO_OFFSETOF_KEY = INO_OFFSETOF_KEY_LEN + 1;
 const INO_OFFSETOF_KEY_NULL_TERM = (keyLen: number) =>
   INO_OFFSETOF_KEY + keyLen;
@@ -104,14 +103,19 @@ const App = ({}: {}) => {
                             : [
                                 between(
                                   idx - hoverOffset,
-                                  INO_OFFSETOF_INODE_SIZE,
-                                  INO_OFFSETOF_NEXT_INODE_DEV_OFFSET
-                                ) && "ino-inode-size",
+                                  INO_OFFSETOF_NEXT_INODE_DEV_OFFSET,
+                                  INO_OFFSETOF_LAST_TILE_MODE
+                                ) && "ino-next-inode-dev-offset",
                                 between(
                                   idx - hoverOffset,
-                                  INO_OFFSETOF_NEXT_INODE_DEV_OFFSET,
+                                  INO_OFFSETOF_LAST_TILE_MODE,
+                                  INO_OFFSETOF_SIZE
+                                ) && "ino-last-tile-mode",
+                                between(
+                                  idx - hoverOffset,
+                                  INO_OFFSETOF_SIZE,
                                   INO_OFFSETOF_OBJ_NO
-                                ) && "ino-next-inode-dev-offset",
+                                ) && "ino-size",
                                 between(
                                   idx - hoverOffset,
                                   INO_OFFSETOF_OBJ_NO,
@@ -120,18 +124,8 @@ const App = ({}: {}) => {
                                 between(
                                   idx - hoverOffset,
                                   INO_OFFSETOF_STATE,
-                                  INO_OFFSETOF_SIZE
-                                ) && "ino-state",
-                                between(
-                                  idx - hoverOffset,
-                                  INO_OFFSETOF_SIZE,
-                                  INO_OFFSETOF_LAST_TILE_MODE
-                                ) && "ino-size",
-                                between(
-                                  idx - hoverOffset,
-                                  INO_OFFSETOF_LAST_TILE_MODE,
                                   INO_OFFSETOF_KEY_LEN
-                                ) && "ino-last-tile-mode",
+                                ) && "ino-state",
                                 between(
                                   idx - hoverOffset,
                                   INO_OFFSETOF_KEY_LEN,
@@ -200,9 +194,6 @@ const App = ({}: {}) => {
 
             <dt>u64</dt>
             <dd>{dataView.getBigUint64(hoverOffset, false).toString()}</dd>
-
-            <dt className="ino-inode-size">Inode inode size</dt>
-            <dd>{readU24(dataBytes, hoverOffset + INO_OFFSETOF_INODE_SIZE)}</dd>
 
             <dt className="ino-next-inode-dev-offset">
               Inode next inode dev offset

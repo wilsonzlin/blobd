@@ -14,9 +14,6 @@ server.get("/", (_req, res) => {
 
 server.get("/data", (req, res) => {
   const start = Number.parseInt(req.query["offset"] as any, 10);
-  if (start % 16777216 !== 0) {
-    return res.status(400).end();
-  }
   const end = start + 1024;
   console.log("Reading", start, "to", end);
   stream.pipeline(

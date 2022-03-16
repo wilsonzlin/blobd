@@ -83,10 +83,10 @@ const read = async (stream: Readable, n?: number) => {
     }
     await new Promise<void>((resolve, reject) => {
       const handler = (error?: Error) => {
-        // "readable" is also emitted on end.
         stream.off("error", handler).off("readable", handler);
         error ? reject(error) : resolve();
       };
+      // "readable" is also emitted on end.
       stream.on("error", handler).on("readable", handler);
     });
   }
@@ -135,13 +135,10 @@ export class TurbostoreClient {
 
   constructor({
     host,
-    // Must be provided to avoid crashing Node.js on connection errors while idle in the background.
-    onSocketError,
     port,
     unixSocketPath,
   }: {
     host?: string;
-    onSocketError: (error: Error) => void;
     port?: number;
     unixSocketPath?: string;
   }) {
@@ -150,7 +147,8 @@ export class TurbostoreClient {
       path: unixSocketPath,
       port: port as any,
     });
-    this.socket.on("error", onSocketError);
+    // Suppress any errors. If connection drops while idle, next request will notice.
+    this.socket.on("error", () => void 0);
   }
 
   close() {
@@ -258,7 +256,7 @@ export class TurbostoreClient {
       }
     };
     const cleanUp = () =>
-      stream.off("close", maybePush).off("readable", maybePush);
+      socket.off("close", maybePush).off("readable", maybePush);
     socket.on("close", maybePush).on("readable", maybePush);
     const stream = new Readable({
       destroy(err, cb) {

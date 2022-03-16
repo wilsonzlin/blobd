@@ -188,7 +188,7 @@ static inline svr_client_result_t server_process_client_until_result(server_t* s
       }
     } else if (client->res_sent >= 0 && client->res_sent < client->res_len) {
       int writeno = maybe_write(client->fd, client->buf + client->res_sent, client->res_len - client->res_sent);
-      if (-1 == writeno) {
+      if (writeno < 0) {
         return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
       }
       if ((client->res_sent += writeno) < client->res_len) {

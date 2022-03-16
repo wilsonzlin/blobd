@@ -78,17 +78,11 @@ svr_client_result_t method_write_object_response(
 
   uint64_t tile_no = state->start / TILE_SIZE;
   uint64_t full_tile_count = size / TILE_SIZE;
-  uint64_t resolved_write_dev_offset;
-  uint64_t resolved_write_len;
-  if (ltm == INO_LAST_TILE_MODE_INLINE && tile_no == full_tile_count) {
-    // We're writing to the last tile.
-    resolved_write_dev_offset = state->inode_dev_offset + INO_OFFSETOF_LAST_TILE_INLINE_DATA(key_len, full_tile_count);
-    resolved_write_len = size % TILE_SIZE;
-  } else {
-    uint32_t tile_addr = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(key_len, tile_no));
-    resolved_write_dev_offset = tile_addr * TILE_SIZE;
-    resolved_write_len = TILE_SIZE;
-  }
+  uint64_t resolved_write_dev_offset = ltm == INO_LAST_TILE_MODE_INLINE && tile_no == full_tile_count
+    // We're writing to the last tile inline.
+    ? state->inode_dev_offset + INO_OFFSETOF_LAST_TILE_INLINE_DATA(key_len, full_tile_count)
+    : read_u24(inode_cur + INO_OFFSETOF_TILE_NO(key_len, tile_no)) * TILE_SIZE;
+  uint64_t resolved_write_len = tile_no == full_tile_count ? size % TILE_SIZE : TILE_SIZE;
 
   if (state->len != resolved_write_len) {
     ts_log(DEBUG, "write length is unexpected (wanted %lu but requested %lu)", resolved_write_len, state->len);

@@ -94,7 +94,7 @@ svr_client_result_t method_read_object_response(
   } else if (state->arg_end == 0) {
     actual_end_excl = size;
   } else {
-    if (state->arg_end >= size) {
+    if (state->arg_end > size) {
       ERROR_RESPONSE(METHOD_ERROR_INVALID_END);
     }
     actual_end_excl = state->arg_end;
@@ -103,6 +103,7 @@ svr_client_result_t method_read_object_response(
   if (actual_end_excl <= actual_start) {
     ERROR_RESPONSE(METHOD_ERROR_INVALID_END);
   }
+  state->valid = true;
   state->actual_start = actual_start;
   state->actual_length = actual_end_excl - actual_start;
   state->object_size = size;
@@ -154,20 +155,20 @@ svr_client_result_t method_read_object_postresponse(
   uint64_t tile_no = read_start / TILE_SIZE;
   uint64_t read_part_offset = read_start % TILE_SIZE;
   uint64_t full_tile_count = state->object_size / TILE_SIZE;
-  cursor_t* read_offset;
+  uint64_t read_dev_offset;
   uint64_t read_part_max_len;
-  if (ltm == INO_LAST_TILE_MODE_INLINE) {
-    // We're reading from the last tile.
-    read_offset = inode_cur + INO_OFFSETOF_LAST_TILE_INLINE_DATA(state->key.len, full_tile_count);
+  if (ltm == INO_LAST_TILE_MODE_INLINE && tile_no == full_tile_count) {
+    // We're reading from the last tile inline.
+    read_dev_offset = inode_dev_offset + INO_OFFSETOF_LAST_TILE_INLINE_DATA(state->key.len, full_tile_count) + read_part_offset;
     read_part_max_len = (state->object_size % TILE_SIZE) - read_part_offset;
   } else {
     uint32_t tile_addr = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(state->key.len, tile_no));
-    read_offset = ctx->dev->mmap + (tile_addr * TILE_SIZE);
+    read_dev_offset = tile_addr * TILE_SIZE + read_part_offset;
     read_part_max_len = TILE_SIZE - read_part_offset;
   }
 
-  int writeno = maybe_write(client->fd, read_offset, read_part_max_len);
-  if (-1 == writeno) {
+  int writeno = maybe_write(client->fd, ctx->dev->mmap + read_dev_offset, read_part_max_len);
+  if (writeno < 0) {
     res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
     goto final;
   }

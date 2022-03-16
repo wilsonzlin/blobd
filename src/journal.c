@@ -120,10 +120,12 @@ static void journal_apply_and_clear(
         inode_cur[INO_OFFSETOF_STATE] = INO_STATE_READY;
 
         // Update bucket head.
+        if (buckets != NULL) BUCKET_LOCK_WRITE(buckets, bkt_id);
         write_u48(
           jnl->dev->mmap + jnl->buckets_dev_offset + BUCKETS_OFFSETOF_BUCKET(bkt_id),
           inode_dev_offset
         );
+        if (buckets != NULL) BUCKET_UNLOCK(buckets, bkt_id);
 
         // Record stream event.
         RECORD_STREAM_EVENT(STREAM_EVENT_OBJECT_COMMIT);
