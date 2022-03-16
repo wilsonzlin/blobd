@@ -27,6 +27,7 @@ journal_t* journal_create(
 ) {
   journal_t* journal = malloc(sizeof(journal_t));
   journal->dev = dev;
+  journal->dev_offset = dev_offset;
   journal->buckets_dev_offset = buckets_dev_offset;
   journal->buckets_key_mask = buckets_key_mask;
   journal->freelist_dev_offset = freelist_dev_offset;
@@ -96,18 +97,19 @@ static void journal_apply_and_clear(
       // Update microtile free space.
       // WARNING: Journal events must be recorded and applied in order of creates as otherwise microtile value will be corrupted. If B is created after A but gets recorded in an earlier journal, then when A is applied the microtile free space value will become corrupted.
       write_u24(
-        jnl->dev->mmap + FREELIST_OFFSETOF_TILE(inode_dev_offset / TILE_SIZE),
+        jnl->dev->mmap + jnl->freelist_dev_offset + FREELIST_OFFSETOF_TILE(inode_dev_offset / TILE_SIZE),
         TILE_SIZE - inode_dev_offset - ino_size
       );
 
       // Mark tiles as used.
       for (uint64_t i = 0; i < tile_count; i++) {
         uint32_t tile_no = read_u24(read_cur + INO_OFFSETOF_TILE_NO(key_len, i));
-        write_u24(jnl->dev->mmap + FREELIST_OFFSETOF_TILE(tile_no), 16777214);
+        write_u24(jnl->dev->mmap + jnl->freelist_dev_offset + FREELIST_OFFSETOF_TILE(tile_no), 16777214);
       }
 
       // Write inode to heap.
       memcpy(jnl->dev->mmap + inode_dev_offset, cur, inode_len);
+      cur += inode_len;
     } else {
       uint64_t stream_seq_no = consume_u64(&cur);
       max_seq_no = max(max_seq_no, stream_seq_no);
@@ -158,7 +160,7 @@ static void journal_apply_and_clear(
         // NOTE: In-memory freelist_t values/data structures not affected/updated/synced/reloaded.
         for (uint64_t i = 0; i < tile_count; i++) {
           uint32_t tile_no = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(key_len, i));
-          write_u24(jnl->dev->mmap + FREELIST_OFFSETOF_TILE(tile_no), 16777215);
+          write_u24(jnl->dev->mmap + jnl->freelist_dev_offset + FREELIST_OFFSETOF_TILE(tile_no), 16777215);
         }
 
         // Record stream event.
@@ -177,7 +179,7 @@ static void journal_apply_and_clear(
   }
 
   // Ensure sync BEFORE clearing journal.
-  device_sync(jnl->dev, 0, jnl->dev->size);
+  device_sync(jnl->dev, jnl->dev_offset, jnl->dev_offset + jnl->dev->size);
   journal_clear(jnl);
 }
 

@@ -207,14 +207,14 @@ flush_state_t* flush_state_create(
   stream_t* stream
 ) {
   flush_state_t* state = malloc(sizeof(flush_state_t));
-  state->dev = dev;
-  state->journal = journal;
-  state->freelist = freelist;
   state->buckets = buckets;
+  state->dev = dev;
+  state->freelist = freelist;
+  state->journal = journal;
   state->server = server;
   state->stream = stream;
 
-  pthread_mutex_init(&state->futures_lock, NULL);
+  ASSERT_ERROR_RETVAL_OK(pthread_mutex_init(&state->futures_lock, NULL), "init futures lock");
   pthread_condattr_t condattr;
   ASSERT_ERROR_RETVAL_OK(pthread_condattr_init(&condattr), "init condattr");
   ASSERT_ERROR_RETVAL_OK(pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC), "set condattr clock");

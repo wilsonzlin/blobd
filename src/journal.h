@@ -21,7 +21,7 @@ union ({
   u8 JOURNAL_ENTRY_TYPE_CREATE
   u48 inode_dev_offset
   u24 inode_len
-  u8[] inode_data_excl_next_and_state_and_inline_data
+  u8[] inode_data_excl_inline_data
 } | {
   u8 JOURNAL_ENTRY_TYPE_COMMIT
   u48 inode_dev_offset
@@ -59,13 +59,14 @@ union ({
 #define JOURNAL_RESERVED_SPACE (8 * 1024 * 1024)
 
 typedef enum {
-  JOURNAL_ENTRY_TYPE_CREATE,
-  JOURNAL_ENTRY_TYPE_COMMIT,
-  JOURNAL_ENTRY_TYPE_DELETE,
+  JOURNAL_ENTRY_TYPE_CREATE = 1,
+  JOURNAL_ENTRY_TYPE_COMMIT = 2,
+  JOURNAL_ENTRY_TYPE_DELETE = 3,
 } journal_entry_type_t;
 
 typedef struct {
   device_t* dev;
+  uint64_t dev_offset;
   uint64_t buckets_dev_offset;
   uint64_t buckets_key_mask;
   uint64_t freelist_dev_offset;
