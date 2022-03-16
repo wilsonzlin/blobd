@@ -18,10 +18,10 @@ void flush_unlock_tasks(flush_state_t* state);
 typedef struct {
   void* future;
   uint32_t pos;
-  uint32_t len;
+  uint8_t count;
 } flush_task_reserve_t;
 
-flush_task_reserve_t flush_reserve_task(flush_state_t* state, uint32_t len, svr_client_t* client_or_null, uint64_t delete_inode_dev_offset_or_zero);
+flush_task_reserve_t flush_reserve_task(flush_state_t* state, uint8_t count, uint32_t len, svr_client_t* client_or_null, uint64_t delete_inode_dev_offset_or_zero);
 
 cursor_t* flush_get_reserved_cursor(flush_task_reserve_t r);
 

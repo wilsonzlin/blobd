@@ -19,6 +19,8 @@ heap
 
 **/
 
+#define DEVICE_OFFSET_IN_HEAP(bucket_count, dev_offset) ((dev_offset) >= JOURNAL_RESERVED_SPACE + STREAM_RESERVED_SPACE + FREELIST_RESERVED_SPACE + BUCKETS_RESERVED_SPACE(bucket_count))
+
 typedef struct {
   int fd;
   cursor_t* mmap;

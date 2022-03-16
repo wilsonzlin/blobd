@@ -72,6 +72,13 @@ static void journal_apply_and_clear(
   for (uint32_t i = 0; i < count; i++) {
     journal_entry_type_t typ = *cur++;
     uint64_t inode_dev_offset = consume_u48(&cur);
+    DEBUG_ASSERT_STATE(
+      DEVICE_OFFSET_IN_HEAP(jnl->buckets_key_mask + 1, inode_dev_offset),
+      "Journal entry %u of type %d has invalid inode device offset of %lu",
+      i,
+      typ,
+      inode_dev_offset
+    );
     cursor_t* inode_cur = jnl->dev->mmap + inode_dev_offset;
 
     if (JOURNAL_ENTRY_TYPE_CREATE == typ) {
@@ -111,6 +118,7 @@ static void journal_apply_and_clear(
       memcpy(jnl->dev->mmap + inode_dev_offset, cur, inode_len);
       cur += inode_len;
     } else {
+      DEBUG_ASSERT_INODE_IS_VALID(jnl->dev, inode_dev_offset);
       uint64_t stream_seq_no = consume_u64(&cur);
       max_seq_no = max(max_seq_no, stream_seq_no);
       uint8_t key_len = inode_cur[INO_OFFSETOF_KEY_LEN];
@@ -123,10 +131,16 @@ static void journal_apply_and_clear(
 
         // Update bucket head.
         if (buckets != NULL) BUCKET_LOCK_WRITE(buckets, bkt_id);
-        write_u48(
-          jnl->dev->mmap + jnl->buckets_dev_offset + BUCKETS_OFFSETOF_BUCKET(bkt_id),
-          inode_dev_offset
+        uint64_t bkt_head_dev_offset = jnl->buckets_dev_offset + BUCKETS_OFFSETOF_BUCKET(bkt_id);
+        uint64_t current_bkt_head = read_u48(jnl->dev->mmap + bkt_head_dev_offset);
+        DEBUG_ASSERT_STATE(
+          current_bkt_head == 0 || DEVICE_OFFSET_IN_HEAP(jnl->buckets_key_mask + 1, current_bkt_head),
+          "Bucket %lu has invalid head inode device offset of %lu",
+          bkt_id,
+          current_bkt_head
         );
+        write_u48(jnl->dev->mmap + bkt_head_dev_offset, inode_dev_offset);
+        write_u48(inode_cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, current_bkt_head);
         if (buckets != NULL) BUCKET_UNLOCK(buckets, bkt_id);
 
         // Record stream event.
@@ -138,10 +152,22 @@ static void journal_apply_and_clear(
         inode_cur[INO_OFFSETOF_STATE] = INO_STATE_DELETED;
 
         // Update previous inode or bucket head.
-        uint64_t next_inode_dev_offset = read_u48(inode_cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET);
-        if (buckets != NULL) BUCKET_LOCK_WRITE(buckets, bkt_id);
         uint64_t prev_inode_dev_offset_or_zero_if_was_head = consume_u48(&cur);
+        if (buckets != NULL) BUCKET_LOCK_WRITE(buckets, bkt_id);
+        uint64_t next_inode_dev_offset = read_u48(inode_cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET);
+        DEBUG_ASSERT_STATE(
+          next_inode_dev_offset == 0 || DEVICE_OFFSET_IN_HEAP(jnl->buckets_key_mask + 1, next_inode_dev_offset),
+          "Deleted inode at %lu has next inode at invalid device offset of %lu",
+          inode_dev_offset,
+          next_inode_dev_offset
+        );
         if (prev_inode_dev_offset_or_zero_if_was_head) {
+          DEBUG_ASSERT_STATE(
+            DEVICE_OFFSET_IN_HEAP(jnl->buckets_key_mask + 1, prev_inode_dev_offset_or_zero_if_was_head),
+            "Deleted inode at %lu has previous inode at invalid device offset of %lu",
+            inode_dev_offset,
+            prev_inode_dev_offset_or_zero_if_was_head
+          );
           cursor_t* prev_inode_cur = jnl->dev->mmap + prev_inode_dev_offset_or_zero_if_was_head;
           write_u48(
             prev_inode_cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET,
@@ -179,7 +205,7 @@ static void journal_apply_and_clear(
   }
 
   // Ensure sync BEFORE clearing journal.
-  device_sync(jnl->dev, jnl->dev_offset, jnl->dev_offset + jnl->dev->size);
+  device_sync(jnl->dev, 0, jnl->dev->size);
   journal_clear(jnl);
 }
 

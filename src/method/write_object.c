@@ -59,6 +59,12 @@ svr_client_result_t method_write_object_response(
 
   cursor_t* inode_cur = ctx->dev->mmap + state->inode_dev_offset;
 
+  DEBUG_ASSERT_STATE(
+    INODE_STATE_IS_VALID(inode_cur[INO_OFFSETOF_STATE]),
+    "Inode at %lu has state %d",
+    state->inode_dev_offset,
+    inode_cur[INO_OFFSETOF_STATE]
+  );
   if (inode_cur[INO_OFFSETOF_STATE] != INO_STATE_INCOMPLETE) {
     ts_log(DEBUG, "state is %d", inode_cur[INO_OFFSETOF_STATE]);
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
@@ -84,8 +90,16 @@ svr_client_result_t method_write_object_response(
   uint64_t resolved_write_dev_offset = ltm == INO_LAST_TILE_MODE_INLINE && tile_no == full_tile_count
     // We're writing to the last tile inline.
     ? state->inode_dev_offset + INO_OFFSETOF_LAST_TILE_INLINE_DATA(key_len, full_tile_count)
-    : read_u24(inode_cur + INO_OFFSETOF_TILE_NO(key_len, tile_no)) * TILE_SIZE;
+    : ((uint64_t) read_u24(inode_cur + INO_OFFSETOF_TILE_NO(key_len, tile_no))) * TILE_SIZE;
   uint64_t resolved_write_len = tile_no == full_tile_count ? size % TILE_SIZE : TILE_SIZE;
+
+  DEBUG_ASSERT_STATE(
+    DEVICE_OFFSET_IN_HEAP(ctx->bkts->count, resolved_write_dev_offset),
+    "Resolved write device offset %lu for object number %lu offset %lu is not in heap",
+    resolved_write_dev_offset,
+    obj_no,
+    state->start
+  );
 
   if (state->len != resolved_write_len) {
     ts_log(DEBUG, "write length is unexpected (wanted %lu but requested %lu)", resolved_write_len, state->len);

@@ -78,9 +78,13 @@ uint64_t method_common_find_inode_in_bucket(
   DEBUG_TS_LOG_LOOKUP("Trying to find %s with state %d and object number %lu", key->data.bytes, allowed_states, required_obj_no_or_zero);
   while (dev_offset) {
     cursor_t* cur = dev->mmap + dev_offset;
-    DEBUG_TS_LOG_LOOKUP("Looking at inode with object number %lu, state %d, and key %s", read_u64(cur + INO_OFFSETOF_OBJ_NO), cur[INO_OFFSETOF_STATE], cur + INO_OFFSETOF_KEY);
-    DEBUG_ASSERT_STATE(INODE_STATE_IS_VALID(cur[INO_OFFSETOF_STATE]), "inode at device offset %lu does not have a valid state (%u)", dev_offset, cur[INO_OFFSETOF_STATE]);
-    DEBUG_ASSERT_STATE(cur[INO_OFFSETOF_KEY_NULL_TERM(cur[INO_OFFSETOF_KEY_LEN])] == 0, "inode at device offset %lu does not have key null terminator", dev_offset);
+    DEBUG_ASSERT_INODE_IS_VALID(dev, dev_offset);
+    DEBUG_TS_LOG_LOOKUP(
+      "Looking at inode with object number %lu, state %d, and key %s",
+      read_u64(cur + INO_OFFSETOF_OBJ_NO),
+      cur[INO_OFFSETOF_STATE],
+      cur + INO_OFFSETOF_KEY
+    );
     if (
       (cur[INO_OFFSETOF_STATE] & allowed_states) &&
       (required_obj_no_or_zero == 0 || read_u64(cur + INO_OFFSETOF_OBJ_NO) == required_obj_no_or_zero) &&

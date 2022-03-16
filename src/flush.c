@@ -146,7 +146,7 @@ static inline void maybe_apply_future(flush_state_t* state, future_flush_t* f) {
 
 // Must be locked before calling.
 // NOTE: Use either (flush_reserve_task() then flush_commit_task()) or flush_add_write_task(), not both.
-flush_task_reserve_t flush_reserve_task(flush_state_t* state, uint32_t len, svr_client_t* client_or_null, uint64_t delete_inode_dev_offset_or_zero) {
+flush_task_reserve_t flush_reserve_task(flush_state_t* state, uint8_t count, uint32_t len, svr_client_t* client_or_null, uint64_t delete_inode_dev_offset_or_zero) {
   future_flush_t* f = state->future_tail;
   if (f->journal_write_next + len > JOURNAL_RESERVED_SPACE) {
     f->journal_full = true;
@@ -157,9 +157,9 @@ flush_task_reserve_t flush_reserve_task(flush_state_t* state, uint32_t len, svr_
     f = new_f;
   }
   uint32_t pos = f->journal_write_next;
-  f->journal_entry_count++;
+  f->journal_entry_count += count;
   f->journal_write_next += len;
-  f->journal_pending_count++;
+  f->journal_pending_count += count;
   if (client_or_null != NULL) {
     clients_append(f->nonwrite_clients, client_or_null);
   }
@@ -169,6 +169,7 @@ flush_task_reserve_t flush_reserve_task(flush_state_t* state, uint32_t len, svr_
   flush_task_reserve_t r = {
     .future = f,
     .pos = pos,
+    .count = count,
   };
   return r;
 }
@@ -183,7 +184,7 @@ cursor_t* flush_get_reserved_cursor(flush_task_reserve_t r) {
 // WARNING: This may start the flush process, so make sure any client states are updated before calling, as they will be rearmed to the server epoll.
 void flush_commit_task(flush_state_t* state, flush_task_reserve_t r) {
   future_flush_t* fut = (future_flush_t*) r.future;
-  fut->journal_pending_count--;
+  fut->journal_pending_count -= r.count;
   maybe_apply_future(state, fut);
 }
 

@@ -18,7 +18,7 @@
 #include "../worker.h"
 #include "read_object.h"
 
-LOGGER("method_create_object");
+LOGGER("method_read_object");
 
 method_error_t method_read_object_parse(
   method_ctx_t* ctx,
@@ -108,7 +108,7 @@ svr_client_result_t method_read_object_response(
   state->actual_length = actual_end_excl - actual_start;
   state->object_size = size;
   produce_u8(&out_response, METHOD_ERROR_OK);
-  produce_u64(&out_response, actual_start);
+  produce_u64(&out_response, state->actual_start);
   produce_u64(&out_response, state->actual_length);
   produce_u64(&out_response, state->object_size);
   goto final;
@@ -163,8 +163,8 @@ svr_client_result_t method_read_object_postresponse(
     read_part_max_len = (state->object_size % TILE_SIZE) - read_part_offset;
   } else {
     uint32_t tile_addr = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(state->key.len, tile_no));
-    read_dev_offset = tile_addr * TILE_SIZE + read_part_offset;
-    read_part_max_len = TILE_SIZE - read_part_offset;
+    read_dev_offset = ((uint64_t) tile_addr) * TILE_SIZE + read_part_offset;
+    read_part_max_len = (tile_no == full_tile_count ? state->object_size % TILE_SIZE : TILE_SIZE) - read_part_offset;
   }
 
   int writeno = maybe_write(client->fd, ctx->dev->mmap + read_dev_offset, read_part_max_len);

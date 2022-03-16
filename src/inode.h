@@ -50,11 +50,49 @@ typedef enum {
   INO_STATE_READY = 1 << 4,
 } ino_state_t;
 
-#define INODE_STATE_IS_VALID(x) ((x) == INO_STATE_INCOMPLETE || (x) == INO_STATE_READY || (x) == INO_STATE_DELETED)
+#define INODE_STATE_IS_VALID(x) ( \
+  (x) == INO_STATE_DELETED || \
+  (x) == INO_STATE_INCOMPLETE || \
+  (x) == INO_STATE_PENDING_COMMIT || \
+  (x) == INO_STATE_PENDING_DELETE || \
+  (x) == INO_STATE_READY \
+)
 
 typedef enum {
   INO_LAST_TILE_MODE_INLINE = 0,
   INO_LAST_TILE_MODE_TILE = 1,
 } ino_last_tile_mode_t;
 
+#define INODE_LAST_TILE_MODE_IS_VALID(x) ( \
+  (x) == INO_LAST_TILE_MODE_INLINE || \
+  (x) == INO_LAST_TILE_MODE_TILE \
+)
+
 #define INODE_TILE_COUNT(inode_cur) ((read_u40((inode_cur) + INO_OFFSETOF_SIZE) / TILE_SIZE) + ((inode_cur)[INO_OFFSETOF_STATE] == INO_LAST_TILE_MODE_TILE ? 1 : 0))
+
+#define DEBUG_ASSERT_INODE_IS_VALID(dev, inode_dev_offset) { \
+  cursor_t* cur = (dev)->mmap + (inode_dev_offset); \
+  DEBUG_ASSERT_STATE( \
+    INODE_STATE_IS_VALID(cur[INO_OFFSETOF_STATE]), \
+    "inode at device offset %lu does not have a valid state (%u)", \
+    inode_dev_offset, \
+    cur[INO_OFFSETOF_STATE] \
+  ); \
+  DEBUG_ASSERT_STATE( \
+    INODE_LAST_TILE_MODE_IS_VALID(cur[INO_OFFSETOF_LAST_TILE_MODE]), \
+    "inode at device offset %lu does not have a valid last tile mode (%u)", \
+    inode_dev_offset, \
+    cur[INO_OFFSETOF_LAST_TILE_MODE] \
+  ); \
+  DEBUG_ASSERT_STATE( \
+    cur[INO_OFFSETOF_KEY_LEN] > 0 && cur[INO_OFFSETOF_KEY_LEN] <= 128, \
+    "inode at device offset %lu does not have valid key length (%u)", \
+    inode_dev_offset, \
+    cur[INO_OFFSETOF_KEY_LEN] \
+  ); \
+  DEBUG_ASSERT_STATE( \
+    cur[INO_OFFSETOF_KEY_NULL_TERM(cur[INO_OFFSETOF_KEY_LEN])] == 0, \
+    "inode at device offset %lu does not have key null terminator", \
+    inode_dev_offset \
+  ); \
+}

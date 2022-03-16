@@ -64,12 +64,16 @@ svr_client_result_t method_delete_object_response(
     goto final;
   }
 
+  cursor_t* inode_cur = ctx->dev->mmap + inode_dev_offset;
+  inode_cur[INO_OFFSETOF_STATE] = INO_STATE_PENDING_DELETE;
+
   // Set BEFORE possibly adding to flush tasks as it's technically allowed to immediately resume request processing.
   produce_u8(&out_response, METHOD_ERROR_OK);
-  
+
   flush_lock_tasks(ctx->flush_state);
   flush_task_reserve_t flush_task = flush_reserve_task(
     ctx->flush_state,
+    1,
     JOURNAL_ENTRY_DELETE_LEN,
     client,
     inode_dev_offset

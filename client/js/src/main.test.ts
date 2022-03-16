@@ -9,15 +9,19 @@ const SIZE_MIN = 12345;
 const SIZE_MAX = 123456789;
 const CONCURRENCY = +process.env["CONCURRENCY"]! || 1;
 const COUNT = +process.env["COUNT"]! || 1;
-const USE_ALPHA_DATA = process.env["USE_ALPHA_DATA"] === "1";
+const ITERATIONS = +process.env["ITERATIONS"]! || 2;
+const DATA = process.env["DATA"] ?? "rand";
 
-const dataPool = USE_ALPHA_DATA
-  ? Buffer.from(
-      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".repeat(
-        Math.ceil(SIZE_MAX / 62)
+const dataPool =
+  DATA == "alpha"
+    ? Buffer.from(
+        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".repeat(
+          Math.ceil(SIZE_MAX / 62)
+        )
       )
-    )
-  : crypto.randomBytes(1024 * 1024 * 1024 * 1);
+    : DATA == "rand"
+    ? crypto.randomBytes(1024 * 1024 * 1024 * 1)
+    : Buffer.alloc(0);
 
 jest.setTimeout(120000);
 
@@ -30,59 +34,94 @@ test("uploading and downloading works", async () => {
         port: 9001,
       })
   );
-  const wg = waitGroup();
-  for (let no = 0; no < COUNT; no++) {
-    wg.add();
-    const conn = pool[no % pool.length];
-    const k = key(no);
-    (async () => {
-      const size = crypto.randomInt(SIZE_MIN, SIZE_MAX + 1);
-      const dataPoolStart = USE_ALPHA_DATA
-        ? 0
-        : crypto.randomInt(0, dataPool.length - size);
-      const data = dataPool.slice(dataPoolStart, dataPoolStart + size);
-      const { inodeDeviceOffset, objectNumber } = await conn.createObject(
-        k,
-        size
-      );
-      for (let start = 0; start < size; start += 16777216) {
-        await conn.writeObjectWithBuffer(
-          inodeDeviceOffset,
-          objectNumber,
-          start,
-          data.slice(start, start + 16777216)
+  for (let i = 0; i < ITERATIONS; i++) {
+    const keyToExpectedData = new Map();
+    let wg = waitGroup();
+    for (let no = 0; no < COUNT; no++) {
+      wg.add();
+      const conn = pool[no % pool.length];
+      const k = key(no);
+      (async () => {
+        const size = crypto.randomInt(SIZE_MIN, SIZE_MAX + 1);
+        const { inodeDeviceOffset, objectNumber } = await conn.createObject(
+          k,
+          size
         );
-      }
-      await conn.commitObject(inodeDeviceOffset, objectNumber);
-      const read = await conn.readObject(k, 0, size);
-      const rd = await readBufferStream(read.stream);
-      if (read.actualStart !== 0 || read.actualLength !== data.length) {
-        throw new Error(
-          `Invalid read (wanted length ${data.length}, got length ${read.actualLength})`
-        );
-      }
-      if (!data.equals(rd)) {
-        for (let i = 0; i < size; i++) {
-          if (data[i] != rd[i]) {
-            const ch = (num: number) => String.fromCharCode(num);
-            const repr = (buf: Uint8Array) =>
-              [...buf].map((c) => ch(c)).join(" ");
-            throw new Error(
-              [
-                `Bytes differ at offset ${i} (size ${size}):`,
-                `Expected: ${repr(data.slice(i - 16, i))} [${ch(
-                  data[i]
-                )}] ${repr(data.slice(i + 1, i + 17))}`,
-                `Received: ${repr(rd.slice(i - 16, i))} [${ch(rd[i])}] ${repr(
-                  rd.slice(i + 1, i + 17)
-                )}`,
-              ].join("\n")
+        let data;
+        switch (DATA) {
+          case "alpha":
+            data = dataPool.slice(0, size);
+            break;
+          case "inode":
+            const raw = `_${inodeDeviceOffset}`;
+            data = Buffer.from(
+              raw.repeat(Math.ceil(size / raw.length)).slice(0, size)
             );
+            break;
+          case "rand":
+            const dataPoolStart = crypto.randomInt(0, dataPool.length - size);
+            data = dataPool.slice(dataPoolStart, dataPoolStart + size);
+            break;
+          default:
+            throw new Error(`Unknown data type: ${DATA}`);
+        }
+        keyToExpectedData.set(k, data);
+        for (let start = 0; start < size; start += 16777216) {
+          await conn.writeObjectWithBuffer(
+            inodeDeviceOffset,
+            objectNumber,
+            start,
+            data.slice(start, start + 16777216)
+          );
+        }
+        await conn.commitObject(inodeDeviceOffset, objectNumber);
+      })().finally(() => wg.done());
+    }
+    await wg;
+    wg = waitGroup();
+    // We cannot read across iterations as objects may get deleted by future iterations of the same key before we're able to read them.
+    for (let no = 0; no < COUNT; no++) {
+      wg.add();
+      const conn = pool[no % pool.length];
+      const k = key(no);
+      (async () => {
+        const data = keyToExpectedData.get(k);
+        if (!data) {
+          // We previously failed to even create an object with this key.
+          return;
+        }
+        const read = await conn.readObject(k, 0, data.length);
+        const rd = await readBufferStream(read.stream);
+        if (read.actualStart !== 0 || read.actualLength !== data.length) {
+          throw new Error(
+            `Invalid read (wanted length ${data.length}, got length ${read.actualLength})`
+          );
+        }
+        if (!data.equals(rd)) {
+          for (let i = 0; i < data.length; i++) {
+            if (data[i] != rd[i]) {
+              const ch = (num: number) => String.fromCharCode(num);
+              const repr = (buf: Uint8Array) =>
+                [...buf].map((c) => ch(c)).join(" ");
+              const ctx = (data: Uint8Array, i: number) =>
+                [
+                  repr(data.slice(i - 16, i)),
+                  `[${ch(data[i])}]`,
+                  repr(data.slice(i + 1, i + 17)),
+                ].join(" ");
+              throw new Error(
+                [
+                  `Bytes differ at offset ${i} (size ${data.length}):`,
+                  `Expected: ${ctx(data, i)}`,
+                  `Received: ${ctx(rd, i)}`,
+                ].join("\n")
+              );
+            }
           }
         }
-      }
-    })().finally(() => wg.done());
+      })().finally(() => wg.done());
+    }
+    await wg;
   }
-  await wg;
   await Promise.all(pool.map((conn) => conn.close()));
 });

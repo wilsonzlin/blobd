@@ -81,7 +81,7 @@ svr_client_result_t method_create_object_response(
   // To prevent microtile metadata corruption, we must append to journal in the same order as microtile allocations.
   // Therefore, we reserve inside freelist lock.
   flush_lock_tasks(ctx->flush_state);
-  flush_task_reserve_t flush_task = flush_reserve_task(ctx->flush_state, JOURNAL_ENTRY_CREATE_LEN(ino_size_excl_any_inline_data), client, 0);
+  flush_task_reserve_t flush_task = flush_reserve_task(ctx->flush_state, 1, JOURNAL_ENTRY_CREATE_LEN(ino_size_excl_any_inline_data), client, 0);
   flush_unlock_tasks(ctx->flush_state);
   uint64_t ino_dev_offset;
   if (alloc_strategy == ALLOC_FULL_TILE) {
@@ -102,6 +102,7 @@ svr_client_result_t method_create_object_response(
 
   uint64_t obj_no = atomic_fetch_add_explicit(&ctx->stream->next_obj_no, 1, memory_order_relaxed);
 
+  write_u48(inode_cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, 0);
   inode_cur[INO_OFFSETOF_STATE] = INO_STATE_INCOMPLETE;
   inode_cur[INO_OFFSETOF_LAST_TILE_MODE] = ltm;
   write_u40(inode_cur + INO_OFFSETOF_SIZE, state->size);
