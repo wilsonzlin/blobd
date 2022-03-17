@@ -1,7 +1,7 @@
 import net from "net";
 import bigIntToNumber from "@xtjs/lib/js/bigIntToNumber";
 import { Readable, Writable } from "stream";
-import Mutex from "@xtjs/lib/js/mutex";
+import Pool from "@xtjs/lib/js/Pool";
 import util from "util";
 import assertState from "@xtjs/lib/js/assertState";
 
@@ -75,11 +75,12 @@ const read = async (stream: Readable, n?: number) => {
   while (true) {
     const chunk = stream.read(n);
     if (chunk) {
+      // TODO Check length and destroy stream if mismatch?
       return chunk;
     }
     // Check after .read() as state could technically synchronously change with .read() call, and if it returned null because it's ended (not because it's not readable yet), then we get stuck. Check after `chunk` as it could be nonreadable after final read().
     if (!stream.readable) {
-      throw new Error("TurbostoreClient socket stream is not readable");
+      throw new Error("Turbostore connection stream is not readable");
     }
     await new Promise<void>((resolve, reject) => {
       const handler = (error?: Error) => {
@@ -129,155 +130,225 @@ export class TurbostoreError extends Error {
   }
 }
 
-export class TurbostoreClient {
-  private readonly socket: net.Socket;
-  private mutex = new Mutex();
+export class TurbostoreReadObjectStream extends Readable {
+  private pushedLen = 0;
+  private canPush = true;
 
-  constructor({
-    host,
-    port,
-    unixSocketPath,
-  }: {
-    host?: string;
-    port?: number;
-    unixSocketPath?: string;
-  }) {
-    this.socket = net.createConnection({
-      host,
-      path: unixSocketPath,
-      port: port as any,
+  constructor(
+    private readonly socket: net.Socket,
+    readonly actualStart: number,
+    readonly actualLength: number,
+    readonly objectSize: number
+  ) {
+    super({
+      autoDestroy: true,
+      emitClose: true,
     });
-    // Suppress any errors. If connection drops while idle, next request will notice.
-    this.socket.on("error", () => void 0);
+    // When makeRequest acquired the client, it attached a "close" listener on `socket` and will destroy this TurbostoreReadObjectStream if `socket` closes, so we don't need to handle that here.
+    socket.on("readable", this.maybePush);
+    this.maybePush();
   }
 
-  close() {
-    return new Promise<void>((resolve) => this.socket.end(resolve));
+  private cleanUp = () => {
+    this.socket.off("readable", this.maybePush);
+  };
+
+  private maybePush = () => {
+    let chunk;
+    while (
+      this.socket.readable &&
+      this.readable &&
+      this.canPush &&
+      (chunk = this.socket.read())
+    ) {
+      this.canPush = this.push(chunk);
+      this.pushedLen += chunk.length;
+      assertState(
+        this.pushedLen <= this.actualLength,
+        `read ${this.pushedLen} of ${this.actualLength} bytes`
+      );
+      if (this.pushedLen == this.actualLength) {
+        this.push(null);
+        this.cleanUp();
+      }
+    }
+  };
+
+  override _destroy(
+    error: Error | null,
+    callback: (error?: Error | null) => void
+  ): void {
+    this.cleanUp();
+    if (this.pushedLen < this.actualLength) {
+      this.socket.destroy(new Error("read_object downstream was destroyed"));
+    }
+    callback(error);
+  }
+
+  override _read(_size: number): void {
+    this.canPush = true;
+    this.maybePush();
+  }
+}
+
+export class TurbostoreWriteObjectStream extends Writable {
+  private readResponse = false;
+
+  constructor(private readonly socket: net.Socket) {
+    super({
+      autoDestroy: true,
+      emitClose: true,
+    });
+    // We don't need a "close" handler on `socket` as both `socket.write` and `read(socket, 1)` will fail if it's closed.
+  }
+
+  override _destroy(
+    error: Error | null,
+    callback: (error?: Error | null) => void
+  ): void {
+    if (!this.readResponse) {
+      this.socket.destroy(new Error("write_object downstream was destroyed"));
+    }
+    callback(error);
+  }
+
+  override _final(callback: (error?: Error | null) => void): void {
+    // TODO Handle case where not enough bytes were written.
+    read(this.socket, 1)
+      .then((chunk) => {
+        this.readResponse = true;
+        assertValidResponse("write_object", chunk, 1);
+        callback();
+      })
+      .catch(callback);
+  }
+
+  override _write(
+    chunk: any,
+    encoding: BufferEncoding,
+    callback: (error?: Error | null) => void
+  ): void {
+    // TODO Handle case where too many bytes are written.
+    this.socket.write(chunk, encoding, callback);
+  }
+}
+
+export class TurbostoreClient {
+  private readonly clients = new Pool<net.Socket>();
+
+  constructor(
+    private readonly clientOpt: {
+      host?: string;
+      port?: number;
+      unixSocketPath?: string;
+    }
+  ) {}
+
+  private getClient() {
+    let client = this.clients.getAvailable();
+    if (!client) {
+      client = net
+        .createConnection({
+          host: this.clientOpt.host,
+          path: this.clientOpt.unixSocketPath,
+          port: this.clientOpt.port as any,
+        })
+        // Suppress any errors. If connection drops while idle, next request will notice.
+        .on("error", () => void 0);
+      this.clients.registerNewItem(client);
+    }
+    return client;
+  }
+
+  private async makeRequest<T>(fn: (client: net.Socket) => Promise<T>) {
+    const client = this.getClient();
+    this.clients.makeUnavailable(client);
+    let res: T | undefined;
+    let err: Error | undefined;
+    try {
+      res = await fn(client);
+    } catch (e) {
+      err = e;
+    }
+    const cleanUp = () => {
+      if (client.readable) {
+        this.clients.makeAvailable(client);
+      } else {
+        this.clients.deregisterItem(client);
+      }
+    };
+    if (res instanceof Readable || res instanceof Writable) {
+      const stream = res;
+      // The socket should never end or close, even after all object data has been provided (one connection handles infinite requests).
+      // This handles socket "end", "error", "close".
+      stream.once("close", () => {
+        stream.destroy(new Error("Turbostore connection has closed"));
+        cleanUp();
+      });
+    } else {
+      cleanUp();
+    }
+    if (err) {
+      throw err;
+    }
+    return res!;
   }
 
   async commitObject(inodeDevOffset: number, objNo: number) {
-    const l = await this.mutex.lock();
-    try {
-      this.socket.write(commit_object(inodeDevOffset, objNo));
-      const chunk = await read(this.socket, 1);
+    return this.makeRequest(async (socket) => {
+      socket.write(commit_object(inodeDevOffset, objNo));
+      const chunk = await read(socket, 1);
       assertValidResponse("commit_object", chunk, 1);
-    } finally {
-      l.unlock();
-    }
+    });
   }
 
   async createObject(key: string, size: number) {
-    const l = await this.mutex.lock();
-    try {
-      this.socket.write(create_object(key, size));
-      const chunk = await read(this.socket, 17);
+    return this.makeRequest(async (socket) => {
+      socket.write(create_object(key, size));
+      const chunk = await read(socket, 17);
       assertValidResponse("create_object", chunk, 17);
       return {
         inodeDeviceOffset: bigIntToNumber(chunk.readBigUInt64BE(1)),
         objectNumber: bigIntToNumber(chunk.readBigUInt64BE(9)),
       };
-    } finally {
-      l.unlock();
-    }
+    });
   }
 
   async deleteObject(key: string, objNo?: number) {
-    const l = await this.mutex.lock();
-    try {
-      this.socket.write(delete_object(key, objNo ?? 0));
-      const chunk = await read(this.socket, 1);
+    return this.makeRequest(async (socket) => {
+      socket.write(delete_object(key, objNo ?? 0));
+      const chunk = await read(socket, 1);
       assertValidResponse("delete_object", chunk, 1);
-    } finally {
-      l.unlock();
-    }
+    });
   }
 
   async inspectObject(key: string) {
-    const l = await this.mutex.lock();
-    try {
-      this.socket.write(inspect_object(key));
-      const chunk = await read(this.socket, 10);
+    return this.makeRequest(async (socket) => {
+      socket.write(inspect_object(key));
+      const chunk = await read(socket, 10);
       assertValidResponse("inspect_object", chunk, 10);
       return {
         state: chunk[1],
         size: bigIntToNumber(chunk.readBigUInt64BE(2)),
       };
-    } finally {
-      l.unlock();
-    }
+    });
   }
 
   async readObject(key: string, start: number, end: number) {
-    const l = await this.mutex.lock();
-    const { socket } = this;
-    let actualStart: number;
-    let actualLength: number;
-    let objectSize: number;
-    try {
+    return this.makeRequest(async (socket) => {
       socket.write(read_object(key, start, end));
       const chunk = await read(socket, 25);
       assertValidResponse("read_object", chunk, 25);
-      actualStart = bigIntToNumber(chunk.readBigUInt64BE(1));
-      actualLength = bigIntToNumber(chunk.readBigUInt64BE(9));
-      objectSize = bigIntToNumber(chunk.readBigUInt64BE(17));
-    } catch (err) {
-      l.unlock();
-      throw err;
-    }
-
-    let pushedLen = 0;
-    let canPush = true;
-    const maybePush = () => {
-      let chunk;
-      while (
-        socket.readable &&
-        stream.readable &&
-        canPush &&
-        (chunk = socket.read())
-      ) {
-        canPush = stream.push(chunk);
-        pushedLen += chunk.length;
-        assertState(
-          pushedLen <= actualLength,
-          `read ${pushedLen} of ${actualLength} bytes`
-        );
-        if (pushedLen == actualLength) {
-          stream.push(null);
-          cleanUp();
-        }
-      }
-      if (!socket.readable) {
-        // The socket should never end or close, even after all object data has been provided (one connection handles infinite requests).
-        // This handles socket "end", "error", "close".
-        stream.destroy(
-          new Error("TurbostoreClient socket is no longer readable")
-        );
-        cleanUp();
-      }
-    };
-    const cleanUp = () =>
-      socket.off("close", maybePush).off("readable", maybePush);
-    socket.on("close", maybePush).on("readable", maybePush);
-    const stream = new Readable({
-      destroy(err, cb) {
-        if (pushedLen < actualLength) {
-          socket.destroy(new Error("read_object downstream was destroyed"));
-        }
-        l.unlock();
-        cb(err);
-      },
-      read(_n) {
-        canPush = true;
-        maybePush();
-      },
+      const actualStart = bigIntToNumber(chunk.readBigUInt64BE(1));
+      const actualLength = bigIntToNumber(chunk.readBigUInt64BE(9));
+      const objectSize = bigIntToNumber(chunk.readBigUInt64BE(17));
+      return new TurbostoreReadObjectStream(
+        socket,
+        actualStart,
+        actualLength,
+        objectSize
+      );
     });
-    maybePush();
-    return {
-      stream,
-      actualStart,
-      actualLength,
-      objectSize,
-    };
   }
 
   async writeObjectWithBuffer(
@@ -286,17 +357,12 @@ export class TurbostoreClient {
     start: number,
     data: Uint8Array
   ) {
-    const l = await this.mutex.lock();
-    try {
-      this.socket.write(
-        write_object(inodeDevOffset, objNo, start, data.length)
-      );
-      this.socket.write(data);
-      const chunk = await read(this.socket, 1);
+    return this.makeRequest(async (socket) => {
+      socket.write(write_object(inodeDevOffset, objNo, start, data.length));
+      socket.write(data);
+      const chunk = await read(socket, 1);
       assertValidResponse("write_object", chunk, 1);
-    } finally {
-      l.unlock();
-    }
+    });
   }
 
   async writeObjectWithStream(
@@ -305,39 +371,9 @@ export class TurbostoreClient {
     start: number,
     len: number
   ) {
-    const l = await this.mutex.lock();
-    const { socket } = this;
-    try {
+    return this.makeRequest(async (socket) => {
       socket.write(write_object(inodeDevOffset, objNo, start, len));
-    } catch (err) {
-      l.unlock();
-      throw err;
-    }
-    // We don't need a "close" handler on `socket` as both `socket.write` and `read(socket, 1)` will fail if it's closed.
-    let readResponse = false;
-    const stream = new Writable({
-      destroy(err, cb) {
-        if (!readResponse) {
-          socket.destroy(new Error("write_object downstream was destroyed"));
-        }
-        l.unlock();
-        cb(err);
-      },
-      final(cb) {
-        // TODO Handle case where not enough bytes were written.
-        read(socket, 1)
-          .then((chunk) => {
-            readResponse = true;
-            assertValidResponse("write_object", chunk, 1);
-            cb();
-          })
-          .catch(cb);
-      },
-      write(chunk, encoding, cb) {
-        // TODO Handle case where too many bytes are written.
-        socket.write(chunk, encoding, cb);
-      },
+      return new TurbostoreWriteObjectStream(socket);
     });
-    return stream;
   }
 }

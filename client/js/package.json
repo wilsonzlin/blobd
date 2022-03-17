@@ -24,6 +24,6 @@
     "typescript": "^4.6.2"
   },
   "dependencies": {
-    "@xtjs/lib": "^0.39.7"
+    "@xtjs/lib": "^0.39.8"
   }
 }
