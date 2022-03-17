@@ -94,6 +94,7 @@ uint64_t method_common_find_inode_in_bucket(
       return dev_offset;
     }
     if (out_prev_inode_dev_offset_or_null != NULL) *out_prev_inode_dev_offset_or_null = dev_offset;
+    dev_offset = read_u48(cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET);
   }
   DEBUG_TS_LOG_LOOKUP("%s not found", key->data.bytes);
   return 0;
