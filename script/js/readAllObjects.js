@@ -11,16 +11,15 @@ sacli.Command.new("readAllObjects")
   .required("size", Number)
   .action(async (args) => {
     const data = Buffer.from("DEADBEEF".repeat(Math.ceil(args.size / 8)).slice(0, args.size));
-    const pool = Array.from({length: args.concurrency}, () => new TurbostoreClient({host: "127.0.0.1", port: 9001, onSocketError: console.error}));
+    const conn = new TurbostoreClient({host: "127.0.0.1", port: 9001});
     const wg = waitGroup();
     const startTime = process.hrtime.bigint();
     for (let no = 0; no < args.count; no++) {
       wg.add();
-      const conn = pool[no % pool.length];
       const k = key(no);
       (async () => {
         const read = await conn.readObject(k, 0, 0);
-        const readData = await readBufferStream(read.stream);
+        const readData = await readBufferStream(read);
         if (read.actualStart !== 0 || read.actualLength !== data.length || !data.equals(readData)) {
           throw new Error(`Invalid read (wanted length ${args.size}, got length ${readData.length})`);
         }
@@ -32,6 +31,5 @@ sacli.Command.new("readAllObjects")
     console.log(`Effective time: ${effectiveSec} seconds`);
     console.log(`Effective processing rate: ${args.count / effectiveSec} per second`);
     console.log(`Effective bandwidth: ${data.length * args.count / 1024 / 1024 / effectiveSec} MiB/s`);
-    await Promise.all(pool.map(conn => conn.close()));
   })
   .eval(process.argv.slice(2));

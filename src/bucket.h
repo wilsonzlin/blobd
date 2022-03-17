@@ -31,17 +31,21 @@ u48[] dev_offset_or_zero
 
 #define BUCKET_ID_FOR_KEY(key, key_len, mask) (XXH3_64bits(key, key_len) & (mask))
 
-#define BUCKET_LOCK_READ(buckets, bucket_id) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&(buckets)->bucket_locks[bucket_id]), "read-lock bucket")
+#define BUCKET_LOCK_READ(bkts, bucket_id) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_rdlock(&(bkts)->buckets[bucket_id].lock), "read-lock bucket")
 
-#define BUCKET_LOCK_WRITE(buckets, bucket_id) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&(buckets)->bucket_locks[bucket_id]), "write-lock bucket")
+#define BUCKET_LOCK_WRITE(bkts, bucket_id) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_wrlock(&(bkts)->buckets[bucket_id].lock), "write-lock bucket")
 
-#define BUCKET_UNLOCK(buckets, bucket_id) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&(buckets)->bucket_locks[bucket_id]), "unlock bucket")
+#define BUCKET_UNLOCK(bkts, bucket_id) ASSERT_ERROR_RETVAL_OK(pthread_rwlock_unlock(&(bkts)->buckets[bucket_id].lock), "unlock bucket")
+
+typedef struct {
+  pthread_rwlock_t lock;
+} bucket_t;
 
 typedef struct {
   uint64_t count;
   uint64_t dev_offset;
   uint64_t key_mask;
-  pthread_rwlock_t* bucket_locks;
+  bucket_t* buckets;
 } buckets_t;
 
 uint64_t buckets_read_count(device_t* dev, uint64_t dev_offset);

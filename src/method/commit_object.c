@@ -63,27 +63,6 @@ svr_client_result_t method_commit_object_response(
 
   inode_cur[INO_OFFSETOF_STATE] = INO_STATE_PENDING_COMMIT;
 
-  // Ensure object is found first before deleting other objects.
-  // We should only ever find at most one other inode with the same key and with state READY or PENDING_COMMIT.
-  cursor_t* bkt_head_cur = ctx->dev->mmap + ctx->bkts->dev_offset + BUCKETS_OFFSETOF_BUCKET(bkt_id);
-  uint64_t delete_prev_inode_dev_offset = 0;
-  uint64_t delete_inode_dev_offset = read_u48(bkt_head_cur);
-  while (delete_inode_dev_offset) {
-    cursor_t* cur = ctx->dev->mmap + delete_inode_dev_offset;
-    // TODO Can we delete PENDING_COMMIT in same journal/flush?
-    if (
-      delete_inode_dev_offset != state->inode_dev_offset &&
-      (cur[INO_OFFSETOF_STATE] & (INO_STATE_READY | INO_STATE_PENDING_COMMIT)) &&
-      (cur[INO_OFFSETOF_KEY_LEN] == key_len) &&
-      (0 == memcmp(cur + INO_OFFSETOF_KEY, inode_cur + INO_OFFSETOF_KEY, key_len))
-    ) {
-      cur[INO_OFFSETOF_STATE] = INO_STATE_PENDING_DELETE;
-      break;
-    }
-    delete_prev_inode_dev_offset = delete_inode_dev_offset;
-    delete_inode_dev_offset = read_u48(cur + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET);
-  }
-
   // Set BEFORE possibly adding to flush tasks as it's technically allowed to immediately resume request processing.
   produce_u8(&out_response, METHOD_ERROR_OK);
 
@@ -91,20 +70,12 @@ svr_client_result_t method_commit_object_response(
   // If there is a delete, it needs to be in the same journal/flush, so do not call twice.
   flush_task_reserve_t flush_task = flush_reserve_task(
     ctx->flush_state,
-    1 + (delete_inode_dev_offset ? 1 : 0),
-    JOURNAL_ENTRY_COMMIT_LEN + (delete_inode_dev_offset ? JOURNAL_ENTRY_DELETE_LEN : 0),
+    1,
+    JOURNAL_ENTRY_COMMIT_LEN,
     client,
-    delete_inode_dev_offset
+    0
   );
   cursor_t* flush_cur = flush_get_reserved_cursor(flush_task);
-  // We must delete BEFORE creating as otherwise the new inode's "next" value would be incorrect if the inode to delete is currently the head.
-  if (delete_inode_dev_offset) {
-    produce_u8(&flush_cur, JOURNAL_ENTRY_TYPE_DELETE);
-    produce_u48(&flush_cur, delete_inode_dev_offset);
-    // Because we hold a lock, we do not need to increment atomically.
-    produce_u64(&flush_cur, ctx->stream->next_seq_no++);
-    produce_u48(&flush_cur, delete_prev_inode_dev_offset);
-  }
   produce_u8(&flush_cur, JOURNAL_ENTRY_TYPE_COMMIT);
   produce_u48(&flush_cur, state->inode_dev_offset);
   // Because we hold a lock, we do not need to increment atomically.

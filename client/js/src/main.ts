@@ -257,7 +257,7 @@ export class TurbostoreClient {
         .on("error", () => void 0);
       this.clients.registerNewItem(client);
     }
-    return client;
+    return client.ref();
   }
 
   private async makeRequest<T>(fn: (client: net.Socket) => Promise<T>) {
@@ -272,6 +272,7 @@ export class TurbostoreClient {
     }
     const cleanUp = () => {
       if (client.readable) {
+        client.unref();
         this.clients.makeAvailable(client);
       } else {
         this.clients.deregisterItem(client);

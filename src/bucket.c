@@ -31,9 +31,9 @@ buckets_t* buckets_create_from_disk_state(
   bkts->key_mask = bkts->count - 1;
 
   ts_log(INFO, "Loading %zu buckets", bkts->count);
-  bkts->bucket_locks = malloc(sizeof(pthread_rwlock_t) * bkts->count);
+  bkts->buckets = malloc(sizeof(bucket_t) * bkts->count);
   for (uint64_t bkt_id = 0; bkt_id < bkts->count; bkt_id++) {
-    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&bkts->bucket_locks[bkt_id], NULL), "init bucket lock");
+    ASSERT_ERROR_RETVAL_OK(pthread_rwlock_init(&bkts->buckets[bkt_id].lock, NULL), "init bucket lock");
   }
 
   ts_log(INFO, "Loaded buckets");

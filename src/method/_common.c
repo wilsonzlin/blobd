@@ -75,7 +75,7 @@ uint64_t method_common_find_inode_in_bucket(
   uint64_t* out_prev_inode_dev_offset_or_null
 ) {
   uint64_t dev_offset = read_u48(dev->mmap + buckets->dev_offset + BUCKETS_OFFSETOF_BUCKET(key->bucket));
-  DEBUG_TS_LOG_LOOKUP("Trying to find %s with state %d and object number %lu", key->data.bytes, allowed_states, required_obj_no_or_zero);
+  DEBUG_TS_LOG_LOOKUP("Trying to find %s in bucket %lu with state %d and object number %lu", key->data.bytes, key->bucket, allowed_states, required_obj_no_or_zero);
   while (dev_offset) {
     cursor_t* cur = dev->mmap + dev_offset;
     DEBUG_ASSERT_INODE_IS_VALID(dev, dev_offset);

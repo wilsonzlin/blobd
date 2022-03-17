@@ -91,7 +91,7 @@ test("uploading and downloading works", async () => {
           return;
         }
         const read = await conn.readObject(k, 0, data.length);
-        const rd = await readBufferStream(read.stream);
+        const rd = await readBufferStream(read);
         if (read.actualStart !== 0 || read.actualLength !== data.length) {
           throw new Error(
             `Invalid read (wanted length ${data.length}, got length ${read.actualLength})`
@@ -123,5 +123,4 @@ test("uploading and downloading works", async () => {
     }
     await wg;
   }
-  await Promise.all(pool.map((conn) => conn.close()));
 });
