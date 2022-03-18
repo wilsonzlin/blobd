@@ -105,11 +105,11 @@ svr_client_result_t method_read_object_response(
   }
   state->valid = true;
   state->actual_start = actual_start;
-  state->actual_length = actual_end_excl - actual_start;
+  state->actual_end = actual_end_excl;
   state->object_size = size;
   produce_u8(&out_response, METHOD_ERROR_OK);
   produce_u64(&out_response, state->actual_start);
-  produce_u64(&out_response, state->actual_length);
+  produce_u64(&out_response, actual_end_excl - actual_start);
   produce_u64(&out_response, state->object_size);
   goto final;
 
@@ -150,24 +150,23 @@ svr_client_result_t method_read_object_postresponse(
   cursor_t* inode_cur = ctx->dev->mmap + inode_dev_offset;
 
   uint8_t ltm = inode_cur[INO_OFFSETOF_LAST_TILE_MODE];
-
-  uint64_t read_start = state->actual_start + state->read_count;
-  uint64_t tile_no = read_start / TILE_SIZE;
-  uint64_t read_part_offset = read_start % TILE_SIZE;
   uint64_t full_tile_count = state->object_size / TILE_SIZE;
+
+  uint64_t cur_read_start = state->actual_start + state->read_count;
+  uint64_t cur_tile_no = cur_read_start / TILE_SIZE;
+  uint64_t cur_tile_rem = TILE_SIZE - (cur_read_start % TILE_SIZE);
+  uint64_t cur_actual_rem = state->actual_end - cur_read_start;
   uint64_t read_dev_offset;
-  uint64_t read_part_max_len;
-  if (ltm == INO_LAST_TILE_MODE_INLINE && tile_no == full_tile_count) {
+  if (ltm == INO_LAST_TILE_MODE_INLINE && cur_tile_no == full_tile_count) {
     // We're reading from the last tile inline.
-    read_dev_offset = inode_dev_offset + INO_OFFSETOF_LAST_TILE_INLINE_DATA(state->key.len, full_tile_count) + read_part_offset;
-    read_part_max_len = (state->object_size % TILE_SIZE) - read_part_offset;
+    read_dev_offset = inode_dev_offset + INO_OFFSETOF_LAST_TILE_INLINE_DATA(state->key.len, full_tile_count);
   } else {
     uint32_t tile_addr = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(state->key.len, tile_no));
-    read_dev_offset = ((uint64_t) tile_addr) * TILE_SIZE + read_part_offset;
-    read_part_max_len = (tile_no == full_tile_count ? state->object_size % TILE_SIZE : TILE_SIZE) - read_part_offset;
+    read_dev_offset = ((uint64_t) tile_addr) * TILE_SIZE;
   }
 
-  int writeno = maybe_write(client->fd, ctx->dev->mmap + read_dev_offset, read_part_max_len);
+  // If we're in the last tile, since state->actual_end is verified to be valid (i.e. within the bounds of the object size), `cur_actual_rem` will ensure we don't go out of bounds.
+  int writeno = maybe_write(client->fd, ctx->dev->mmap + read_dev_offset + (cur_read_start % TILE_SIZE), min(cur_tile_rem, cur_actual_rem));
   if (writeno < 0) {
     res = SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
     goto final;

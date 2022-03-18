@@ -114,7 +114,8 @@ typedef struct {
   // These are set in the response function.
   bool valid;
   uint64_t actual_start;
-  uint64_t actual_length;
+  // Exclusive.
+  uint64_t actual_end;
   uint64_t object_size;
 } method_read_object_state_t;
 
