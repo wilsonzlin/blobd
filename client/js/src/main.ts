@@ -71,41 +71,37 @@ const write_object = (
   return buildArgs(4, argsRaw);
 };
 
-const read = async (stream: Readable, n?: number) => {
+const read = async (socket: net.Socket, method: string, n: number) => {
   while (true) {
-    const chunk = stream.read(n);
+    const chunk = socket.read(n);
     if (chunk) {
-      // TODO Check length and destroy stream if mismatch?
+      if (chunk.length !== n) {
+        throw new Error(
+          `Invalid ${method} response: ${util.inspect(chunk, {
+            colors: false,
+            depth: null,
+            showHidden: false,
+            compact: true,
+          })}`
+        );
+      }
+      if (chunk[0] !== 0) {
+        throw new TurbostoreError(method, chunk[0]);
+      }
       return chunk;
     }
     // Check after .read() as state could technically synchronously change with .read() call, and if it returned null because it's ended (not because it's not readable yet), then we get stuck. Check after `chunk` as it could be nonreadable after final read().
-    if (!stream.readable) {
-      throw new Error("Turbostore connection stream is not readable");
+    if (!socket.readable) {
+      throw new Error("Turbostore connection is not readable");
     }
     await new Promise<void>((resolve, reject) => {
       const handler = (error?: Error) => {
-        stream.off("error", handler).off("readable", handler);
+        socket.off("error", handler).off("readable", handler);
         error ? reject(error) : resolve();
       };
       // "readable" is also emitted on end.
-      stream.on("error", handler).on("readable", handler);
+      socket.on("error", handler).on("readable", handler);
     });
-  }
-};
-
-const assertValidResponse = (method: string, res: Buffer, len: number) => {
-  if (res.length !== len) {
-    throw new Error(
-      `Invalid ${method} response: ${util.inspect(res, {
-        colors: false,
-        depth: null,
-        showHidden: false,
-        compact: true,
-      })}`
-    );
-  }
-  if (res[0] !== 0) {
-    throw new TurbostoreError(method, res[0]);
   }
 };
 
@@ -214,13 +210,10 @@ export class TurbostoreWriteObjectStream extends Writable {
 
   override _final(callback: (error?: Error | null) => void): void {
     // TODO Handle case where not enough bytes were written.
-    read(this.socket, 1)
-      .then((chunk) => {
-        this.readResponse = true;
-        assertValidResponse("write_object", chunk, 1);
-        callback();
-      })
-      .catch(callback);
+    read(this.socket, "write_object", 1).then(() => {
+      this.readResponse = true;
+      callback();
+    }, callback);
   }
 
   override _write(
@@ -298,16 +291,14 @@ export class TurbostoreClient {
   async commitObject(inodeDevOffset: number, objNo: number) {
     return this.makeRequest(async (socket) => {
       socket.write(commit_object(inodeDevOffset, objNo));
-      const chunk = await read(socket, 1);
-      assertValidResponse("commit_object", chunk, 1);
+      await read(socket, "commit_object", 1);
     });
   }
 
   async createObject(key: string, size: number) {
     return this.makeRequest(async (socket) => {
       socket.write(create_object(key, size));
-      const chunk = await read(socket, 17);
-      assertValidResponse("create_object", chunk, 17);
+      const chunk = await read(socket, "create_object", 17);
       return {
         inodeDeviceOffset: bigIntToNumber(chunk.readBigUInt64BE(1)),
         objectNumber: bigIntToNumber(chunk.readBigUInt64BE(9)),
@@ -318,16 +309,14 @@ export class TurbostoreClient {
   async deleteObject(key: string, objNo?: number) {
     return this.makeRequest(async (socket) => {
       socket.write(delete_object(key, objNo ?? 0));
-      const chunk = await read(socket, 1);
-      assertValidResponse("delete_object", chunk, 1);
+      await read(socket, "delete_object", 1);
     });
   }
 
   async inspectObject(key: string) {
     return this.makeRequest(async (socket) => {
       socket.write(inspect_object(key));
-      const chunk = await read(socket, 10);
-      assertValidResponse("inspect_object", chunk, 10);
+      const chunk = await read(socket, "inspect_object", 10);
       return {
         state: chunk[1],
         size: bigIntToNumber(chunk.readBigUInt64BE(2)),
@@ -338,8 +327,7 @@ export class TurbostoreClient {
   async readObject(key: string, start: number, end: number) {
     return this.makeRequest(async (socket) => {
       socket.write(read_object(key, start, end));
-      const chunk = await read(socket, 25);
-      assertValidResponse("read_object", chunk, 25);
+      const chunk = await read(socket, "read_object", 25);
       const actualStart = bigIntToNumber(chunk.readBigUInt64BE(1));
       const actualLength = bigIntToNumber(chunk.readBigUInt64BE(9));
       const objectSize = bigIntToNumber(chunk.readBigUInt64BE(17));
@@ -361,8 +349,7 @@ export class TurbostoreClient {
     return this.makeRequest(async (socket) => {
       socket.write(write_object(inodeDevOffset, objNo, start, data.length));
       socket.write(data);
-      const chunk = await read(socket, 1);
-      assertValidResponse("write_object", chunk, 1);
+      await read(socket, "write_object", 1);
     });
   }
 

@@ -47,7 +47,9 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
   fl->dev_offset = dev_offset;
   ASSERT_ERROR_RETVAL_OK(pthread_mutex_init(&fl->lock, NULL), "init freelist lock");
 
-  ts_log(INFO, "Loading %zu tiles", dev->tile_count);
+  ts_log(INFO, "Loading %u tiles", dev->tile_count);
+  uint64_t free_tile_count = 0;
+  uint64_t microtile_count = 0;
   for (uint64_t tile_no = 0; tile_no < dev->tile_count; tile_no++) {
     uint32_t raw = consume_u24(&cur);
     uint64_t itmp = tile_no;
@@ -59,6 +61,7 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
     uint64_t m1 = itmp;
     if (raw >= 16777214) {
       if (raw == 16777215) {
+        free_tile_count++;
         uint64_t itmp = tile_no;
         uint64_t i4 = itmp % 64; itmp /= 64;
         uint64_t i3 = itmp % 64; itmp /= 64;
@@ -70,22 +73,31 @@ freelist_t* freelist_create_from_disk_state(device_t* dev, uint64_t dev_offset) 
       // NOTE: For out-of-range tiles, we don't touch them, so they may have weird values in the range [0, 15].
       fl->microtile_free_map_6[m1][m2][m3][m4][m5].elems[m6] = (1 << 7) | m6;
     } else {
+      microtile_count++;
       fl->microtile_free_map_6[m1][m2][m3][m4][m5].elems[m6] = (raw << 8) | m6;
     }
   }
 
+  ts_log(INFO, "%lu free tiles, %lu microtiles", free_tile_count, microtile_count);
+
   ts_log(INFO, "Creating tile bitmaps");
   __m512i zeroes = _mm512_setzero_si512();
-  for (uint64_t i1 = 0; i1 < 64; i1 += 8) {
-    for (uint64_t i2 = 0; i2 < 64; i2 += 8) {
+  for (uint64_t i1 = 0; i1 < 64; i1++) {
+    for (uint64_t i2 = 0; i2 < 64; i2++) {
       for (uint64_t i3 = 0; i3 < 64; i3 += 8) {
         uint64_t m = _mm512_cmpneq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_4[i1][i2][i3]), zeroes);
         fl->tile_bitmap_3[i1][i2] |= m << i3;
       }
+    }
+  }
+  for (uint64_t i1 = 0; i1 < 64; i1++) {
+    for (uint64_t i2 = 0; i2 < 64; i2 += 8) {
       uint64_t m = _mm512_cmpneq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_3[i1][i2]), zeroes);
       fl->tile_bitmap_2[i1] |= m << i2;
     }
-    uint64_t m = _mm512_cmpneq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_3[i1]), zeroes);
+  }
+  for (uint64_t i1 = 0; i1 < 64; i1 += 8) {
+    uint64_t m = _mm512_cmpneq_epu64_mask(_mm512_loadu_epi64(&fl->tile_bitmap_2[i1]), zeroes);
     fl->tile_bitmap_1 |= m << i1;
   }
 
