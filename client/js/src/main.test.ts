@@ -5,8 +5,8 @@ import crypto from "crypto";
 
 const key = (no: number) => `/random/data/${no}`;
 
-const SIZE_MIN = 12345;
-const SIZE_MAX = 123456789;
+const SIZE_MIN = +process.env["SIZE_MIN"]! || 12345;
+const SIZE_MAX = +process.env["SIZE_MAX"]! || 123456789;
 const CONCURRENCY = +process.env["CONCURRENCY"]! || 1;
 const COUNT = +process.env["COUNT"]! || 1;
 const ITERATIONS = +process.env["ITERATIONS"]! || 2;
@@ -23,7 +23,7 @@ const dataPool =
     ? crypto.randomBytes(1024 * 1024 * 1024 * 1)
     : Buffer.alloc(0);
 
-jest.setTimeout(120000);
+jest.setTimeout(2 ** 31 - 1);
 
 test("uploading and downloading works", async () => {
   const pool = Array.from(
@@ -90,32 +90,38 @@ test("uploading and downloading works", async () => {
           // We previously failed to even create an object with this key.
           return;
         }
-        const read = await conn.readObject(k, 0, data.length);
-        const rd = await readBufferStream(read);
-        if (read.actualStart !== 0 || read.actualLength !== data.length) {
-          throw new Error(
-            `Invalid read (wanted length ${data.length}, got length ${read.actualLength})`
-          );
-        }
-        if (!data.equals(rd)) {
-          for (let i = 0; i < data.length; i++) {
-            if (data[i] != rd[i]) {
-              const ch = (num: number) => String.fromCharCode(num);
-              const repr = (buf: Uint8Array) =>
-                [...buf].map((c) => ch(c)).join(" ");
-              const ctx = (data: Uint8Array, i: number) =>
-                [
-                  repr(data.slice(i - 16, i)),
-                  `[${ch(data[i])}]`,
-                  repr(data.slice(i + 1, i + 17)),
-                ].join(" ");
-              throw new Error(
-                [
-                  `Bytes differ at offset ${i} (size ${data.length}):`,
-                  `Expected: ${ctx(data, i)}`,
-                  `Received: ${ctx(rd, i)}`,
-                ].join("\n")
-              );
+        // Test 10 random subrange reads of the object data.
+        for (let j = 0; j < 10; j++) {
+          const offset = crypto.randomInt(data.length);
+          const length = crypto.randomInt(data.length - offset) + 1;
+          const dataSlice = data.slice(offset, offset + length);
+          const read = await conn.readObject(k, offset, offset + length);
+          const rd = await readBufferStream(read);
+          if (read.actualStart !== offset || read.actualLength !== length) {
+            throw new Error(
+              `Invalid read (wanted offset ${offset} length ${length}, got offset ${read.actualStart} length ${read.actualLength})`
+            );
+          }
+          if (!dataSlice.equals(rd)) {
+            for (let i = 0; i < dataSlice.length; i++) {
+              if (dataSlice[i] != rd[i]) {
+                const ch = (num: number) => String.fromCharCode(num);
+                const repr = (buf: Uint8Array) =>
+                  [...buf].map((c) => ch(c)).join(" ");
+                const ctx = (data: Uint8Array, i: number) =>
+                  [
+                    repr(data.slice(i - 16, i)),
+                    `[${ch(data[i])}]`,
+                    repr(data.slice(i + 1, i + 17)),
+                  ].join(" ");
+                throw new Error(
+                  [
+                    `Bytes differ at offset ${i} (size ${dataSlice.length}):`,
+                    `Expected: ${ctx(dataSlice, i)}`,
+                    `Received: ${ctx(rd, i)}`,
+                  ].join("\n")
+                );
+              }
             }
           }
         }

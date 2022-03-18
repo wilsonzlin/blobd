@@ -161,7 +161,7 @@ svr_client_result_t method_read_object_postresponse(
     // We're reading from the last tile inline.
     read_dev_offset = inode_dev_offset + INO_OFFSETOF_LAST_TILE_INLINE_DATA(state->key.len, full_tile_count);
   } else {
-    uint32_t tile_addr = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(state->key.len, tile_no));
+    uint32_t tile_addr = read_u24(inode_cur + INO_OFFSETOF_TILE_NO(state->key.len, cur_tile_no));
     read_dev_offset = ((uint64_t) tile_addr) * TILE_SIZE;
   }
 
@@ -173,7 +173,7 @@ svr_client_result_t method_read_object_postresponse(
   }
   state->read_count += writeno;
   // TODO Assert not greater than.
-  if (state->read_count == state->actual_length) {
+  if (state->actual_start + state->read_count == state->actual_end) {
     res = SVR_CLIENT_RESULT_END;
     goto final;
   }
