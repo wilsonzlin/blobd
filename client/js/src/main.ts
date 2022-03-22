@@ -275,7 +275,7 @@ export class TurbostoreClient {
       const stream = res;
       // The socket should never end or close, even after all object data has been provided (one connection handles infinite requests).
       // This handles socket "end", "error", "close".
-      stream.once("close", () => {
+      client.once("close", () => {
         stream.destroy(new Error("Turbostore connection has closed"));
         cleanUp();
       });
