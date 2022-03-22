@@ -25,6 +25,30 @@ const dataPool =
 
 jest.setTimeout(2 ** 31 - 1);
 
+const ensureEqualData = (expected: Buffer, received: Uint8Array) => {
+  if (!expected.equals(received)) {
+    for (let i = 0; i < expected.length; i++) {
+      if (expected[i] != received[i]) {
+        const ch = (num: number) => String.fromCharCode(num);
+        const repr = (buf: Uint8Array) => [...buf].map((c) => ch(c)).join(" ");
+        const ctx = (data: Uint8Array, i: number) =>
+          [
+            repr(data.slice(i - 16, i)),
+            `[${ch(data[i])}]`,
+            repr(data.slice(i + 1, i + 17)),
+          ].join(" ");
+        throw new Error(
+          [
+            `Bytes differ at offset ${i} (size ${expected.length}):`,
+            `Expected: ${ctx(expected, i)}`,
+            `Received: ${ctx(received, i)}`,
+          ].join("\n")
+        );
+      }
+    }
+  }
+};
+
 test("uploading and downloading works", async () => {
   const pool = Array.from(
     { length: CONCURRENCY },
@@ -102,29 +126,13 @@ test("uploading and downloading works", async () => {
               `Invalid read (wanted offset ${offset} length ${length}, got offset ${read.actualStart} length ${read.actualLength})`
             );
           }
-          if (!dataSlice.equals(rd)) {
-            for (let i = 0; i < dataSlice.length; i++) {
-              if (dataSlice[i] != rd[i]) {
-                const ch = (num: number) => String.fromCharCode(num);
-                const repr = (buf: Uint8Array) =>
-                  [...buf].map((c) => ch(c)).join(" ");
-                const ctx = (data: Uint8Array, i: number) =>
-                  [
-                    repr(data.slice(i - 16, i)),
-                    `[${ch(data[i])}]`,
-                    repr(data.slice(i + 1, i + 17)),
-                  ].join(" ");
-                throw new Error(
-                  [
-                    `Bytes differ at offset ${i} (size ${dataSlice.length}):`,
-                    `Expected: ${ctx(dataSlice, i)}`,
-                    `Received: ${ctx(rd, i)}`,
-                  ].join("\n")
-                );
-              }
-            }
-          }
+          ensureEqualData(dataSlice, rd);
         }
+        // Test full read of object data.
+        ensureEqualData(
+          data,
+          await readBufferStream(await conn.readObject(k, 0, data.length))
+        );
       })().finally(() => wg.done());
     }
     await wg;
