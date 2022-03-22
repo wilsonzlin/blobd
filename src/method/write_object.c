@@ -114,25 +114,24 @@ svr_client_result_t method_write_object_response(
   if (readno < 0) {
     return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
   }
-  if ((state->written += readno) > 0) {
-    ASSERT_STATE(state->written <= resolved_write_len, "wrote past maximum length");
-    if (state->written == resolved_write_len) {
-      // Set BEFORE possibly adding to flush tasks as it's technically allowed to immediately resume request processing.
-      produce_u8(&out_response, METHOD_ERROR_OK);
+  state->written += readno;
+  ASSERT_STATE(state->written <= resolved_write_len, "wrote past maximum length");
+  if (state->written == resolved_write_len) {
+    // Set BEFORE possibly adding to flush tasks as it's technically allowed to immediately resume request processing.
+    produce_u8(&out_response, METHOD_ERROR_OK);
 
-      // This is a trade off:
-      // - msync() all writes (not just metadata) only at flush times will mean that the device will be totally idle the remaining time and overutilised during flush.
-      // - Doing this here means we don't have to make this a manager request, which is single-threaded.
-      // - It is better to sync at flush time if the write length is exceptionally small (e.g. less than 1 KiB).
-      if (state->written < IMMEDIATE_SYNC_THRESHOLD) {
-        flush_lock_tasks(ctx->flush_state);
-        flush_add_write_task(ctx->flush_state, client, resolved_write_len);
-        flush_unlock_tasks(ctx->flush_state);
-        return SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE;
-      } else {
-        device_sync(ctx->dev, resolved_write_dev_offset, resolved_write_dev_offset + resolved_write_len);
-        return SVR_CLIENT_RESULT_WRITE_RESPONSE;
-      }
+    // This is a trade off:
+    // - msync() all writes (not just metadata) only at flush times will mean that the device will be totally idle the remaining time and overutilised during flush.
+    // - Doing this here means we don't have to make this a manager request, which is single-threaded.
+    // - It is better to sync at flush time if the write length is exceptionally small (e.g. less than 1 KiB).
+    if (state->written < IMMEDIATE_SYNC_THRESHOLD) {
+      flush_lock_tasks(ctx->flush_state);
+      flush_add_write_task(ctx->flush_state, client, resolved_write_len);
+      flush_unlock_tasks(ctx->flush_state);
+      return SVR_CLIENT_RESULT_AWAITING_FLUSH_THEN_WRITE_RESPONSE;
+    } else {
+      device_sync(ctx->dev, resolved_write_dev_offset, resolved_write_dev_offset + resolved_write_len);
+      return SVR_CLIENT_RESULT_WRITE_RESPONSE;
     }
   }
   return SVR_CLIENT_RESULT_AWAITING_CLIENT_READABLE;

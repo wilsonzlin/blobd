@@ -173,7 +173,9 @@ static inline svr_client_result_t server_process_client_until_result(server_t* s
       case METHOD_INSPECT_OBJECT: CALL_PARSER(METHOD_INSPECT_OBJECT_RESPONSE_LEN, inspect_object);
       case METHOD_READ_OBJECT: CALL_PARSER(METHOD_READ_OBJECT_RESPONSE_LEN, read_object);
       case METHOD_WRITE_OBJECT: CALL_PARSER(METHOD_WRITE_OBJECT_RESPONSE_LEN, write_object);
-      default: return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
+      default:
+        ts_log(WARN, "Invalid request method: %d", client->method);
+        return SVR_CLIENT_RESULT_UNEXPECTED_EOF_OR_IO_ERROR;
       }
     } else if (client->res_sent == -1) {
       // We need to keep calling the method handler.
