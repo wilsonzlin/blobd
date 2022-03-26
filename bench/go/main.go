@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type TurbostoreError struct {
@@ -196,6 +197,11 @@ func (r *TurbostoreReadObjectResponse) Read(b []byte) (int, error) {
 	}
 	readno, err := r.c.conn.Read(b[0:maxRead])
 	r.didRead += uint64(readno)
+	if r.didRead == r.actualLength {
+		defer r.c.markAsFree()
+		// TODO Check if err == nil?
+		return readno, io.EOF
+	}
 	return readno, err
 }
 
@@ -274,10 +280,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	client, err := NewTurbostoreClient(os.Getenv("TS_HOSTNAME"))
-	if err != nil {
-		panic(err)
-	}
 	data := make([]byte, size)
 	_, err = rand.Read(data)
 	if err != nil {
@@ -285,9 +287,14 @@ func main() {
 	}
 	completed := uint64(0)
 	var wg sync.WaitGroup
+	started := time.Now()
 	for i := uint64(0); i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
+			client, err := NewTurbostoreClient(os.Getenv("TS_HOSTNAME"))
+			if err != nil {
+				panic(err)
+			}
 			for {
 				no := atomic.AddUint64(&completed, 1)
 				if no > count {
@@ -329,4 +336,9 @@ func main() {
 		}()
 	}
 	wg.Wait()
+
+	durSec := time.Now().Sub(started).Seconds()
+	fmt.Printf("Effective time: %f seconds\n", durSec)
+	fmt.Printf("Effective processing rate: %f per second\n", float64(count) / durSec)
+	fmt.Printf("Effective bandwidth: %f MiB/s\n", float64(count * size) / 1024.0 / 1024.0 / durSec)
 }

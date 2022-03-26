@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+set -Eeuxo pipefail
+
+go build -o main main.go
