@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	. "github.com/klauspost/cpuid/v2"
 )
 
 type TurbostoreError struct {
@@ -267,6 +271,24 @@ func (c *TurbostoreClient) WriteObject(inodeDevOffset, objNo, start, len uint64)
 	}, nil
 }
 
+type Op struct {
+	CreateObjectResponseMs int64
+	WriteObjectResponseMs int64
+	WriteObjectTransferMs int64
+	CommitObjectResponseMs int64
+	ReadObjectResponseMs int64
+	ReadObjectTransferMs int64
+}
+
+type Results struct {
+	CpuCount uint64
+	CpuModel string
+	Concurrency uint64
+	Count uint64
+	Size uint64
+	Ops []Op
+}
+
 func main() {
 	concurrency, err := strconv.ParseUint(os.Getenv("CONCURRENCY"), 10, 64)
 	if err != nil {
@@ -287,7 +309,14 @@ func main() {
 	}
 	completed := uint64(0)
 	var wg sync.WaitGroup
-	started := time.Now()
+	results := Results{
+		CpuCount: uint64(runtime.NumCPU()),
+		CpuModel: CPU.BrandName,
+		Concurrency: concurrency,
+		Count: count,
+		Size: size,
+		Ops: make([]Op, count),
+	}
 	for i := uint64(0); i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
@@ -296,19 +325,27 @@ func main() {
 				panic(err)
 			}
 			for {
-				no := atomic.AddUint64(&completed, 1)
-				if no > count {
+				no := atomic.AddUint64(&completed, 1) - 1
+				if no >= count {
 					break
 				}
 				k := fmt.Sprintf("/random/data/%d", no)
+
+				crStarted := time.Now()
 				cr, err := client.CreateObject(k, size)
 				if err != nil {
 					panic(err)
 				}
+				results.Ops[no].CreateObjectResponseMs = time.Since(crStarted).Milliseconds()
+
+				wrStarted := time.Now()
 				wr, err := client.WriteObject(cr.inodeDeviceOffset, cr.objectNumber, 0, size)
 				if err != nil {
 					panic(err)
 				}
+				results.Ops[no].WriteObjectResponseMs = time.Since(wrStarted).Milliseconds()
+
+				wrTxStarted := time.Now()
 				writeno, err := wr.Write(data)
 				if err != nil {
 					panic(err)
@@ -316,29 +353,37 @@ func main() {
 				if uint64(writeno) != size {
 					panic(fmt.Errorf("expected write of %d bytes but wrote %d", size, writeno))
 				}
+				results.Ops[no].WriteObjectTransferMs = time.Since(wrTxStarted).Milliseconds()
+
+				comStarted := time.Now()
 				err = client.CommitObject(cr.inodeDeviceOffset, cr.objectNumber)
 				if err != nil {
 					panic(err)
 				}
+				results.Ops[no].CommitObjectResponseMs = time.Since(comStarted).Milliseconds()
+
+				rdStarted := time.Now()
 				rd, err := client.ReadObject(k, 0, int64(size))
 				if err != nil {
 					panic(err)
 				}
-				rdBytes, err := io.ReadAll(rd)
+				results.Ops[no].ReadObjectResponseMs = time.Since(rdStarted).Milliseconds()
+
+				rdTxStarted := time.Now()
+				_, err = io.ReadAll(rd)
 				if err != nil {
 					panic(err)
 				}
-				if !bytes.Equal(data, rdBytes) {
-					panic(fmt.Errorf("read response does not match data"))
-				}
+				results.Ops[no].ReadObjectTransferMs = time.Since(rdTxStarted).Milliseconds()
 			}
 			wg.Done()
 		}()
 	}
 	wg.Wait()
 
-	durSec := time.Now().Sub(started).Seconds()
-	fmt.Printf("Effective time: %f seconds\n", durSec)
-	fmt.Printf("Effective processing rate: %f per second\n", float64(count) / durSec)
-	fmt.Printf("Effective bandwidth: %f MiB/s\n", float64(count * size) / 1024.0 / 1024.0 / durSec)
+	resultsJson, err := json.Marshal(results)
+	if err != nil {
+		panic(err)
+	}
+	os.Stdout.Write(resultsJson)
 }

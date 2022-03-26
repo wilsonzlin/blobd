@@ -96,14 +96,11 @@ func main() {
 				}
 				results.Ops[no].GetObjectResponseMs = time.Since(getStarted).Milliseconds()
 				getReadStarted := time.Now()
-				rdBytes, err := io.ReadAll(rd.Body)
+				_, err = io.ReadAll(rd.Body)
 				if err != nil {
 					panic(err)
 				}
 				results.Ops[no].GetObjectTransferMs = time.Since(getReadStarted).Milliseconds()
-				if !bytes.Equal(data, rdBytes) {
-					panic(fmt.Errorf("read response does not match data"))
-				}
 			}
 			wg.Done()
 		}()
