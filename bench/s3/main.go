@@ -21,12 +21,15 @@ import (
 )
 
 type Op struct {
-	PutObjectMs int64
-	GetObjectResponseMs int64
-	GetObjectTransferMs int64
+	CreateObjectResponseNs int64
+	WriteObjectNs int64
+	CommitObjectResponseNs int64
+	ReadObjectResponseNs int64
+	ReadObjectTransferNs int64
 }
 
 type Results struct {
+	TotalTimeNs uint64
 	CpuCount uint64
 	CpuModel string
 	Concurrency uint64
@@ -64,6 +67,7 @@ func main() {
 		Size: size,
 		Ops: make([]Op, count),
 	}
+	started := time.Now()
 	for i := uint64(0); i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
@@ -76,36 +80,71 @@ func main() {
 					break
 				}
 				k := fmt.Sprintf("/random/data/%d", no)
-				putStarted := time.Now()
-				_, err := client.PutObjectWithContext(ctx, &s3.PutObjectInput{
+
+				crStarted := time.Now()
+				cr, err := client.CreateMultipartUploadWithContext(ctx, &s3.CreateMultipartUploadInput{
 					Bucket: bucket,
-					Key: aws.String(k),
+					Key: &k,
+				})
+				if err != nil {
+					panic(err)
+				}
+				results.Ops[no].CreateObjectResponseNs = time.Since(crStarted).Nanoseconds()
+
+				wrStarted := time.Now()
+				wr, err := client.UploadPartWithContext(ctx, &s3.UploadPartInput{
+					Bucket: bucket,
+					Key: &k,
+					UploadId: cr.UploadId,
 					Body: bytes.NewReader(data),
 				})
 				if err != nil {
 					panic(err)
 				}
-				results.Ops[no].PutObjectMs = time.Since(putStarted).Milliseconds()
-				getStarted := time.Now()
-				rd, err := client.GetObjectWithContext(ctx, &s3.GetObjectInput{
+				results.Ops[no].WriteObjectNs = time.Since(wrStarted).Nanoseconds()
+
+				comStarted := time.Now()
+				partNo := int64(1)
+				_, err = client.CompleteMultipartUploadWithContext(ctx, &s3.CompleteMultipartUploadInput{
 					Bucket: bucket,
-					Key: aws.String(k),
+					Key: &k,
+					MultipartUpload: &s3.CompletedMultipartUpload{
+						Parts: []*s3.CompletedPart{
+							&s3.CompletedPart{
+								ETag: wr.ETag,
+								PartNumber: &partNo,
+							},
+						},
+					},
+					UploadId: cr.UploadId,
 				})
 				if err != nil {
 					panic(err)
 				}
-				results.Ops[no].GetObjectResponseMs = time.Since(getStarted).Milliseconds()
-				getReadStarted := time.Now()
+				results.Ops[no].CommitObjectResponseNs = time.Since(comStarted).Nanoseconds()
+
+				rdStarted := time.Now()
+				rd, err := client.GetObjectWithContext(ctx, &s3.GetObjectInput{
+					Bucket: bucket,
+					Key: &k,
+				})
+				if err != nil {
+					panic(err)
+				}
+				results.Ops[no].ReadObjectResponseNs = time.Since(rdStarted).Milliseconds()
+
+				rdTxStarted := time.Now()
 				_, err = io.ReadAll(rd.Body)
 				if err != nil {
 					panic(err)
 				}
-				results.Ops[no].GetObjectTransferMs = time.Since(getReadStarted).Milliseconds()
+				results.Ops[no].ReadObjectTransferNs = time.Since(rdTxStarted).Milliseconds()
 			}
 			wg.Done()
 		}()
 	}
 	wg.Wait()
+	results.TotalTimeNs = uint64(time.Since(started).Nanoseconds())
 
 	resultsJson, err := json.Marshal(results)
 	if err != nil {

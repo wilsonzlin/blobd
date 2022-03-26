@@ -272,15 +272,15 @@ func (c *TurbostoreClient) WriteObject(inodeDevOffset, objNo, start, len uint64)
 }
 
 type Op struct {
-	CreateObjectResponseMs int64
-	WriteObjectResponseMs int64
-	WriteObjectTransferMs int64
-	CommitObjectResponseMs int64
-	ReadObjectResponseMs int64
-	ReadObjectTransferMs int64
+	CreateObjectResponseNs int64
+	WriteObjectNs int64
+	CommitObjectResponseNs int64
+	ReadObjectResponseNs int64
+	ReadObjectTransferNs int64
 }
 
 type Results struct {
+	TotalTimeNs uint64
 	CpuCount uint64
 	CpuModel string
 	Concurrency uint64
@@ -317,6 +317,7 @@ func main() {
 		Size: size,
 		Ops: make([]Op, count),
 	}
+	started := time.Now()
 	for i := uint64(0); i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
@@ -336,16 +337,13 @@ func main() {
 				if err != nil {
 					panic(err)
 				}
-				results.Ops[no].CreateObjectResponseMs = time.Since(crStarted).Milliseconds()
+				results.Ops[no].CreateObjectResponseNs = time.Since(crStarted).Nanoseconds()
 
 				wrStarted := time.Now()
 				wr, err := client.WriteObject(cr.inodeDeviceOffset, cr.objectNumber, 0, size)
 				if err != nil {
 					panic(err)
 				}
-				results.Ops[no].WriteObjectResponseMs = time.Since(wrStarted).Milliseconds()
-
-				wrTxStarted := time.Now()
 				writeno, err := wr.Write(data)
 				if err != nil {
 					panic(err)
@@ -353,33 +351,34 @@ func main() {
 				if uint64(writeno) != size {
 					panic(fmt.Errorf("expected write of %d bytes but wrote %d", size, writeno))
 				}
-				results.Ops[no].WriteObjectTransferMs = time.Since(wrTxStarted).Milliseconds()
+				results.Ops[no].WriteObjectNs = time.Since(wrStarted).Nanoseconds()
 
 				comStarted := time.Now()
 				err = client.CommitObject(cr.inodeDeviceOffset, cr.objectNumber)
 				if err != nil {
 					panic(err)
 				}
-				results.Ops[no].CommitObjectResponseMs = time.Since(comStarted).Milliseconds()
+				results.Ops[no].CommitObjectResponseNs = time.Since(comStarted).Nanoseconds()
 
 				rdStarted := time.Now()
 				rd, err := client.ReadObject(k, 0, int64(size))
 				if err != nil {
 					panic(err)
 				}
-				results.Ops[no].ReadObjectResponseMs = time.Since(rdStarted).Milliseconds()
+				results.Ops[no].ReadObjectResponseNs = time.Since(rdStarted).Nanoseconds()
 
 				rdTxStarted := time.Now()
 				_, err = io.ReadAll(rd)
 				if err != nil {
 					panic(err)
 				}
-				results.Ops[no].ReadObjectTransferMs = time.Since(rdTxStarted).Milliseconds()
+				results.Ops[no].ReadObjectTransferNs = time.Since(rdTxStarted).Nanoseconds()
 			}
 			wg.Done()
 		}()
 	}
 	wg.Wait()
+	results.TotalTimeNs = uint64(time.Since(started).Nanoseconds())
 
 	resultsJson, err := json.Marshal(results)
 	if err != nil {
