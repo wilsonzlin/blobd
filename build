@@ -11,4 +11,3 @@ else
 fi
 
 gcc --std=c18 -Wall -Wextra -Werror $cc_args -D _GNU_SOURCE -march=native -o main -l pthread ext/xxHash/xxhash.c src/**/*.c src/*.c
-sudo ./main $@
