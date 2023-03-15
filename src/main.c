@@ -50,7 +50,7 @@ int main(int argc, char** argv) {
     perror("Failed to read conf file");
     exit(EXIT_CONF);
   }
-  if (conf_len == CONF_LEN_MAX) {
+  if (conf_len == CONF_LEN_MAX + 1) {
     fprintf(stderr, "Conf file is too large\n");
     exit(EXIT_CONF);
   }
