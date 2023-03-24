@@ -1,0 +1,9 @@
+[package]
+name = "blobd"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+itertools = "0.10"
+off64 = "0.2"
+seekable-async-file = "0.5"
