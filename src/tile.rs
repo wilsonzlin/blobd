@@ -1,2 +1,1 @@
-
-pub const TILE_SIZE: u64 = 1024 * 1024 * 16;
+pub const TILE_SIZE: u32 = 1024 * 1024 * 16;

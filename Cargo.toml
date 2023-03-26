@@ -1,9 +1,35 @@
 [package]
 name = "blobd"
 version = "0.0.1"
+description = "Super fast object storage"
+license = "SSPL-1.0"
+homepage = "https://github.com/wilsonzlin/blobd"
+repository = "https://github.com/wilsonzlin/blobd.git"
+readme = "README.md"
+authors = ["Wilson Lin <code@wilsonl.in>"]
 edition = "2021"
 
+[badges]
+maintenance = { status = "actively-developed" }
+
 [dependencies]
+axum = { version = "0.6", features = ["headers"] }
+bytes = "1.4"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.1", features = ["derive"] }
+futures = "0.3"
 itertools = "0.10"
 off64 = "0.2"
-seekable-async-file = "0.5"
+percent-encoding = "2.2"
+roaring = "0.10"
+# We must explicitly always use mmap, as we depend on ordered writes, and also want non-async writing capability.
+seekable-async-file =  { version = "0.5.1", features = ["mmap"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+signal-future = "0.0.1"
+strum = { version = "0.24", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+toml = "0.7"
+# Pin the version as the docs mention that outputs could change in future versions: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
+twox-hash = "=1.6.3"
+write-journal = "0.4"

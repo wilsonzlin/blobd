@@ -1,7 +1,7 @@
 # blobd
 
 - Scales to millions of random concurrent partial reads over trillions of small objects with constant low latency.
-- Strong data integrity with API-level guaranteed durability and replayable journaling.
+- Strong data integrity with API-level guaranteed durability and replayed journaling.
 - Asynchronous replication and event streaming.
 - Fast direct I/O and TCP protocol.
 
