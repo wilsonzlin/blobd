@@ -15,8 +15,7 @@ use std::sync::Arc;
 
 pub async fn start_http_server_loop(interface: Ipv4Addr, port: u16, ctx: Arc<Ctx>) {
   let app = Router::new()
-    .route(
-      "/*",
+    .fallback(
       delete(endpoint_delete_object)
         .get(endpoint_read_object)
         .head(endpoint_inspect_object)

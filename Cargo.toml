@@ -12,6 +12,12 @@ edition = "2021"
 [badges]
 maintenance = { status = "actively-developed" }
 
+[profile.release]
+codegen-units = 1
+debug = true
+lto = true
+opt-level = 3
+
 [dependencies]
 axum = { version = "0.6", features = ["headers"] }
 bytes = "1.4"

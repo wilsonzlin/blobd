@@ -30,7 +30,7 @@ pub const INO_OFFSETOF_STATE: u64 = INO_OFFSETOF_SIZE + 5;
 pub const INO_OFFSETOF_OBJ_ID: u64 = INO_OFFSETOF_STATE + 1;
 pub const INO_OFFSETOF_KEY_LEN: u64 = INO_OFFSETOF_OBJ_ID + 8;
 pub const INO_OFFSETOF_NEXT_INODE_DEV_OFFSET: u64 = INO_OFFSETOF_KEY_LEN + 2;
-pub const INO_OFFSETOF_KEY: u64 = INO_OFFSETOF_KEY_LEN + 2;
+pub const INO_OFFSETOF_KEY: u64 = INO_OFFSETOF_NEXT_INODE_DEV_OFFSET + 6;
 #[allow(non_snake_case)]
 pub fn INO_OFFSETOF_TILE_IDX(key_len: u16, tile_idx: u16) -> u64 {
   INO_OFFSETOF_KEY + u64::from(key_len) + 3 * u64::from(tile_idx)

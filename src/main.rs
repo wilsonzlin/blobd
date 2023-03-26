@@ -107,7 +107,11 @@ async fn main() {
   let reserved_space = offsetof_buckets + sizeof_buckets;
   let reserved_tiles = div_ceil(reserved_space, u64::from(TILE_SIZE));
 
-  let journal = WriteJournal::new(dev.clone(), offsetof_journal, sizeof_journal);
+  let journal = Arc::new(WriteJournal::new(
+    dev.clone(),
+    offsetof_journal,
+    sizeof_journal,
+  ));
 
   if cli.format {
     journal.format_device().await;
@@ -116,6 +120,7 @@ async fn main() {
     FreeList::format_device(&dev, offsetof_free_list);
     Buckets::format_device(&dev, offsetof_buckets, conf.bucket_count);
     dev.sync_data().await;
+    println!("Formatted");
     return;
   };
 
@@ -128,12 +133,13 @@ async fn main() {
     (dev_size / u64::from(TILE_SIZE)).try_into().unwrap(),
   );
   let buckets = Buckets::load_from_device(dev.clone(), offsetof_buckets);
+  println!("Ready");
 
   let ctx = Arc::new(Ctx {
     buckets,
     device: dev.clone(),
     free_list: Mutex::new(FreeListWithChangeTracker::new(free_list)),
-    journal: Mutex::new(SequentialisedJournal::new(journal)),
+    journal: Mutex::new(SequentialisedJournal::new(journal.clone())),
     object_id_serial,
     stream: RwLock::new(stream),
   });
@@ -141,5 +147,6 @@ async fn main() {
   join! {
     start_http_server_loop(conf.interface, conf.port, ctx),
     dev.start_delayed_data_sync_background_loop(),
+    journal.start_commit_background_loop(),
   };
 }
