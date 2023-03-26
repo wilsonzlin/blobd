@@ -31,9 +31,11 @@ u48[] dev_offset_or_zero
 
 **/
 
+pub const BUCKETS_OFFSETOF_COUNT_LOG2: u64 = 0;
+
 #[allow(non_snake_case)]
 pub fn BUCKETS_OFFSETOF_BUCKET(bkt_id: u64) -> u64 {
-  1 + bkt_id * 6
+  BUCKETS_OFFSETOF_COUNT_LOG2 + (bkt_id * 6)
 }
 
 #[allow(non_snake_case)]
@@ -118,9 +120,10 @@ impl Buckets {
     }
   }
 
-  pub fn format_device(dev: &SeekableAsyncFile, dev_offset: u64, bucket_count: u64) {
-    dev.write_at_sync(dev_offset, vec![0u8; usz!(BUCKETS_SIZE(bucket_count))]);
-    dev.write_at_sync(dev_offset, vec![bucket_count.ilog2() as u8]);
+  pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64, bucket_count: u64) {
+    let mut raw = vec![0u8; usz!(BUCKETS_SIZE(bucket_count))];
+    raw[usz!(BUCKETS_OFFSETOF_COUNT_LOG2)] = bucket_count.ilog2() as u8;
+    dev.write_at(dev_offset, raw).await;
   }
 
   pub fn bucket_id_for_key(&self, key: &[u8]) -> u64 {

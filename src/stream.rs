@@ -95,8 +95,8 @@ impl Stream {
     }
   }
 
-  pub fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
-    dev.write_at_sync(dev_offset, vec![0u8; usz!(STREAM_SIZE)]);
+  pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
+    dev.write_at(dev_offset, vec![0u8; usz!(STREAM_SIZE)]).await;
   }
 
   pub fn create_event(&mut self, mutation_writes: &mut Vec<(u64, Vec<u8>)>, e: StreamEvent) {

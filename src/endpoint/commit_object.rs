@@ -25,6 +25,7 @@ pub struct InputQueryParams {
   pub upload_id: u64,
 }
 
+// See endpoint_delete_object for why we hold RwLock write lock for entire request.
 pub async fn endpoint_commit_object(
   State(ctx): State<Arc<Ctx>>,
   uri: Uri,

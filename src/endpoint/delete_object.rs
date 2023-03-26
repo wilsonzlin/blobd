@@ -5,7 +5,6 @@ use crate::inode::get_object_alloc_cfg;
 use crate::inode::InodeState;
 use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_SIZE;
-use crate::inode::INO_OFFSETOF_STATE;
 use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_TILES;
 use crate::inode::INO_SIZE;
@@ -20,6 +19,7 @@ use off64::Off64Int;
 use std::sync::Arc;
 use write_journal::AtomicWriteGroup;
 
+// We hold write lock on bucket RwLock for entire request (including writes and data sync) for simplicity and avoidance of subtle race conditions. Performance should still be great as one bucket equals one object given desired bucket count and load. If we release lock before we (or journal) finishes writes, we need to prevent/handle any possible intermediate read and write of the state of inode elements on the device, linked list pointers, garbage collectors, premature use of data or reuse of freed space, etc.
 pub async fn endpoint_delete_object(State(ctx): State<Arc<Ctx>>, uri: Uri) -> StatusCode {
   let (key, key_len) = parse_key(&uri);
   let bkt_id = ctx.buckets.bucket_id_for_key(&key);
@@ -56,7 +56,7 @@ pub async fn endpoint_delete_object(State(ctx): State<Arc<Ctx>>, uri: Uri) -> St
     .collect_vec();
   let inode_size = INO_SIZE(key_len, alloc_cfg.tile_count);
 
-  let mut writes = Vec::with_capacity(tiles.len() + 5);
+  let mut writes = Vec::with_capacity(tiles.len() + 4);
 
   // Release allocated space.
   let change_serial = {
@@ -69,10 +69,6 @@ pub async fn endpoint_delete_object(State(ctx): State<Arc<Ctx>>, uri: Uri) -> St
     free_list.generate_change_serial()
   };
 
-  // Update inode state.
-  writes.push((inode_dev_offset + INO_OFFSETOF_STATE, vec![
-    InodeState::Deleted as u8,
-  ]));
   match prev_inode {
     Some(prev_inode_dev_offset) => {
       // Update next pointer of previous inode.

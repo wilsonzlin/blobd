@@ -69,7 +69,6 @@ pub fn get_object_alloc_cfg(object_size: u64) -> ObjectAllocCfg {
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum InodeState {
-  Deleted = 1 << 0,
-  Incomplete = 1 << 1,
-  Ready = 1 << 2,
+  Incomplete,
+  Ready,
 }

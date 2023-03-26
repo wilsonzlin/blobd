@@ -114,11 +114,13 @@ async fn main() {
   ));
 
   if cli.format {
-    journal.format_device().await;
-    ObjectIdSerial::format_device(&dev, offsetof_object_id_serial);
-    Stream::format_device(&dev, offsetof_stream);
-    FreeList::format_device(&dev, offsetof_free_list);
-    Buckets::format_device(&dev, offsetof_buckets, conf.bucket_count);
+    join! {
+      journal.format_device(),
+      ObjectIdSerial::format_device(&dev, offsetof_object_id_serial),
+      Stream::format_device(&dev, offsetof_stream),
+      FreeList::format_device(&dev, offsetof_free_list),
+      Buckets::format_device(&dev, offsetof_buckets, conf.bucket_count),
+    };
     dev.sync_data().await;
     println!("Formatted");
     return;

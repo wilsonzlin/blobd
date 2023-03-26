@@ -186,8 +186,10 @@ impl FreeList {
     }
   }
 
-  pub fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
-    dev.write_at_sync(dev_offset, vec![0u8; usz!(FREELIST_SIZE())]);
+  pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
+    dev
+      .write_at(dev_offset, vec![0u8; usz!(FREELIST_SIZE())])
+      .await;
   }
 
   // Returns the device offset of the fragment, and the updated fragmented tile usage amount.

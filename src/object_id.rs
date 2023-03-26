@@ -18,8 +18,8 @@ impl ObjectIdSerial {
     }
   }
 
-  pub fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
-    dev.write_at_sync(dev_offset, create_u64_be(0).to_vec());
+  pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
+    dev.write_at(dev_offset, create_u64_be(0).to_vec()).await;
   }
 
   pub fn next(&self, mutation_writes: &mut Vec<(u64, Vec<u8>)>) -> u64 {
