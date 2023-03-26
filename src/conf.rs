@@ -1,6 +1,7 @@
-use std::{path::PathBuf, net::Ipv4Addr};
-
-use serde::{Serialize, Deserialize};
+use serde::Deserialize;
+use serde::Serialize;
+use std::net::Ipv4Addr;
+use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize)]
 pub struct Conf {

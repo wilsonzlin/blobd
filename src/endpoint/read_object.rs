@@ -1,15 +1,30 @@
-use std::{error::Error, pin::Pin, task::{Context, Poll}, sync::Arc, fmt::Display, ops::Bound, cmp::min};
-
-use axum::{http::{StatusCode, Uri}, extract::State, Json, TypedHeader, headers::Range, body::StreamBody};
+use super::parse_key;
+use crate::bucket::FoundInode;
+use crate::ctx::Ctx;
+use crate::inode::get_object_alloc_cfg;
+use crate::inode::InodeState;
+use crate::inode::ObjectAllocCfg;
+use crate::inode::INO_OFFSETOF_SIZE;
+use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
+use crate::inode::INO_OFFSETOF_TILE_IDX;
+use crate::tile::TILE_SIZE;
+use axum::body::StreamBody;
+use axum::extract::State;
+use axum::headers::Range;
+use axum::http::StatusCode;
+use axum::http::Uri;
+use axum::TypedHeader;
 use bytes::Bytes;
-use futures::{TryStream, Stream};
+use futures::Stream;
 use itertools::Itertools;
 use off64::Off64Int;
-use seekable_async_file::SeekableAsyncFile;
-
-use crate::{ctx::Ctx, bucket::{Buckets, FoundInode}, inode::{InodeState, get_object_alloc_cfg, INO_OFFSETOF_SIZE, ObjectAllocCfg, INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, INO_OFFSETOF_TILE_IDX}, tile::TILE_SIZE};
-
-use super::parse_key;
+use std::cmp::min;
+use std::error::Error;
+use std::ops::Bound;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::Context;
+use std::task::Poll;
 
 pub struct ReadObjectStream {
   ctx: Arc<Ctx>,
@@ -26,8 +41,7 @@ pub struct ReadObjectStream {
 }
 
 #[derive(Debug, strum::Display)]
-pub enum ReadObjectStreamError {
-}
+pub enum ReadObjectStreamError {}
 
 const STREAM_BUFSIZE: u64 = 1024 * 8;
 
@@ -36,7 +50,7 @@ impl Error for ReadObjectStreamError {}
 impl Stream for ReadObjectStream {
   type Item = Result<Bytes, Box<ReadObjectStreamError>>;
 
-  fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+  fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     if self.next >= self.end {
       return Poll::Ready(None);
     };
@@ -66,14 +80,28 @@ impl Stream for ReadObjectStream {
     let data_dev_offset = if tile_idx < self.alloc_cfg.tile_count {
       // mmap memory should already be in page cache.
       // WARNING: Convert both operand values to u64 separately; do not multiply then convert result, as multiplication may overflow in u32.
-      u64::from(ctx.device.read_at_sync(self.inode_dev_offset + INO_OFFSETOF_TILE_IDX(self.key_len, tile_idx), 3).read_u24_be_at(0)) * u64::from(TILE_SIZE)
+      u64::from(
+        ctx
+          .device
+          .read_at_sync(
+            self.inode_dev_offset + INO_OFFSETOF_TILE_IDX(self.key_len, tile_idx),
+            3,
+          )
+          .read_u24_be_at(0),
+      ) * u64::from(TILE_SIZE)
     } else {
       // mmap memory should already be in page cache.
-      ctx.device.read_at_sync(self.inode_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6).read_u48_be_at(0)
+      ctx
+        .device
+        .read_at_sync(self.inode_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6)
+        .read_u48_be_at(0)
     };
     assert!(data_dev_offset > 0);
 
-    let max_end = min(min(self.end, (u64::from(tile_idx) + 1) * u64::from(TILE_SIZE)), self.object_size);
+    let max_end = min(
+      min(self.end, (u64::from(tile_idx) + 1) * u64::from(TILE_SIZE)),
+      self.object_size,
+    );
     let end = min(max_end, self.next + STREAM_BUFSIZE);
     // TODO Ideally this would be async, however calling async from a poll_next is difficult.
     let data = ctx.device.read_at_sync(self.next, end - self.next);
@@ -107,7 +135,10 @@ pub async fn endpoint_read_object(
     return Err(StatusCode::NOT_FOUND);
   };
   // mmap memory should already be in page cache.
-  let object_size = ctx.device.read_at_sync(inode_dev_offset + INO_OFFSETOF_SIZE, 5).read_u40_be_at(0);
+  let object_size = ctx
+    .device
+    .read_at_sync(inode_dev_offset + INO_OFFSETOF_SIZE, 5)
+    .read_u40_be_at(0);
   let start = match ranges[0].0 {
     Bound::Included(v) => v,
     // Lower bound must always be inclusive.

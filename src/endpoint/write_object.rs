@@ -1,11 +1,27 @@
-use std::{sync::Arc, cmp::min, io::Read};
-
-use axum::{http::{StatusCode}, extract::{BodyStream, State, Query}, TypedHeader, headers::ContentLength};
+use crate::ctx::Ctx;
+use crate::inode::get_object_alloc_cfg;
+use crate::inode::InodeState;
+use crate::inode::ObjectAllocCfg;
+use crate::inode::INO_OFFSETOF_KEY_LEN;
+use crate::inode::INO_OFFSETOF_OBJ_ID;
+use crate::inode::INO_OFFSETOF_SIZE;
+use crate::inode::INO_OFFSETOF_STATE;
+use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
+use crate::inode::INO_OFFSETOF_TILE_IDX;
+use crate::tile::TILE_SIZE;
+use axum::extract::BodyStream;
+use axum::extract::Query;
+use axum::extract::State;
+use axum::headers::ContentLength;
+use axum::http::StatusCode;
+use axum::TypedHeader;
 use futures::StreamExt;
 use off64::Off64Int;
-use serde::{Serialize, Deserialize};
-
-use crate::{ctx::Ctx, tile::TILE_SIZE, inode::{InodeState, INO_OFFSETOF_OBJ_ID, INO_OFFSETOF_SIZE, INO_OFFSETOF_STATE, ObjectAllocCfg, get_object_alloc_cfg, INO_OFFSETOF_TILE_IDX, INO_OFFSETOF_KEY_LEN, INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET}};
+use serde::Deserialize;
+use serde::Serialize;
+use std::cmp::min;
+use std::io::Read;
+use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
@@ -33,17 +49,32 @@ pub async fn endpoint_write_object(
 
   // TODO Optimisation: make one read, or don't use await.
 
-  if ctx.device.read_at(ino_dev_offset + INO_OFFSETOF_STATE, 1).await[0] != InodeState::Incomplete as u8 {
+  if ctx
+    .device
+    .read_at(ino_dev_offset + INO_OFFSETOF_STATE, 1)
+    .await[0]
+    != InodeState::Incomplete as u8
+  {
     // Inode has incorrect state.
     return StatusCode::NOT_FOUND;
   };
 
-  if ctx.device.read_at(ino_dev_offset + INO_OFFSETOF_OBJ_ID, 8).await.read_u64_be_at(0) != req.object_id {
+  if ctx
+    .device
+    .read_at(ino_dev_offset + INO_OFFSETOF_OBJ_ID, 8)
+    .await
+    .read_u64_be_at(0)
+    != req.object_id
+  {
     // Inode has different object ID.
     return StatusCode::NOT_FOUND;
   };
 
-  let size = ctx.device.read_at(ino_dev_offset + INO_OFFSETOF_SIZE, 5).await.read_u40_be_at(0);
+  let size = ctx
+    .device
+    .read_at(ino_dev_offset + INO_OFFSETOF_SIZE, 5)
+    .await
+    .read_u40_be_at(0);
   if req.offset + len > size {
     // Offset is past size.
     return StatusCode::RANGE_NOT_SATISFIABLE;
@@ -54,7 +85,11 @@ pub async fn endpoint_write_object(
     return StatusCode::RANGE_NOT_SATISFIABLE;
   };
 
-  let key_len = ctx.device.read_at(ino_dev_offset + INO_OFFSETOF_KEY_LEN, 2).await.read_u16_be_at(0);
+  let key_len = ctx
+    .device
+    .read_at(ino_dev_offset + INO_OFFSETOF_KEY_LEN, 2)
+    .await
+    .read_u16_be_at(0);
 
   let ObjectAllocCfg { tile_count, .. } = get_object_alloc_cfg(size);
   let write_dev_offset = {
@@ -62,9 +97,19 @@ pub async fn endpoint_write_object(
     debug_assert!(tile_idx <= tile_count);
     if tile_idx < tile_count {
       // WARNING: Convert both operand values to u64 separately; do not multiply then convert result, as multiplication may overflow in u32.
-      u64::from(ctx.device.read_at(ino_dev_offset + INO_OFFSETOF_TILE_IDX(key_len, tile_idx), 3).await.read_u24_be_at(0)) * u64::from(TILE_SIZE)
+      u64::from(
+        ctx
+          .device
+          .read_at(ino_dev_offset + INO_OFFSETOF_TILE_IDX(key_len, tile_idx), 3)
+          .await
+          .read_u24_be_at(0),
+      ) * u64::from(TILE_SIZE)
     } else {
-      ctx.device.read_at(ino_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6).await.read_u48_be_at(0)
+      ctx
+        .device
+        .read_at(ino_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6)
+        .await
+        .read_u48_be_at(0)
     }
   };
 
@@ -83,10 +128,10 @@ pub async fn endpoint_write_object(
         return StatusCode::REQUEST_TIMEOUT;
       };
       bytes.push(seq);
-    };
+    }
     ctx.device.write_at(cur, bytes).await;
     cur += u64::try_from(chunk_len).unwrap();
-  };
+  }
 
   // Optimisation: perform fdatasync in batches.
   ctx.device.write_at_with_delayed_sync(vec![]).await;

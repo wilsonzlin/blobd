@@ -1,19 +1,26 @@
-use std::sync::Arc;
-
-use axum::{extract::State, http::{Uri, StatusCode}};
+use super::parse_key;
+use crate::bucket::FoundInode;
+use crate::ctx::Ctx;
+use crate::inode::get_object_alloc_cfg;
+use crate::inode::InodeState;
+use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
+use crate::inode::INO_OFFSETOF_SIZE;
+use crate::inode::INO_OFFSETOF_STATE;
+use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
+use crate::inode::INO_OFFSETOF_TILES;
+use crate::inode::INO_SIZE;
+use crate::stream::StreamEvent;
+use crate::stream::StreamEventType;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::http::Uri;
 use itertools::Itertools;
-use off64::{Off64Int, create_u48_be};
+use off64::create_u48_be;
+use off64::Off64Int;
+use std::sync::Arc;
 use write_journal::AtomicWriteGroup;
 
-use crate::{ctx::Ctx, inode::{InodeState, INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, get_object_alloc_cfg, INO_OFFSETOF_SIZE, INO_OFFSETOF_TILES, INO_OFFSETOF_STATE, INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, INO_SIZE}, bucket::{FoundInode}, stream::{StreamEventType, StreamEvent}};
-
-use super::parse_key;
-
-
-pub async fn endpoint_delete_object(
-  State(ctx): State<Arc<Ctx>>,
-  uri: Uri,
-) -> StatusCode {
+pub async fn endpoint_delete_object(State(ctx): State<Arc<Ctx>>, uri: Uri) -> StatusCode {
   let (key, key_len) = parse_key(&uri);
   let bkt_id = ctx.buckets.bucket_id_for_key(&key);
   let bkt = ctx.buckets.get_bucket(bkt_id).write().await;
@@ -29,10 +36,24 @@ pub async fn endpoint_delete_object(
   };
 
   // mmap memory should already be in page cache.
-  let object_size = ctx.device.read_at_sync(inode_dev_offset + INO_OFFSETOF_SIZE, 5).read_u40_be_at(0);
+  let object_size = ctx
+    .device
+    .read_at_sync(inode_dev_offset + INO_OFFSETOF_SIZE, 5)
+    .read_u40_be_at(0);
   let alloc_cfg = get_object_alloc_cfg(object_size);
-  let tail_dev_offset = ctx.device.read_at_sync(inode_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6).read_u48_be_at(0);
-  let tiles = ctx.device.read_at_sync(inode_dev_offset + INO_OFFSETOF_TILES(key_len), 3 * u64::from(alloc_cfg.tile_count)).chunks(3).map(|t| t.read_u24_be_at(0)).collect_vec();
+  let tail_dev_offset = ctx
+    .device
+    .read_at_sync(inode_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6)
+    .read_u48_be_at(0);
+  let tiles = ctx
+    .device
+    .read_at_sync(
+      inode_dev_offset + INO_OFFSETOF_TILES(key_len),
+      3 * u64::from(alloc_cfg.tile_count),
+    )
+    .chunks(3)
+    .map(|t| t.read_u24_be_at(0))
+    .collect_vec();
   let inode_size = INO_SIZE(key_len, alloc_cfg.tile_count);
 
   let mut writes = Vec::with_capacity(tiles.len() + 5);
@@ -49,7 +70,9 @@ pub async fn endpoint_delete_object(
   };
 
   // Update inode state.
-  writes.push((inode_dev_offset + INO_OFFSETOF_STATE, vec![InodeState::Deleted as u8]));
+  writes.push((inode_dev_offset + INO_OFFSETOF_STATE, vec![
+    InodeState::Deleted as u8,
+  ]));
   match prev_inode {
     Some(prev_inode_dev_offset) => {
       // Update next pointer of previous inode.
@@ -60,18 +83,29 @@ pub async fn endpoint_delete_object(
     }
     None => {
       // Update bucket head.
-      ctx.buckets.mutate_bucket_head(&mut writes, bkt_id, next_inode.unwrap_or(0));
+      ctx
+        .buckets
+        .mutate_bucket_head(&mut writes, bkt_id, next_inode.unwrap_or(0));
     }
   };
 
   // Create stream event.
-  ctx.stream.write().await.create_event(&mut writes, StreamEvent {
-    typ: StreamEventType::ObjectDelete,
-    bucket_id: bkt_id,
-    object_id,
-  });
+  ctx
+    .stream
+    .write()
+    .await
+    .create_event(&mut writes, StreamEvent {
+      typ: StreamEventType::ObjectDelete,
+      bucket_id: bkt_id,
+      object_id,
+    });
 
-  ctx.journal.lock().await.write(change_serial, AtomicWriteGroup(writes)).await;
+  ctx
+    .journal
+    .lock()
+    .await
+    .write(change_serial, AtomicWriteGroup(writes))
+    .await;
 
   StatusCode::OK
 }

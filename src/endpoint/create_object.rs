@@ -1,13 +1,28 @@
-use std::sync::Arc;
-
-use axum::{http::{StatusCode, Uri}, extract::State, Json};
-use off64::{Off64Int, usz, Off64Slice};
-use serde::{Serialize, Deserialize};
-use write_journal::AtomicWriteGroup;
-
-use crate::{ctx::Ctx, inode::{INO_SIZE, INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, INO_OFFSETOF_STATE, InodeState, INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, INO_OFFSETOF_SIZE, INO_OFFSETOF_OBJ_ID, INO_OFFSETOF_KEY_LEN, INO_OFFSETOF_KEY, INO_OFFSETOF_TILE_IDX, ObjectAllocCfg, get_object_alloc_cfg}};
-
 use super::parse_key;
+use crate::ctx::Ctx;
+use crate::inode::get_object_alloc_cfg;
+use crate::inode::InodeState;
+use crate::inode::ObjectAllocCfg;
+use crate::inode::INO_OFFSETOF_KEY;
+use crate::inode::INO_OFFSETOF_KEY_LEN;
+use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
+use crate::inode::INO_OFFSETOF_OBJ_ID;
+use crate::inode::INO_OFFSETOF_SIZE;
+use crate::inode::INO_OFFSETOF_STATE;
+use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
+use crate::inode::INO_OFFSETOF_TILE_IDX;
+use crate::inode::INO_SIZE;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::http::Uri;
+use axum::Json;
+use off64::usz;
+use off64::Off64Int;
+use off64::Off64Slice;
+use serde::Deserialize;
+use serde::Serialize;
+use std::sync::Arc;
+use write_journal::AtomicWriteGroup;
 
 #[derive(Serialize, Deserialize)]
 pub struct Input {
@@ -26,7 +41,10 @@ pub async fn endpoint_create_object(
   Json(req): Json<Input>,
 ) -> Result<Json<Output>, StatusCode> {
   let (key, key_len) = parse_key(&uri);
-  let ObjectAllocCfg { tile_count, tail_len } = get_object_alloc_cfg(req.size);
+  let ObjectAllocCfg {
+    tile_count,
+    tail_len,
+  } = get_object_alloc_cfg(req.size);
   let ino_size = INO_SIZE(key_len, tile_count.into());
 
   let mut writes = Vec::with_capacity(4 + usz!(tile_count));
@@ -40,7 +58,12 @@ pub async fn endpoint_create_object(
     } else {
       free_list.allocate_fragment(&mut writes, tail_len.try_into().unwrap())
     };
-    (free_list.generate_change_serial(), ino_dev_offset, tiles, tail_dev_offset)
+    (
+      free_list.generate_change_serial(),
+      ino_dev_offset,
+      tiles,
+      tail_dev_offset,
+    )
   };
 
   let object_id = ctx.object_id_serial.next(&mut writes);
@@ -56,15 +79,20 @@ pub async fn endpoint_create_object(
   for (tile_idx, &tile_no) in tiles.iter().enumerate() {
     let tile_idx: u16 = tile_idx.try_into().unwrap();
     ino_raw.write_u24_be_at(INO_OFFSETOF_TILE_IDX(key_len, tile_idx), tile_no);
-  };
+  }
 
   // The inode must be journalled as well, as the GC depends on consistent data when reading raw tiles directly.
   writes.push((ino_dev_offset, ino_raw));
 
-  ctx.journal.lock().await.write(change_serial, AtomicWriteGroup(writes)).await;
+  ctx
+    .journal
+    .lock()
+    .await
+    .write(change_serial, AtomicWriteGroup(writes))
+    .await;
 
   Ok(Json(Output {
     object_id,
     upload_id: ino_dev_offset,
-   }))
+  }))
 }

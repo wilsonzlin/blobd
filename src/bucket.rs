@@ -1,10 +1,16 @@
+use crate::inode::InodeState;
+use crate::inode::INO_OFFSETOF_KEY;
+use crate::inode::INO_OFFSETOF_KEY_LEN;
+use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
+use crate::inode::INO_OFFSETOF_OBJ_ID;
+use crate::inode::INO_OFFSETOF_STATE;
 use itertools::Itertools;
-use off64::{usz, Off64Int, create_u48_be};
+use off64::create_u48_be;
+use off64::usz;
+use off64::Off64Int;
 use seekable_async_file::SeekableAsyncFile;
 use tokio::sync::RwLock;
 use twox_hash::xxh3::hash64;
-
-use crate::inode::{InodeState, INO_OFFSETOF_STATE, INO_OFFSETOF_KEY, INO_OFFSETOF_OBJ_ID, INO_OFFSETOF_KEY_LEN, INO_OFFSETOF_NEXT_INODE_DEV_OFFSET};
 
 /**
 
@@ -26,10 +32,14 @@ u48[] dev_offset_or_zero
 **/
 
 #[allow(non_snake_case)]
-pub fn BUCKETS_OFFSETOF_BUCKET(bkt_id: u64) -> u64 { 1 + bkt_id * 6 }
+pub fn BUCKETS_OFFSETOF_BUCKET(bkt_id: u64) -> u64 {
+  1 + bkt_id * 6
+}
 
 #[allow(non_snake_case)]
-pub fn BUCKETS_SIZE(bkt_cnt: u64) -> u64 { BUCKETS_OFFSETOF_BUCKET(bkt_cnt) }
+pub fn BUCKETS_SIZE(bkt_cnt: u64) -> u64 {
+  BUCKETS_OFFSETOF_BUCKET(bkt_cnt)
+}
 
 pub struct Bucket {
   // This is an in-memory value that increments on every write on this RwLock-ed Bucket. This allows us to cache the inode offset and metadata when reading an object between response stream chunks, instead of looking up the key every single time in case the object was deleted in the meantime. This should be reasonably optimal given one bucket should equal one object under optimal hashing and load.
@@ -54,8 +64,12 @@ impl Bucket {
     expected_state: InodeState,
     expected_object_id: Option<u64>,
   ) -> Option<FoundInode> {
-    let Buckets { dev, dev_offset, .. } = buckets;
-    let mut dev_offset = dev.read_at_sync(dev_offset + BUCKETS_OFFSETOF_BUCKET(bucket_id), 6).read_u48_be_at(0);
+    let Buckets {
+      dev, dev_offset, ..
+    } = buckets;
+    let mut dev_offset = dev
+      .read_at_sync(dev_offset + BUCKETS_OFFSETOF_BUCKET(bucket_id), 6)
+      .read_u48_be_at(0);
     let mut prev_dev_offset = None;
     while dev_offset > 0 {
       let base = INO_OFFSETOF_STATE;
@@ -68,11 +82,16 @@ impl Bucket {
       // mmap region should already be in page cache, so no need to use async.
       && dev.read_at_sync(dev_offset + INO_OFFSETOF_KEY, key_len.into()) == key
       {
-        return Some(FoundInode { prev_dev_offset, next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0), dev_offset, object_id });
+        return Some(FoundInode {
+          prev_dev_offset,
+          next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0),
+          dev_offset,
+          object_id,
+        });
       };
       prev_dev_offset = Some(dev_offset);
       dev_offset = next_dev_offset;
-    };
+    }
     None
   }
 }
@@ -88,8 +107,15 @@ impl Buckets {
   pub fn load_from_device(dev: SeekableAsyncFile, dev_offset: u64) -> Buckets {
     let count = 1u64 << dev.read_at_sync(dev_offset, 1)[0];
     let key_mask = count - 1;
-    let buckets = (0..count).map(|_| RwLock::new(Bucket{version: 0})).collect_vec();
-    Buckets { buckets, dev, dev_offset, key_mask }
+    let buckets = (0..count)
+      .map(|_| RwLock::new(Bucket { version: 0 }))
+      .collect_vec();
+    Buckets {
+      buckets,
+      dev,
+      dev_offset,
+      key_mask,
+    }
   }
 
   pub fn format_device(dev: &SeekableAsyncFile, dev_offset: u64, bucket_count: u64) {
@@ -106,10 +132,19 @@ impl Buckets {
   }
 
   pub async fn get_bucket_head(&self, id: u64) -> u64 {
-    self.dev.read_at(self.dev_offset + BUCKETS_OFFSETOF_BUCKET(id), 6).await.read_u48_be_at(0)
+    self
+      .dev
+      .read_at(self.dev_offset + BUCKETS_OFFSETOF_BUCKET(id), 6)
+      .await
+      .read_u48_be_at(0)
   }
 
-  pub fn mutate_bucket_head(&self, mutation_writes: &mut Vec<(u64, Vec<u8>)>, bucket_id: u64, dev_offset: u64) {
+  pub fn mutate_bucket_head(
+    &self,
+    mutation_writes: &mut Vec<(u64, Vec<u8>)>,
+    bucket_id: u64,
+    dev_offset: u64,
+  ) {
     mutation_writes.push((
       self.dev_offset + BUCKETS_OFFSETOF_BUCKET(bucket_id),
       create_u48_be(dev_offset).to_vec(),

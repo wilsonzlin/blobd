@@ -1,24 +1,38 @@
-use tokio::{join, sync::RwLock};
-use std::{net::Ipv4Addr, path::PathBuf, sync::Arc};
-
+use crate::bucket::Buckets;
+use crate::bucket::BUCKETS_SIZE;
+use crate::ctx::Ctx;
+use crate::ctx::FreeListWithChangeTracker;
+use crate::ctx::SequentialisedJournal;
+use crate::free_list::FreeList;
+use crate::free_list::FREELIST_SIZE;
+use crate::object_id::ObjectIdSerial;
+use crate::server::start_http_server_loop;
+use crate::stream::Stream;
+use crate::stream::STREAM_SIZE;
+use crate::tile::TILE_SIZE;
 use clap::Parser;
 use conf::Conf;
-use seekable_async_file::{SeekableAsyncFile, SeekableAsyncFileMetrics, get_file_len_via_seek};
-use tokio::{fs::read_to_string, sync::Mutex};
+use seekable_async_file::get_file_len_via_seek;
+use seekable_async_file::SeekableAsyncFile;
+use seekable_async_file::SeekableAsyncFileMetrics;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::fs::read_to_string;
+use tokio::join;
+use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use write_journal::WriteJournal;
 
-use crate::{stream::{STREAM_SIZE, Stream}, free_list::{FREELIST_SIZE, FreeList}, bucket::{BUCKETS_SIZE, Buckets}, tile::TILE_SIZE, object_id::ObjectIdSerial, ctx::{Ctx, FreeListWithChangeTracker, SequentialisedJournal}, server::start_http_server_loop};
-
-pub mod free_list;
-pub mod tile;
-pub mod conf;
-pub mod inode;
-pub mod endpoint;
-pub mod ctx;
 pub mod bucket;
-pub mod server;
+pub mod conf;
+pub mod ctx;
+pub mod endpoint;
+pub mod free_list;
+pub mod inode;
 pub mod object_id;
+pub mod server;
 pub mod stream;
+pub mod tile;
 
 /**
 
@@ -62,17 +76,26 @@ async fn main() {
 
   let io_metrics = Arc::new(SeekableAsyncFileMetrics::default());
 
-  let dev_size = get_file_len_via_seek(&conf.device_path).await.expect("seek device file");
+  let dev_size = get_file_len_via_seek(&conf.device_path)
+    .await
+    .expect("seek device file");
   let dev = SeekableAsyncFile::open(
     &conf.device_path,
     dev_size,
     io_metrics,
     std::time::Duration::from_micros(200),
-    0
-  ).await;
+    0,
+  )
+  .await;
 
-  assert!(conf.bucket_count.is_power_of_two(), "bucket count must be a power of 2");
-  assert!(conf.bucket_count >= 4096 && conf.bucket_count <= 281474976710656, "bucket count must be in the range [4096, 281474976710656]");
+  assert!(
+    conf.bucket_count.is_power_of_two(),
+    "bucket count must be a power of 2"
+  );
+  assert!(
+    conf.bucket_count >= 4096 && conf.bucket_count <= 281474976710656,
+    "bucket count must be in the range [4096, 281474976710656]"
+  );
 
   let offsetof_journal = 0;
   let sizeof_journal = 1024 * 1024 * 8;
@@ -98,7 +121,12 @@ async fn main() {
 
   let object_id_serial = ObjectIdSerial::load_from_device(&dev, offsetof_object_id_serial);
   let stream = Stream::load_from_device(&dev, offsetof_stream);
-  let free_list = FreeList::load_from_device(&dev, offsetof_free_list, reserved_tiles.try_into().unwrap(), (dev_size / u64::from(TILE_SIZE)).try_into().unwrap());
+  let free_list = FreeList::load_from_device(
+    &dev,
+    offsetof_free_list,
+    reserved_tiles.try_into().unwrap(),
+    (dev_size / u64::from(TILE_SIZE)).try_into().unwrap(),
+  );
   let buckets = Buckets::load_from_device(dev.clone(), offsetof_buckets);
 
   let ctx = Arc::new(Ctx {

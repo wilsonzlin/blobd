@@ -1,7 +1,8 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use off64::{Off64Int, create_u64_be};
+use off64::create_u64_be;
+use off64::Off64Int;
 use seekable_async_file::SeekableAsyncFile;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 pub struct ObjectIdSerial {
   dev_offset: u64,
@@ -11,7 +12,10 @@ pub struct ObjectIdSerial {
 impl ObjectIdSerial {
   pub fn load_from_device(dev: &SeekableAsyncFile, dev_offset: u64) -> Self {
     let next = dev.read_at_sync(dev_offset, 8).read_u64_be_at(0);
-    Self { dev_offset, next: AtomicU64::new(next) }
+    Self {
+      dev_offset,
+      next: AtomicU64::new(next),
+    }
   }
 
   pub fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {

@@ -1,11 +1,11 @@
-use std::{cmp::Ordering, collections::{BinaryHeap, BTreeMap}};
-
-use off64::{Off64Int, usz, create_u24_be};
+use crate::tile::TILE_SIZE;
+use off64::create_u24_be;
+use off64::usz;
+use off64::Off64Int;
 use roaring::RoaringBitmap;
 use rustc_hash::FxHashMap;
 use seekable_async_file::SeekableAsyncFile;
-
-use crate::tile::TILE_SIZE;
+use std::collections::BTreeMap;
 
 /**
 
@@ -49,14 +49,20 @@ Structure
 **/
 
 #[allow(non_snake_case)]
-pub fn FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no: u32) -> u64 { 6 * u64::from(tile_no) }
+pub fn FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no: u32) -> u64 {
+  6 * u64::from(tile_no)
+}
 #[allow(non_snake_case)]
-pub fn FREELIST_OFFSETOF_TILE_RELEASED_SPACE(tile_no: u32) -> u64 { 6 * u64::from(tile_no) + 3 }
+pub fn FREELIST_OFFSETOF_TILE_RELEASED_SPACE(tile_no: u32) -> u64 {
+  6 * u64::from(tile_no) + 3
+}
 
-pub const FREELIST_TILE_CAP: u32 =  16777216;
+pub const FREELIST_TILE_CAP: u32 = 16777216;
 
 #[allow(non_snake_case)]
-pub fn FREELIST_SIZE() -> u64 { FREELIST_OFFSETOF_TILE_USED_SPACE(FREELIST_TILE_CAP) }
+pub fn FREELIST_SIZE() -> u64 {
+  FREELIST_OFFSETOF_TILE_USED_SPACE(FREELIST_TILE_CAP)
+}
 
 struct FragmentedTile {
   released_bytes: u32,
@@ -80,11 +86,18 @@ struct FragmentedTiles {
 
 impl FragmentedTiles {
   pub fn new() -> Self {
-    Self { tiles: FxHashMap::default(), by_free_space: BTreeMap::new() }
+    Self {
+      tiles: FxHashMap::default(),
+      by_free_space: BTreeMap::new(),
+    }
   }
 
   pub fn add(&mut self, no: u32, t: FragmentedTile) {
-    self.by_free_space.entry(TILE_SIZE - t.used_bytes).or_default().insert(no);
+    self
+      .by_free_space
+      .entry(TILE_SIZE - t.used_bytes)
+      .or_default()
+      .insert(no);
     let None = self.tiles.insert(no, t) else {
       unreachable!();
     };
@@ -142,21 +155,35 @@ pub struct FreeList {
 }
 
 impl FreeList {
-  pub fn load_from_device(dev: &SeekableAsyncFile, dev_offset: u64, reserved_tile_count: u32, total_tile_count: u32) -> FreeList {
+  pub fn load_from_device(
+    dev: &SeekableAsyncFile,
+    dev_offset: u64,
+    reserved_tile_count: u32,
+    total_tile_count: u32,
+  ) -> FreeList {
     let mut solid_tiles = RoaringBitmap::new();
     let mut fragmented_tiles = FragmentedTiles::new();
     for tile_no in reserved_tile_count..total_tile_count {
       let dev_offset_used_bytes = FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no);
       let dev_offset_released_bytes = FREELIST_OFFSETOF_TILE_RELEASED_SPACE(tile_no);
       let used_bytes = dev.read_at_sync(dev_offset_used_bytes, 3).read_u24_be_at(0);
-      let released_bytes = dev.read_at_sync(dev_offset_released_bytes, 3).read_u24_be_at(0);
+      let released_bytes = dev
+        .read_at_sync(dev_offset_released_bytes, 3)
+        .read_u24_be_at(0);
       if used_bytes == 0 {
         solid_tiles.insert(used_bytes);
       } else {
-        fragmented_tiles.add(tile_no, FragmentedTile { released_bytes, used_bytes });
+        fragmented_tiles.add(tile_no, FragmentedTile {
+          released_bytes,
+          used_bytes,
+        });
       };
-    };
-    FreeList { dev_offset, solid_tiles, fragmented_tiles }
+    }
+    FreeList {
+      dev_offset,
+      solid_tiles,
+      fragmented_tiles,
+    }
   }
 
   pub fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
@@ -164,9 +191,17 @@ impl FreeList {
   }
 
   // Returns the device offset of the fragment, and the updated fragmented tile usage amount.
-  pub fn allocate_fragment(&mut self, mutation_writes: &mut Vec<(u64, Vec<u8>)>, bytes_needed: u32) -> u64 {
+  pub fn allocate_fragment(
+    &mut self,
+    mutation_writes: &mut Vec<(u64, Vec<u8>)>,
+    bytes_needed: u32,
+  ) -> u64 {
     // Trying to find the fragment tile with the closest free_bytes to bytes_needed is an unnecessary optimisation, since it's intractable to know if that's actually optimal or not without the ability to predict the future.
-    let tile_no = match self.fragmented_tiles.most_free().filter(|no| self.fragmented_tiles.get(*no).free_bytes() >= bytes_needed) {
+    let tile_no = match self
+      .fragmented_tiles
+      .most_free()
+      .filter(|no| self.fragmented_tiles.get(*no).free_bytes() >= bytes_needed)
+    {
       Some(tile_no) => tile_no,
       None => {
         // We've run out of fragment tiles, so allocate a new one.
@@ -174,14 +209,21 @@ impl FreeList {
           panic!("out of storage space");
         };
         self.solid_tiles.remove(tile_no);
-        self.fragmented_tiles.add(tile_no, FragmentedTile { released_bytes: 0, used_bytes: 0 });
+        self.fragmented_tiles.add(tile_no, FragmentedTile {
+          released_bytes: 0,
+          used_bytes: 0,
+        });
         tile_no
       }
     };
     let cur_free_bytes = self.fragmented_tiles.get(tile_no).free_bytes();
-    let dev_offset = self.dev_offset + FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no) +  u64::from(TILE_SIZE - cur_free_bytes);
+    let dev_offset = self.dev_offset
+      + FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no)
+      + u64::from(TILE_SIZE - cur_free_bytes);
     let new_free_bytes = cur_free_bytes - bytes_needed;
-    self.fragmented_tiles.update_used_bytes(tile_no, TILE_SIZE - new_free_bytes);
+    self
+      .fragmented_tiles
+      .update_used_bytes(tile_no, TILE_SIZE - new_free_bytes);
     mutation_writes.push((
       self.dev_offset + FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no),
       create_u24_be(TILE_SIZE - new_free_bytes).to_vec(),
@@ -189,10 +231,17 @@ impl FreeList {
     dev_offset
   }
 
-  pub fn release_fragment(&mut self, mutation_writes: &mut Vec<(u64, Vec<u8>)>, dev_offset: u64, frag_len: u32) -> () {
+  pub fn release_fragment(
+    &mut self,
+    mutation_writes: &mut Vec<(u64, Vec<u8>)>,
+    dev_offset: u64,
+    frag_len: u32,
+  ) -> () {
     let tile_no = u32::try_from(dev_offset / u64::from(TILE_SIZE)).unwrap();
     let new_released_bytes = self.fragmented_tiles.get(tile_no).released_bytes + frag_len;
-    self.fragmented_tiles.update_released_bytes(tile_no, new_released_bytes);
+    self
+      .fragmented_tiles
+      .update_released_bytes(tile_no, new_released_bytes);
     if self.fragmented_tiles.get(tile_no).all_released() {
       self.fragmented_tiles.remove(tile_no);
       self.solid_tiles.insert(tile_no);
@@ -212,7 +261,11 @@ impl FreeList {
     };
   }
 
-  pub fn allocate_tiles(&mut self, mutation_writes: &mut Vec<(u64, Vec<u8>)>, tiles_needed: u16) -> Vec<u32> {
+  pub fn allocate_tiles(
+    &mut self,
+    mutation_writes: &mut Vec<(u64, Vec<u8>)>,
+    tiles_needed: u16,
+  ) -> Vec<u32> {
     if self.solid_tiles.len() < u64::from(tiles_needed) {
       panic!("out of storage space");
     };
@@ -225,7 +278,7 @@ impl FreeList {
         self.dev_offset + FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no),
         create_u24_be(TILE_SIZE).to_vec(),
       ));
-    };
+    }
     tiles
   }
 
@@ -236,6 +289,6 @@ impl FreeList {
         self.dev_offset + FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no),
         create_u24_be(0).to_vec(),
       ));
-    };
+    }
   }
 }

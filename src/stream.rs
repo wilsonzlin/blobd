@@ -1,9 +1,11 @@
-use std::collections::{VecDeque, BTreeMap};
-
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-use off64::{Off64Int, Off64Slice, usz, create_u64_be};
+use off64::create_u64_be;
+use off64::usz;
+use off64::Off64Int;
+use off64::Off64Slice;
 use seekable_async_file::SeekableAsyncFile;
+use std::collections::BTreeMap;
 
 /**
 
@@ -38,7 +40,9 @@ pub const STREVT_SIZE: u64 = STREVT_OFFSETOF_OBJECT_ID + 8;
 pub const STREAM_OFFSETOF_VIRTUAL_HEAD: u64 = 0;
 pub const STREAM_OFFSETOF_EVENTS: u64 = STREAM_OFFSETOF_VIRTUAL_HEAD + 8;
 #[allow(non_snake_case)]
-pub fn STREAM_OFFSETOF_EVENT(event_id: u64) -> u64 { STREAM_OFFSETOF_EVENTS + (STREVT_SIZE * (event_id % STREAM_EVENT_CAP)) }
+pub fn STREAM_OFFSETOF_EVENT(event_id: u64) -> u64 {
+  STREAM_OFFSETOF_EVENTS + (STREVT_SIZE * (event_id % STREAM_EVENT_CAP))
+}
 pub const STREAM_EVENT_CAP: u64 = 1_000_000;
 pub const STREAM_SIZE: u64 = STREAM_OFFSETOF_EVENTS + (STREAM_EVENT_CAP * STREVT_SIZE);
 
@@ -78,9 +82,17 @@ impl Stream {
       };
       let bucket_id = raw.read_u48_be_at(STREVT_OFFSETOF_BUCKET_ID);
       let object_id = raw.read_u64_be_at(STREVT_OFFSETOF_OBJECT_ID);
-      events.insert(event_id, StreamEvent { bucket_id, object_id, typ });
-    };
-    Stream { dev_offset, virtual_head, events }
+      events.insert(event_id, StreamEvent {
+        bucket_id,
+        object_id,
+        typ,
+      });
+    }
+    Stream {
+      dev_offset,
+      virtual_head,
+      events,
+    }
   }
 
   pub fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
@@ -92,7 +104,10 @@ impl Stream {
     self.virtual_head += 1;
 
     // New head.
-    mutation_writes.push((self.dev_offset + STREAM_OFFSETOF_VIRTUAL_HEAD, create_u64_be(self.virtual_head).to_vec()));
+    mutation_writes.push((
+      self.dev_offset + STREAM_OFFSETOF_VIRTUAL_HEAD,
+      create_u64_be(self.virtual_head).to_vec(),
+    ));
     // New event.
     let mut raw = vec![0u8; usz!(STREVT_SIZE)];
     raw[usz!(STREVT_OFFSETOF_TYPE)] = e.typ as u8;

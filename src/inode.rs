@@ -24,26 +24,34 @@ u24[] tiles
 
 **/
 
-pub const INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET: u64 =  0;
-pub const INO_OFFSETOF_SIZE: u64 =  INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET + 6;
-pub const INO_OFFSETOF_STATE: u64 =  INO_OFFSETOF_SIZE + 5;
-pub const INO_OFFSETOF_OBJ_ID: u64 =  INO_OFFSETOF_STATE + 1;
-pub const INO_OFFSETOF_KEY_LEN: u64 =  INO_OFFSETOF_OBJ_ID + 8;
-pub const INO_OFFSETOF_NEXT_INODE_DEV_OFFSET: u64 =  INO_OFFSETOF_KEY_LEN + 2;
-pub const INO_OFFSETOF_KEY: u64 =  INO_OFFSETOF_KEY_LEN + 2;
+pub const INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET: u64 = 0;
+pub const INO_OFFSETOF_SIZE: u64 = INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET + 6;
+pub const INO_OFFSETOF_STATE: u64 = INO_OFFSETOF_SIZE + 5;
+pub const INO_OFFSETOF_OBJ_ID: u64 = INO_OFFSETOF_STATE + 1;
+pub const INO_OFFSETOF_KEY_LEN: u64 = INO_OFFSETOF_OBJ_ID + 8;
+pub const INO_OFFSETOF_NEXT_INODE_DEV_OFFSET: u64 = INO_OFFSETOF_KEY_LEN + 2;
+pub const INO_OFFSETOF_KEY: u64 = INO_OFFSETOF_KEY_LEN + 2;
 #[allow(non_snake_case)]
-pub fn INO_OFFSETOF_TILE_IDX(key_len: u16, tile_idx: u16) -> u64 { INO_OFFSETOF_KEY + u64::from(key_len) + 3 * u64::from(tile_idx) }
+pub fn INO_OFFSETOF_TILE_IDX(key_len: u16, tile_idx: u16) -> u64 {
+  INO_OFFSETOF_KEY + u64::from(key_len) + 3 * u64::from(tile_idx)
+}
 #[allow(non_snake_case)]
-pub fn INO_OFFSETOF_TILES(key_len: u16) -> u64 { INO_OFFSETOF_TILE_IDX(key_len, 0) }
+pub fn INO_OFFSETOF_TILES(key_len: u16) -> u64 {
+  INO_OFFSETOF_TILE_IDX(key_len, 0)
+}
 #[allow(non_snake_case)]
-pub fn INO_SIZE(key_len: u16, tile_count: u16)  -> u32 { INO_OFFSETOF_TILE_IDX(key_len, tile_count).try_into().unwrap() }
+pub fn INO_SIZE(key_len: u16, tile_count: u16) -> u32 {
+  INO_OFFSETOF_TILE_IDX(key_len, tile_count)
+    .try_into()
+    .unwrap()
+}
 
 pub struct ObjectAllocCfg {
   pub tile_count: u16,
   pub tail_len: u32,
 }
 
-pub fn get_object_alloc_cfg(object_size: u64) -> ObjectAllocCfg  {
+pub fn get_object_alloc_cfg(object_size: u64) -> ObjectAllocCfg {
   // We only allow up to 65,536 solid tiles for a single object.
   let mut tile_count: u16 = (object_size / u64::from(TILE_SIZE)).try_into().unwrap();
   let mut tail_len: u32 = (object_size % u64::from(TILE_SIZE)).try_into().unwrap();
@@ -52,7 +60,10 @@ pub fn get_object_alloc_cfg(object_size: u64) -> ObjectAllocCfg  {
     tile_count += 1;
     tail_len = 0;
   };
-  ObjectAllocCfg { tile_count, tail_len }
+  ObjectAllocCfg {
+    tile_count,
+    tail_len,
+  }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -1,14 +1,23 @@
-use std::sync::Arc;
-
-use axum::{extract::{State, Query}, http::{Uri, StatusCode}};
-use off64::{Off64Int, usz, create_u48_be};
-use serde::{Deserialize, Serialize};
-use write_journal::AtomicWriteGroup;
-
-use crate::{ctx::Ctx, inode::{INO_OFFSETOF_STATE, INO_OFFSETOF_KEY_LEN, INO_OFFSETOF_OBJ_ID, InodeState, INO_OFFSETOF_NEXT_INODE_DEV_OFFSET}, stream::{StreamEvent, StreamEventType}};
-
 use super::parse_key;
-
+use crate::ctx::Ctx;
+use crate::inode::InodeState;
+use crate::inode::INO_OFFSETOF_KEY_LEN;
+use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
+use crate::inode::INO_OFFSETOF_OBJ_ID;
+use crate::inode::INO_OFFSETOF_STATE;
+use crate::stream::StreamEvent;
+use crate::stream::StreamEventType;
+use axum::extract::Query;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::http::Uri;
+use off64::create_u48_be;
+use off64::usz;
+use off64::Off64Int;
+use serde::Deserialize;
+use serde::Serialize;
+use std::sync::Arc;
+use write_journal::AtomicWriteGroup;
 
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
@@ -29,7 +38,10 @@ pub async fn endpoint_commit_object(
   // Check AFTER acquiring lock in case two requests try to commit the same inode.
   let obj_id = {
     let base = INO_OFFSETOF_STATE;
-    let raw = ctx.device.read_at(inode_dev_offset + base, INO_OFFSETOF_KEY_LEN - base).await;
+    let raw = ctx
+      .device
+      .read_at(inode_dev_offset + base, INO_OFFSETOF_KEY_LEN - base)
+      .await;
     let state = raw[usz!(INO_OFFSETOF_STATE - base)];
     let obj_id = raw.read_u64_be_at(INO_OFFSETOF_OBJ_ID - base);
     if state != InodeState::Incomplete as u8 || obj_id != req.object_id {
@@ -46,13 +58,14 @@ pub async fn endpoint_commit_object(
 
   // Update bucket head to point to this new inode.
   let cur_bkt_head = ctx.buckets.get_bucket_head(bkt_id).await;
-  ctx.buckets.mutate_bucket_head(&mut writes, bkt_id, inode_dev_offset);
+  ctx
+    .buckets
+    .mutate_bucket_head(&mut writes, bkt_id, inode_dev_offset);
 
   // Update inode state.
-  writes.push((
-    inode_dev_offset + INO_OFFSETOF_STATE,
-    vec![InodeState::Ready as u8],
-  ));
+  writes.push((inode_dev_offset + INO_OFFSETOF_STATE, vec![
+    InodeState::Ready as u8,
+  ]));
 
   // Update inode next pointer.
   writes.push((
@@ -61,13 +74,22 @@ pub async fn endpoint_commit_object(
   ));
 
   // Create stream event.
-  ctx.stream.write().await.create_event(&mut writes, StreamEvent {
-    typ: StreamEventType::ObjectCommit,
-    bucket_id: bkt_id,
-    object_id: obj_id,
-  });
+  ctx
+    .stream
+    .write()
+    .await
+    .create_event(&mut writes, StreamEvent {
+      typ: StreamEventType::ObjectCommit,
+      bucket_id: bkt_id,
+      object_id: obj_id,
+    });
 
-  ctx.journal.lock().await.write(change_serial, AtomicWriteGroup(writes)).await;
+  ctx
+    .journal
+    .lock()
+    .await
+    .write(change_serial, AtomicWriteGroup(writes))
+    .await;
 
   StatusCode::OK
 }
