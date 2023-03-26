@@ -4,14 +4,14 @@ use axum::{http::{StatusCode, Uri}, extract::State, Json, TypedHeader, headers::
 use bytes::Bytes;
 use futures::{TryStream, Stream};
 use itertools::Itertools;
-use off64::Off64;
+use off64::Off64Int;
 use seekable_async_file::SeekableAsyncFile;
 
 use crate::{ctx::Ctx, bucket::{Buckets, FoundInode}, inode::{InodeState, get_object_alloc_cfg, INO_OFFSETOF_SIZE, ObjectAllocCfg, INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, INO_OFFSETOF_TILE_IDX}, tile::TILE_SIZE};
 
 use super::parse_key;
 
-struct GetObjectStream {
+pub struct GetObjectStream {
   ctx: Arc<Ctx>,
   key: Vec<u8>,
   key_len: u16,
@@ -26,8 +26,7 @@ struct GetObjectStream {
 }
 
 #[derive(Debug, strum::Display)]
-enum GetObjectStreamError {
-
+pub enum GetObjectStreamError {
 }
 
 const STREAM_BUFSIZE: u64 = 1024 * 8;
@@ -97,7 +96,7 @@ pub async fn endpoint_get_object(
   let bucket_id = ctx.buckets.bucket_id_for_key(&key);
   let bkt = ctx.buckets.get_bucket(bucket_id).read().await;
   let bucket_version = bkt.version;
-  let Some(FoundInode { dev_offset: inode_dev_offset, object_id }) = bkt.find_inode(
+  let Some(FoundInode { dev_offset: inode_dev_offset, object_id, .. }) = bkt.find_inode(
     &ctx.buckets,
     bucket_id,
     &key,

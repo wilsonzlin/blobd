@@ -2,16 +2,19 @@ use std::{sync::Arc, cmp::min, io::Read};
 
 use axum::{http::{StatusCode}, extract::{BodyStream, State, Query}, TypedHeader, headers::ContentLength};
 use futures::StreamExt;
-use off64::Off64;
+use off64::Off64Int;
+use serde::{Serialize, Deserialize};
 
 use crate::{ctx::Ctx, tile::TILE_SIZE, inode::{InodeState, INO_OFFSETOF_OBJ_ID, INO_OFFSETOF_SIZE, INO_OFFSETOF_STATE, ObjectAllocCfg, get_object_alloc_cfg, INO_OFFSETOF_TILE_IDX, INO_OFFSETOF_KEY_LEN, INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET}};
 
+#[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
   pub offset: u64,
   pub object_id: u64,
   pub upload_id: u64,
 }
 
+// TODO We currently don't verify that the key is correct.
 pub async fn endpoint_write_object(
   State(ctx): State<Arc<Ctx>>,
   TypedHeader(ContentLength(len)): TypedHeader<ContentLength>,

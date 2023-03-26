@@ -19,11 +19,12 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.1", features = ["derive"] }
 futures = "0.3"
 itertools = "0.10"
-off64 = "0.2"
+off64 = "0.3"
 percent-encoding = "2.2"
 roaring = "0.10"
+rustc-hash = "1.1.0"
 # We must explicitly always use mmap, as we depend on ordered writes, and also want non-async writing capability.
-seekable-async-file =  { version = "0.5.1", features = ["mmap"] }
+seekable-async-file =  { version = "0.5.2", features = ["mmap"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 signal-future = "0.0.1"
@@ -32,4 +33,4 @@ tokio = { version = "1", features = ["full"] }
 toml = "0.7"
 # Pin the version as the docs mention that outputs could change in future versions: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
 twox-hash = "=1.6.3"
-write-journal = "0.4"
+write-journal = "0.4.1"

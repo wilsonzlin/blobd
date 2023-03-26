@@ -11,8 +11,8 @@ The ordering of these fields is important (and somewhat strange/seemingly random
 - **write_object** requires `state`, `size`, `obj_id`, `key_len`, `tail_data_fragment_dev_offset_or_zero_if_none`, and one `tile` element.
 - **find_inode_in_bucket** requires `state`, `obj_id`, `key_len`, `key`, and `next_inode_dev_offset_or_zero_if_end`.
 - **read_object** requires *find_inode_in_bucket* as well as `size`, `tail_data_fragment_dev_offset_or_zero_if_none`, and one `tile` element.
+- **commit_object** requires `state`, and `obj_id`.
 
-u8 FragmentType::Inode
 u48 tail_data_fragment_dev_offset_or_zero_if_none
 u40 size
 u8 state
@@ -24,8 +24,7 @@ u24[] tiles
 
 **/
 
-pub const INO_OFFSETOF_FRAG_TAG: u64 =  0;
-pub const INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET: u64 =  INO_OFFSETOF_FRAG_TAG + 1;
+pub const INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET: u64 =  0;
 pub const INO_OFFSETOF_SIZE: u64 =  INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET + 6;
 pub const INO_OFFSETOF_STATE: u64 =  INO_OFFSETOF_SIZE + 5;
 pub const INO_OFFSETOF_OBJ_ID: u64 =  INO_OFFSETOF_STATE + 1;
@@ -37,7 +36,7 @@ pub fn INO_OFFSETOF_TILE_IDX(key_len: u16, tile_idx: u16) -> u64 { INO_OFFSETOF_
 #[allow(non_snake_case)]
 pub fn INO_OFFSETOF_TILES(key_len: u16) -> u64 { INO_OFFSETOF_TILE_IDX(key_len, 0) }
 #[allow(non_snake_case)]
-pub fn INO_SIZE(key_len: u16, tile_count: u16)  -> u64 { INO_OFFSETOF_TILE_IDX(key_len, tile_count) }
+pub fn INO_SIZE(key_len: u16, tile_count: u16)  -> u32 { INO_OFFSETOF_TILE_IDX(key_len, tile_count).try_into().unwrap() }
 
 pub struct ObjectAllocCfg {
   pub tile_count: u16,
@@ -61,7 +60,5 @@ pub fn get_object_alloc_cfg(object_size: u64) -> ObjectAllocCfg  {
 pub enum InodeState {
   Deleted = 1 << 0,
   Incomplete = 1 << 1,
-  PendingCommit = 1 << 2,
-  PendingDelete = 1 << 3,
-  Ready = 1 << 4,
+  Ready = 1 << 2,
 }

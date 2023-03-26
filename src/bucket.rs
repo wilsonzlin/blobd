@@ -1,5 +1,5 @@
 use itertools::Itertools;
-use off64::{usz, Off64};
+use off64::{usz, Off64Int, create_u48_be};
 use seekable_async_file::SeekableAsyncFile;
 use tokio::sync::RwLock;
 use twox_hash::xxh3::hash64;
@@ -37,6 +37,8 @@ pub struct Bucket {
 }
 
 pub struct FoundInode {
+  pub prev_dev_offset: Option<u64>,
+  pub next_dev_offset: Option<u64>,
   pub dev_offset: u64,
   pub object_id: u64,
 }
@@ -54,9 +56,11 @@ impl Bucket {
   ) -> Option<FoundInode> {
     let Buckets { dev, dev_offset, .. } = buckets;
     let mut dev_offset = dev.read_at_sync(dev_offset + BUCKETS_OFFSETOF_BUCKET(bucket_id), 6).read_u48_be_at(0);
+    let mut prev_dev_offset = None;
     while dev_offset > 0 {
       let base = INO_OFFSETOF_STATE;
       let raw = dev.read_at_sync(dev_offset + base, INO_OFFSETOF_KEY - base);
+      let next_dev_offset = raw.read_u48_be_at(INO_OFFSETOF_NEXT_INODE_DEV_OFFSET - base);
       let object_id = raw.read_u64_be_at(INO_OFFSETOF_OBJ_ID - base);
       if raw[usz!(INO_OFFSETOF_STATE - base)] == expected_state as u8
       && (expected_object_id.is_none() || expected_object_id.unwrap() == object_id)
@@ -64,9 +68,10 @@ impl Bucket {
       // mmap region should already be in page cache, so no need to use async.
       && dev.read_at_sync(dev_offset + INO_OFFSETOF_KEY, key_len.into()) == key
       {
-        return Some(FoundInode { dev_offset, object_id });
+        return Some(FoundInode { prev_dev_offset, next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0), dev_offset, object_id });
       };
-      dev_offset = raw.read_u48_be_at(INO_OFFSETOF_NEXT_INODE_DEV_OFFSET - base);
+      prev_dev_offset = Some(dev_offset);
+      dev_offset = next_dev_offset;
     };
     None
   }
@@ -93,5 +98,16 @@ impl Buckets {
 
   pub fn get_bucket(&self, id: u64) -> &RwLock<Bucket> {
     &self.buckets[usz!(id)]
+  }
+
+  pub async fn get_bucket_head(&self, id: u64) -> u64 {
+    self.dev.read_at(self.dev_offset + BUCKETS_OFFSETOF_BUCKET(id), 6).await.read_u48_be_at(0)
+  }
+
+  pub fn mutate_bucket_head(&self, mutation_writes: &mut Vec<(u64, Vec<u8>)>, bucket_id: u64, dev_offset: u64) {
+    mutation_writes.push((
+      self.dev_offset + BUCKETS_OFFSETOF_BUCKET(bucket_id),
+      create_u48_be(dev_offset).to_vec(),
+    ));
   }
 }
