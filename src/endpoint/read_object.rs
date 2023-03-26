@@ -11,7 +11,7 @@ use crate::{ctx::Ctx, bucket::{Buckets, FoundInode}, inode::{InodeState, get_obj
 
 use super::parse_key;
 
-pub struct GetObjectStream {
+pub struct ReadObjectStream {
   ctx: Arc<Ctx>,
   key: Vec<u8>,
   key_len: u16,
@@ -26,15 +26,15 @@ pub struct GetObjectStream {
 }
 
 #[derive(Debug, strum::Display)]
-pub enum GetObjectStreamError {
+pub enum ReadObjectStreamError {
 }
 
 const STREAM_BUFSIZE: u64 = 1024 * 8;
 
-impl Error for GetObjectStreamError {}
+impl Error for ReadObjectStreamError {}
 
-impl Stream for GetObjectStream {
-  type Item = Result<Bytes, Box<GetObjectStreamError>>;
+impl Stream for ReadObjectStream {
+  type Item = Result<Bytes, Box<ReadObjectStreamError>>;
 
   fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     if self.next >= self.end {
@@ -82,11 +82,11 @@ impl Stream for GetObjectStream {
   }
 }
 
-pub async fn endpoint_get_object(
+pub async fn endpoint_read_object(
   State(ctx): State<Arc<Ctx>>,
   TypedHeader(range): TypedHeader<Range>,
   uri: Uri,
-) -> Result<StreamBody<GetObjectStream>, StatusCode> {
+) -> Result<StreamBody<ReadObjectStream>, StatusCode> {
   let ranges = range.iter().collect_vec();
   if ranges.len() != 1 {
     return Err(StatusCode::RANGE_NOT_SATISFIABLE);
@@ -126,7 +126,7 @@ pub async fn endpoint_get_object(
   };
 
   let alloc_cfg = get_object_alloc_cfg(object_size);
-  let stream = GetObjectStream {
+  let stream = ReadObjectStream {
     alloc_cfg,
     bucket_id,
     bucket_version,

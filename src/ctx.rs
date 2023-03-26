@@ -2,12 +2,12 @@ use std::{ops::{Deref, DerefMut}, collections::BTreeMap};
 
 use seekable_async_file::SeekableAsyncFile;
 use signal_future::{SignalFutureController, SignalFuture};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use write_journal::{WriteJournal, AtomicWriteGroup};
 
-use crate::{free_list::FreeList, bucket::Buckets};
+use crate::{free_list::FreeList, bucket::Buckets, object_id::ObjectIdSerial, stream::Stream};
 
-// Since updated state to the free list on storage must be reflected in order, and we don't want to lock free list for entire write + fdatasync, we don't append to journal directly, but take a serial, and require that journal writes are sequentialised.
+// Since updated state to the free list on storage must be reflected in order, and we don't want to lock free list for entire write + fdatasync, we don't append to journal directly, but take a serial, and require that journal writes are sequentialised. This also sequentialises writes to object ID serial, stream, etc., which they rely on.
 pub struct ChangeSerial {
   num: u64,
   used: bool,
@@ -28,6 +28,10 @@ pub struct FreeListWithChangeTracker {
 }
 
 impl FreeListWithChangeTracker {
+  pub fn new(free_list: FreeList) -> Self {
+    Self { free_list, next_change_serial: 0 }
+  }
+
   pub fn generate_change_serial(&mut self) -> ChangeSerial {
     let serial = self.next_change_serial;
     self.next_change_serial += 1;
@@ -56,6 +60,10 @@ pub struct SequentialisedJournal {
 }
 
 impl SequentialisedJournal {
+  pub fn new(journal: WriteJournal) -> Self {
+    Self { journal, next_serial: 0, pending: BTreeMap::new() }
+  }
+
   pub async fn write(&mut self, mut serial: ChangeSerial, write: AtomicWriteGroup) {
     assert!(!serial.used);
     serial.used = true;
@@ -75,7 +83,8 @@ impl SequentialisedJournal {
 pub struct Ctx {
   pub buckets: Buckets,
   pub device: SeekableAsyncFile,
-  pub journal: Mutex<SequentialisedJournal>,
   pub free_list: Mutex<FreeListWithChangeTracker>,
-  pub free_list_dev_offset: u64,
+  pub journal: Mutex<SequentialisedJournal>,
+  pub object_id_serial: ObjectIdSerial,
+  pub stream: RwLock<Stream>,
 }

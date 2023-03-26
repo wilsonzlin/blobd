@@ -29,7 +29,7 @@ pub async fn endpoint_create_object(
   let ObjectAllocCfg { tile_count, tail_len } = get_object_alloc_cfg(req.size);
   let ino_size = INO_SIZE(key_len, tile_count.into());
 
-  let mut writes = Vec::with_capacity(3 + usz!(tile_count));
+  let mut writes = Vec::with_capacity(4 + usz!(tile_count));
 
   let (change_serial, ino_dev_offset, tiles, tail_dev_offset) = {
     let mut free_list = ctx.free_list.lock().await;
@@ -43,8 +43,7 @@ pub async fn endpoint_create_object(
     (free_list.generate_change_serial(), ino_dev_offset, tiles, tail_dev_offset)
   };
 
-  // TODO
-  let object_id = 0;
+  let object_id = ctx.object_id_serial.next(&mut writes);
 
   let mut ino_raw = vec![0u8; usz!(ino_size)];
   ino_raw.write_u48_be_at(INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, 0);
@@ -60,10 +59,7 @@ pub async fn endpoint_create_object(
   };
 
   // The inode must be journalled as well, as the GC depends on consistent data when reading raw tiles directly.
-  writes.push((
-    ino_dev_offset,
-    ino_raw,
-  ));
+  writes.push((ino_dev_offset, ino_raw));
 
   ctx.journal.lock().await.write(change_serial, AtomicWriteGroup(writes)).await;
 

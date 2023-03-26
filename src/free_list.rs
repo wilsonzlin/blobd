@@ -56,7 +56,7 @@ pub fn FREELIST_OFFSETOF_TILE_RELEASED_SPACE(tile_no: u32) -> u64 { 6 * u64::fro
 pub const FREELIST_TILE_CAP: u32 =  16777216;
 
 #[allow(non_snake_case)]
-pub fn FREELIST_RESERVED_SPACE() -> u64 { FREELIST_OFFSETOF_TILE_USED_SPACE(FREELIST_TILE_CAP) }
+pub fn FREELIST_SIZE() -> u64 { FREELIST_OFFSETOF_TILE_USED_SPACE(FREELIST_TILE_CAP) }
 
 struct FragmentedTile {
   released_bytes: u32,
@@ -142,14 +142,14 @@ pub struct FreeList {
 }
 
 impl FreeList {
-  pub fn load_from_device(device: SeekableAsyncFile, dev_offset: u64, tile_count: u32) -> FreeList {
+  pub fn load_from_device(dev: &SeekableAsyncFile, dev_offset: u64, reserved_tile_count: u32, total_tile_count: u32) -> FreeList {
     let mut solid_tiles = RoaringBitmap::new();
     let mut fragmented_tiles = FragmentedTiles::new();
-    for tile_no in 0..tile_count {
+    for tile_no in reserved_tile_count..total_tile_count {
       let dev_offset_used_bytes = FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no);
       let dev_offset_released_bytes = FREELIST_OFFSETOF_TILE_RELEASED_SPACE(tile_no);
-      let used_bytes = device.read_at_sync(dev_offset_used_bytes, 3).read_u24_be_at(0);
-      let released_bytes = device.read_at_sync(dev_offset_released_bytes, 3).read_u24_be_at(0);
+      let used_bytes = dev.read_at_sync(dev_offset_used_bytes, 3).read_u24_be_at(0);
+      let released_bytes = dev.read_at_sync(dev_offset_released_bytes, 3).read_u24_be_at(0);
       if used_bytes == 0 {
         solid_tiles.insert(used_bytes);
       } else {
@@ -157,6 +157,10 @@ impl FreeList {
       };
     };
     FreeList { dev_offset, solid_tiles, fragmented_tiles }
+  }
+
+  pub fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
+    dev.write_at_sync(dev_offset, vec![0u8; usz!(FREELIST_SIZE())]);
   }
 
   // Returns the device offset of the fragment, and the updated fragmented tile usage amount.

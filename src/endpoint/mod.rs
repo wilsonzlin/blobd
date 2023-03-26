@@ -7,6 +7,7 @@ pub mod write_object;
 pub mod read_object;
 pub mod delete_object;
 pub mod commit_object;
+pub mod inspect_object;
 
 pub fn parse_key(uri: &Uri) -> (Vec<u8>, u16) {
   let key = percent_decode(uri.path().as_bytes()).collect_vec();

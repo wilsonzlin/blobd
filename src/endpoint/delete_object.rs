@@ -5,7 +5,7 @@ use itertools::Itertools;
 use off64::{Off64Int, create_u48_be};
 use write_journal::AtomicWriteGroup;
 
-use crate::{ctx::Ctx, inode::{InodeState, INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, get_object_alloc_cfg, INO_OFFSETOF_SIZE, INO_OFFSETOF_TILES, INO_OFFSETOF_STATE, INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, INO_SIZE}, bucket::{FoundInode}};
+use crate::{ctx::Ctx, inode::{InodeState, INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, get_object_alloc_cfg, INO_OFFSETOF_SIZE, INO_OFFSETOF_TILES, INO_OFFSETOF_STATE, INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, INO_SIZE}, bucket::{FoundInode}, stream::{StreamEventType, StreamEvent}};
 
 use super::parse_key;
 
@@ -17,7 +17,7 @@ pub async fn endpoint_delete_object(
   let (key, key_len) = parse_key(&uri);
   let bkt_id = ctx.buckets.bucket_id_for_key(&key);
   let bkt = ctx.buckets.get_bucket(bkt_id).write().await;
-  let Some(FoundInode { prev_dev_offset: prev_inode, next_dev_offset: next_inode, dev_offset: inode_dev_offset, .. }) = bkt.find_inode(
+  let Some(FoundInode { prev_dev_offset: prev_inode, next_dev_offset: next_inode, dev_offset: inode_dev_offset, object_id }) = bkt.find_inode(
     &ctx.buckets,
     bkt_id,
     &key,
@@ -63,6 +63,13 @@ pub async fn endpoint_delete_object(
       ctx.buckets.mutate_bucket_head(&mut writes, bkt_id, next_inode.unwrap_or(0));
     }
   };
+
+  // Create stream event.
+  ctx.stream.write().await.create_event(&mut writes, StreamEvent {
+    typ: StreamEventType::ObjectDelete,
+    bucket_id: bkt_id,
+    object_id,
+  });
 
   ctx.journal.lock().await.write(change_serial, AtomicWriteGroup(writes)).await;
 

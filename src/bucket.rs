@@ -29,7 +29,7 @@ u48[] dev_offset_or_zero
 pub fn BUCKETS_OFFSETOF_BUCKET(bkt_id: u64) -> u64 { 1 + bkt_id * 6 }
 
 #[allow(non_snake_case)]
-pub fn BUCKETS_RESERVED_SPACE(bkt_cnt: u64) -> u64 { BUCKETS_OFFSETOF_BUCKET(bkt_cnt) }
+pub fn BUCKETS_SIZE(bkt_cnt: u64) -> u64 { BUCKETS_OFFSETOF_BUCKET(bkt_cnt) }
 
 pub struct Bucket {
   // This is an in-memory value that increments on every write on this RwLock-ed Bucket. This allows us to cache the inode offset and metadata when reading an object between response stream chunks, instead of looking up the key every single time in case the object was deleted in the meantime. This should be reasonably optimal given one bucket should equal one object under optimal hashing and load.
@@ -90,6 +90,11 @@ impl Buckets {
     let key_mask = count - 1;
     let buckets = (0..count).map(|_| RwLock::new(Bucket{version: 0})).collect_vec();
     Buckets { buckets, dev, dev_offset, key_mask }
+  }
+
+  pub fn format_device(dev: &SeekableAsyncFile, dev_offset: u64, bucket_count: u64) {
+    dev.write_at_sync(dev_offset, vec![0u8; usz!(BUCKETS_SIZE(bucket_count))]);
+    dev.write_at_sync(dev_offset, vec![bucket_count.ilog2() as u8]);
   }
 
   pub fn bucket_id_for_key(&self, key: &[u8]) -> u64 {
