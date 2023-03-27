@@ -1,4 +1,6 @@
 use super::parse_key;
+use super::AuthToken;
+use super::AuthTokenAction;
 use super::UploadId;
 use crate::ctx::Ctx;
 use crate::inode::InodeState;
@@ -24,6 +26,7 @@ use write_journal::AtomicWriteGroup;
 pub struct InputQueryParams {
   pub object_id: u64,
   pub upload_id: String,
+  pub t: String,
 }
 
 // See endpoint_delete_object for why we hold RwLock write lock for entire request.
@@ -33,6 +36,12 @@ pub async fn endpoint_commit_object(
   req: Query<InputQueryParams>,
 ) -> StatusCode {
   let (key, _) = parse_key(&uri);
+  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::CommitObject {
+    object_id: req.object_id,
+  }) {
+    return StatusCode::UNAUTHORIZED;
+  };
+
   let bkt_id = ctx.buckets.bucket_id_for_key(&key);
   let mut bkt = ctx.buckets.get_bucket(bkt_id).write().await;
   let Some(inode_dev_offset) = UploadId::parse_and_verify(&ctx.tokens, &req.upload_id) else {

@@ -1,4 +1,6 @@
 use super::parse_key;
+use super::AuthToken;
+use super::AuthTokenAction;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
@@ -9,6 +11,7 @@ use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_TILE_IDX;
 use crate::tile::TILE_SIZE;
 use axum::body::StreamBody;
+use axum::extract::Query;
 use axum::extract::State;
 use axum::headers::Range;
 use axum::http::StatusCode;
@@ -18,6 +21,8 @@ use bytes::Bytes;
 use futures::Stream;
 use itertools::Itertools;
 use off64::Off64Int;
+use serde::Deserialize;
+use serde::Serialize;
 use std::cmp::min;
 use std::error::Error;
 use std::ops::Bound;
@@ -110,17 +115,33 @@ impl Stream for ReadObjectStream {
   }
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct InputQueryParams {
+  pub t: String,
+}
+
 pub async fn endpoint_read_object(
   State(ctx): State<Arc<Ctx>>,
   TypedHeader(range): TypedHeader<Range>,
   uri: Uri,
+  q: Query<InputQueryParams>,
 ) -> Result<StreamBody<ReadObjectStream>, StatusCode> {
-  let ranges = range.iter().collect_vec();
-  if ranges.len() != 1 {
-    return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+  let (key, key_len) = parse_key(&uri);
+  if AuthToken::verify(&ctx.tokens, &q.t, AuthTokenAction::ReadObject {
+    key: key.clone(),
+  }) {
+    return Err(StatusCode::UNAUTHORIZED);
   };
 
-  let (key, key_len) = parse_key(&uri);
+  let ranges = range.iter().collect_vec();
+  if ranges.len() > 1 {
+    return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+  };
+  let range = ranges
+    .first()
+    .cloned()
+    .unwrap_or((Bound::Unbounded, Bound::Unbounded));
+
   let bucket_id = ctx.buckets.bucket_id_for_key(&key);
   let bkt = ctx.buckets.get_bucket(bucket_id).read().await;
   let bucket_version = bkt.version;
@@ -139,14 +160,14 @@ pub async fn endpoint_read_object(
     .device
     .read_at_sync(inode_dev_offset + INO_OFFSETOF_SIZE, 5)
     .read_u40_be_at(0);
-  let start = match ranges[0].0 {
+  let start = match range.0 {
     Bound::Included(v) => v,
     // Lower bound must always be inclusive.
     Bound::Excluded(_) => return Err(StatusCode::RANGE_NOT_SATISFIABLE),
     Bound::Unbounded => 0,
   };
   // Exclusive.
-  let end = match ranges[0].1 {
+  let end = match range.1 {
     Bound::Included(v) => v + 1,
     Bound::Excluded(v) => v,
     Bound::Unbounded => object_size,

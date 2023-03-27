@@ -1,3 +1,5 @@
+use super::AuthToken;
+use super::AuthTokenAction;
 use super::UploadId;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
@@ -29,6 +31,7 @@ pub struct InputQueryParams {
   pub offset: u64,
   pub object_id: u64,
   pub upload_id: String,
+  pub t: String,
 }
 
 // TODO We currently don't verify that the key is correct.
@@ -38,6 +41,13 @@ pub async fn endpoint_write_object(
   req: Query<InputQueryParams>,
   mut body: BodyStream,
 ) -> StatusCode {
+  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::WriteObject {
+    object_id: req.object_id,
+    offset: req.offset,
+  }) {
+    return StatusCode::UNAUTHORIZED;
+  };
+
   if req.offset % u64::from(TILE_SIZE) != 0 {
     // Invalid offset.
     return StatusCode::RANGE_NOT_SATISFIABLE;

@@ -1,21 +1,38 @@
 use super::parse_key;
+use super::AuthToken;
+use super::AuthTokenAction;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
 use crate::inode::InodeState;
 use crate::inode::INO_OFFSETOF_SIZE;
+use axum::extract::Query;
 use axum::extract::State;
 use axum::http::header::CONTENT_LENGTH;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use off64::Off64Int;
+use serde::Deserialize;
+use serde::Serialize;
 use std::sync::Arc;
+
+#[derive(Serialize, Deserialize)]
+pub struct InputQueryParams {
+  pub t: String,
+}
 
 pub async fn endpoint_inspect_object(
   State(ctx): State<Arc<Ctx>>,
   uri: Uri,
+  q: Query<InputQueryParams>,
 ) -> (StatusCode, HeaderMap) {
   let (key, key_len) = parse_key(&uri);
+  if AuthToken::verify(&ctx.tokens, &q.t, AuthTokenAction::InspectObject {
+    key: key.clone(),
+  }) {
+    return (StatusCode::UNAUTHORIZED, HeaderMap::new());
+  };
+
   let bucket_id = ctx.buckets.bucket_id_for_key(&key);
   let bkt = ctx.buckets.get_bucket(bucket_id).read().await;
   let Some(FoundInode { dev_offset: inode_dev_offset, .. }) = bkt.find_inode(

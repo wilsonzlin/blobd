@@ -1,4 +1,6 @@
 use super::parse_key;
+use super::AuthToken;
+use super::AuthTokenAction;
 use super::UploadId;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
@@ -13,6 +15,7 @@ use crate::inode::INO_OFFSETOF_STATE;
 use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_TILE_IDX;
 use crate::inode::INO_SIZE;
+use axum::extract::Query;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::Uri;
@@ -24,6 +27,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
 use write_journal::AtomicWriteGroup;
+
+#[derive(Serialize, Deserialize)]
+pub struct InputQueryParams {
+  pub t: String,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct Input {
@@ -39,9 +47,17 @@ pub struct Output {
 pub async fn endpoint_create_object(
   State(ctx): State<Arc<Ctx>>,
   uri: Uri,
+  q: Query<InputQueryParams>,
   Json(req): Json<Input>,
 ) -> Result<Json<Output>, StatusCode> {
   let (key, key_len) = parse_key(&uri);
+  if AuthToken::verify(&ctx.tokens, &q.t, AuthTokenAction::CreateObject {
+    key: key.clone(),
+    size: req.size,
+  }) {
+    return Err(StatusCode::UNAUTHORIZED);
+  };
+
   let ObjectAllocCfg {
     tile_count,
     tail_len,

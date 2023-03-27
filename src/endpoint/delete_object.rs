@@ -1,4 +1,6 @@
 use super::parse_key;
+use super::AuthToken;
+use super::AuthTokenAction;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
@@ -10,18 +12,36 @@ use crate::inode::INO_OFFSETOF_TILES;
 use crate::inode::INO_SIZE;
 use crate::stream::StreamEvent;
 use crate::stream::StreamEventType;
+use axum::extract::Query;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use itertools::Itertools;
 use off64::create_u48_be;
 use off64::Off64Int;
+use serde::Deserialize;
+use serde::Serialize;
 use std::sync::Arc;
 use write_journal::AtomicWriteGroup;
 
+#[derive(Serialize, Deserialize)]
+pub struct InputQueryParams {
+  pub t: String,
+}
+
 // We hold write lock on bucket RwLock for entire request (including writes and data sync) for simplicity and avoidance of subtle race conditions. Performance should still be great as one bucket equals one object given desired bucket count and load. If we release lock before we (or journal) finishes writes, we need to prevent/handle any possible intermediate read and write of the state of inode elements on the device, linked list pointers, garbage collectors, premature use of data or reuse of freed space, etc.
-pub async fn endpoint_delete_object(State(ctx): State<Arc<Ctx>>, uri: Uri) -> StatusCode {
+pub async fn endpoint_delete_object(
+  State(ctx): State<Arc<Ctx>>,
+  uri: Uri,
+  q: Query<InputQueryParams>,
+) -> StatusCode {
   let (key, key_len) = parse_key(&uri);
+  if AuthToken::verify(&ctx.tokens, &q.t, AuthTokenAction::DeleteObject {
+    key: key.clone(),
+  }) {
+    return StatusCode::UNAUTHORIZED;
+  };
+
   let bkt_id = ctx.buckets.bucket_id_for_key(&key);
   let bkt = ctx.buckets.get_bucket(bkt_id).write().await;
   let Some(FoundInode { prev_dev_offset: prev_inode, next_dev_offset: next_inode, dev_offset: inode_dev_offset, object_id }) = bkt.find_inode(
