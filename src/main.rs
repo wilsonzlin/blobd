@@ -10,8 +10,10 @@ use crate::server::start_http_server_loop;
 use crate::stream::Stream;
 use crate::stream::STREAM_SIZE;
 use crate::tile::TILE_SIZE;
+use crate::token::BlobdTokens;
 use clap::Parser;
 use conf::Conf;
+use data_encoding::BASE64;
 use seekable_async_file::get_file_len_via_seek;
 use seekable_async_file::SeekableAsyncFile;
 use seekable_async_file::SeekableAsyncFileMetrics;
@@ -33,6 +35,7 @@ pub mod object_id;
 pub mod server;
 pub mod stream;
 pub mod tile;
+pub mod token;
 
 /**
 
@@ -97,6 +100,14 @@ async fn main() {
     "bucket count must be in the range [4096, 281474976710656]"
   );
 
+  let tokens = BlobdTokens::new(
+    BASE64
+      .decode(conf.token_secret_base64.as_bytes())
+      .expect("decode configured token secret")
+      .try_into()
+      .expect("configured token secret must have length of 32"),
+  );
+
   let offsetof_journal = 0;
   let sizeof_journal = 1024 * 1024 * 8;
   let offsetof_object_id_serial = offsetof_journal + sizeof_journal;
@@ -144,6 +155,7 @@ async fn main() {
     journal: Mutex::new(SequentialisedJournal::new(journal.clone())),
     object_id_serial,
     stream: RwLock::new(stream),
+    tokens,
   });
 
   join! {

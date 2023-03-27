@@ -11,6 +11,8 @@ pub struct Conf {
 
   pub device_path: PathBuf,
 
+  pub token_secret_base64: String,
+
   pub interface: Ipv4Addr,
   pub port: u16,
 }

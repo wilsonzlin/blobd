@@ -1,3 +1,4 @@
+use super::UploadId;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
 use crate::inode::InodeState;
@@ -27,7 +28,7 @@ use std::sync::Arc;
 pub struct InputQueryParams {
   pub offset: u64,
   pub object_id: u64,
-  pub upload_id: u64,
+  pub upload_id: String,
 }
 
 // TODO We currently don't verify that the key is correct.
@@ -45,7 +46,9 @@ pub async fn endpoint_write_object(
     // Cannot write greater than one tile size in one request.
     return StatusCode::PAYLOAD_TOO_LARGE;
   };
-  let ino_dev_offset = req.upload_id;
+  let Some(ino_dev_offset) = UploadId::parse_and_verify(&ctx.tokens, &req.upload_id) else {
+    return StatusCode::NOT_FOUND;
+  };
 
   // TODO Optimisation: make one read, or don't use await.
 

@@ -1,4 +1,5 @@
 use super::parse_key;
+use super::UploadId;
 use crate::ctx::Ctx;
 use crate::inode::InodeState;
 use crate::inode::INO_OFFSETOF_KEY_LEN;
@@ -22,7 +23,7 @@ use write_journal::AtomicWriteGroup;
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
   pub object_id: u64,
-  pub upload_id: u64,
+  pub upload_id: String,
 }
 
 // See endpoint_delete_object for why we hold RwLock write lock for entire request.
@@ -34,7 +35,9 @@ pub async fn endpoint_commit_object(
   let (key, _) = parse_key(&uri);
   let bkt_id = ctx.buckets.bucket_id_for_key(&key);
   let mut bkt = ctx.buckets.get_bucket(bkt_id).write().await;
-  let inode_dev_offset = req.upload_id;
+  let Some(inode_dev_offset) = UploadId::parse_and_verify(&ctx.tokens, &req.upload_id) else {
+    return StatusCode::NOT_FOUND;
+  };
 
   // Check AFTER acquiring lock in case two requests try to commit the same inode.
   let obj_id = {

@@ -1,4 +1,5 @@
 use super::parse_key;
+use super::UploadId;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
 use crate::inode::InodeState;
@@ -32,7 +33,7 @@ pub struct Input {
 #[derive(Serialize, Deserialize)]
 pub struct Output {
   object_id: u64,
-  upload_id: u64,
+  upload_id: String,
 }
 
 pub async fn endpoint_create_object(
@@ -93,6 +94,6 @@ pub async fn endpoint_create_object(
 
   Ok(Json(Output {
     object_id,
-    upload_id: ino_dev_offset,
+    upload_id: UploadId::new(&ctx.tokens, ino_dev_offset),
   }))
 }
