@@ -1,6 +1,4 @@
 use super::parse_key;
-use super::AuthToken;
-use super::AuthTokenAction;
 use super::UploadId;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
@@ -17,9 +15,11 @@ use crate::inode::INO_OFFSETOF_TILE_IDX;
 use crate::inode::INO_SIZE;
 use axum::extract::Query;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::Uri;
-use axum::Json;
+use blobd_token::AuthToken;
+use blobd_token::AuthTokenAction;
 use off64::usz;
 use off64::Off64Int;
 use off64::Off64Slice;
@@ -30,12 +30,8 @@ use write_journal::AtomicWriteGroup;
 
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
-  pub t: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Input {
   pub size: u64,
+  pub t: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -47,15 +43,14 @@ pub struct Output {
 pub async fn endpoint_create_object(
   State(ctx): State<Arc<Ctx>>,
   uri: Uri,
-  q: Query<InputQueryParams>,
-  Json(req): Json<Input>,
-) -> Result<Json<Output>, StatusCode> {
+  req: Query<InputQueryParams>,
+) -> (StatusCode, HeaderMap) {
   let (key, key_len) = parse_key(&uri);
-  if AuthToken::verify(&ctx.tokens, &q.t, AuthTokenAction::CreateObject {
+  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::CreateObject {
     key: key.clone(),
     size: req.size,
   }) {
-    return Err(StatusCode::UNAUTHORIZED);
+    return (StatusCode::UNAUTHORIZED, HeaderMap::new());
   };
 
   let ObjectAllocCfg {
@@ -108,8 +103,12 @@ pub async fn endpoint_create_object(
     .write(change_serial, AtomicWriteGroup(writes))
     .await;
 
-  Ok(Json(Output {
-    object_id,
-    upload_id: UploadId::new(&ctx.tokens, ino_dev_offset),
-  }))
+  let mut headers = HeaderMap::new();
+  headers.insert("x-blobd-object-id", object_id.into());
+  headers.insert(
+    "x-blobd-upload-id",
+    UploadId::new(&ctx.tokens, ino_dev_offset).parse().unwrap(),
+  );
+
+  (StatusCode::ACCEPTED, headers)
 }

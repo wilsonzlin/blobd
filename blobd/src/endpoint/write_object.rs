@@ -1,5 +1,3 @@
-use super::AuthToken;
-use super::AuthTokenAction;
 use super::UploadId;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
@@ -18,6 +16,8 @@ use axum::extract::State;
 use axum::headers::ContentLength;
 use axum::http::StatusCode;
 use axum::TypedHeader;
+use blobd_token::AuthToken;
+use blobd_token::AuthTokenAction;
 use futures::StreamExt;
 use off64::Off64Int;
 use serde::Deserialize;

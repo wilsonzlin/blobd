@@ -1,6 +1,4 @@
 use super::parse_key;
-use super::AuthToken;
-use super::AuthTokenAction;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
 use crate::inode::InodeState;
@@ -11,6 +9,8 @@ use axum::http::header::CONTENT_LENGTH;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::Uri;
+use blobd_token::AuthToken;
+use blobd_token::AuthTokenAction;
 use off64::Off64Int;
 use serde::Deserialize;
 use serde::Serialize;
@@ -24,10 +24,10 @@ pub struct InputQueryParams {
 pub async fn endpoint_inspect_object(
   State(ctx): State<Arc<Ctx>>,
   uri: Uri,
-  q: Query<InputQueryParams>,
+  req: Query<InputQueryParams>,
 ) -> (StatusCode, HeaderMap) {
   let (key, key_len) = parse_key(&uri);
-  if AuthToken::verify(&ctx.tokens, &q.t, AuthTokenAction::InspectObject {
+  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::InspectObject {
     key: key.clone(),
   }) {
     return (StatusCode::UNAUTHORIZED, HeaderMap::new());
@@ -35,7 +35,7 @@ pub async fn endpoint_inspect_object(
 
   let bucket_id = ctx.buckets.bucket_id_for_key(&key);
   let bkt = ctx.buckets.get_bucket(bucket_id).read().await;
-  let Some(FoundInode { dev_offset: inode_dev_offset, .. }) = bkt.find_inode(
+  let Some(FoundInode { dev_offset: inode_dev_offset, object_id, .. }) = bkt.find_inode(
     &ctx.buckets,
     bucket_id,
     &key,
@@ -53,5 +53,6 @@ pub async fn endpoint_inspect_object(
 
   let mut headers = HeaderMap::new();
   headers.insert(CONTENT_LENGTH, object_size.into());
+  headers.insert("x-blobd-object-id", object_id.into());
   (StatusCode::OK, headers)
 }

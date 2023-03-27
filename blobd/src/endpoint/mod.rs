@@ -1,9 +1,6 @@
 use axum::http::Uri;
 use blobd_token::BlobdTokens;
-use chrono::DateTime;
-use chrono::Utc;
 use data_encoding::BASE64;
-use data_encoding::BASE64URL_NOPAD;
 use itertools::Itertools;
 use percent_encoding::percent_decode;
 use serde::Deserialize;
@@ -43,45 +40,5 @@ impl UploadId {
     let token_raw = BASE64.decode(token.as_bytes()).ok()?;
     let id = tokens.parse_and_verify::<UploadId>(&token_raw)?;
     Some(id.inode_dev_offset)
-  }
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
-// WARNING: Order of fields is significant, as rmp_serde will serialise in this order without field names.
-pub enum AuthTokenAction {
-  CommitObject { object_id: u64 },
-  CreateObject { key: Vec<u8>, size: u64 },
-  DeleteObject { key: Vec<u8> },
-  InspectObject { key: Vec<u8> },
-  ReadObject { key: Vec<u8> },
-  WriteObject { object_id: u64, offset: u64 },
-}
-
-#[derive(Serialize, Deserialize)]
-// WARNING: Order of fields is significant, as rmp_serde will serialise in this order without field names.
-pub struct AuthToken {
-  action: AuthTokenAction,
-  expires: i64, // UNIX timestamp, seconds since epoch.
-}
-
-impl AuthToken {
-  pub fn new(tokens: &BlobdTokens, action: AuthTokenAction, expires: DateTime<Utc>) -> String {
-    let token_data = AuthToken {
-      action,
-      expires: expires.timestamp(),
-    };
-    let token_raw = tokens.generate(token_data);
-    BASE64URL_NOPAD.encode(&token_raw)
-  }
-
-  pub fn verify(tokens: &BlobdTokens, token: &str, expected_action: AuthTokenAction) -> bool {
-    let now = Utc::now().timestamp();
-    let Ok(token_raw) = BASE64URL_NOPAD.decode(token.as_bytes()) else {
-      return false;
-    };
-    let Some(v): Option<AuthToken> = tokens.parse_and_verify(&token_raw) else {
-      return false;
-    };
-    v.expires > now && v.action == expected_action
   }
 }

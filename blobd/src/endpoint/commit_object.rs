@@ -1,6 +1,4 @@
 use super::parse_key;
-use super::AuthToken;
-use super::AuthTokenAction;
 use super::UploadId;
 use crate::ctx::Ctx;
 use crate::inode::InodeState;
@@ -14,6 +12,8 @@ use axum::extract::Query;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::Uri;
+use blobd_token::AuthToken;
+use blobd_token::AuthTokenAction;
 use off64::create_u48_be;
 use off64::usz;
 use off64::Off64Int;
@@ -104,5 +104,5 @@ pub async fn endpoint_commit_object(
     .write(change_serial, AtomicWriteGroup(writes))
     .await;
 
-  StatusCode::OK
+  StatusCode::CREATED
 }

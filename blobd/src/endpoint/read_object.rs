@@ -1,6 +1,4 @@
 use super::parse_key;
-use super::AuthToken;
-use super::AuthTokenAction;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
@@ -16,7 +14,10 @@ use axum::extract::State;
 use axum::headers::Range;
 use axum::http::StatusCode;
 use axum::http::Uri;
+use axum::response::Response;
 use axum::TypedHeader;
+use blobd_token::AuthToken;
+use blobd_token::AuthTokenAction;
 use bytes::Bytes;
 use futures::Stream;
 use itertools::Itertools;
@@ -124,10 +125,10 @@ pub async fn endpoint_read_object(
   State(ctx): State<Arc<Ctx>>,
   TypedHeader(range): TypedHeader<Range>,
   uri: Uri,
-  q: Query<InputQueryParams>,
-) -> Result<StreamBody<ReadObjectStream>, StatusCode> {
+  req: Query<InputQueryParams>,
+) -> Result<Response<StreamBody<ReadObjectStream>>, StatusCode> {
   let (key, key_len) = parse_key(&uri);
-  if AuthToken::verify(&ctx.tokens, &q.t, AuthTokenAction::ReadObject {
+  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::ReadObject {
     key: key.clone(),
   }) {
     return Err(StatusCode::UNAUTHORIZED);
@@ -192,5 +193,21 @@ pub async fn endpoint_read_object(
     object_size,
   };
 
-  Ok(StreamBody::new(stream))
+  Ok(
+    Response::builder()
+      .status(if ranges.is_empty() {
+        StatusCode::OK
+      } else {
+        StatusCode::PARTIAL_CONTENT
+      })
+      .header("accept-ranges", "bytes")
+      .header("content-length", (end - start).to_string())
+      .header(
+        "content-range",
+        format!("bytes {start}-{end}/{object_size}"),
+      )
+      .header("x-blobd-object-id", object_id.to_string())
+      .body(StreamBody::new(stream))
+      .unwrap(),
+  )
 }

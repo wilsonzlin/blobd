@@ -1,6 +1,4 @@
 use super::parse_key;
-use super::AuthToken;
-use super::AuthTokenAction;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
@@ -16,6 +14,8 @@ use axum::extract::Query;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::Uri;
+use blobd_token::AuthToken;
+use blobd_token::AuthTokenAction;
 use itertools::Itertools;
 use off64::create_u48_be;
 use off64::Off64Int;
@@ -33,10 +33,10 @@ pub struct InputQueryParams {
 pub async fn endpoint_delete_object(
   State(ctx): State<Arc<Ctx>>,
   uri: Uri,
-  q: Query<InputQueryParams>,
+  req: Query<InputQueryParams>,
 ) -> StatusCode {
   let (key, key_len) = parse_key(&uri);
-  if AuthToken::verify(&ctx.tokens, &q.t, AuthTokenAction::DeleteObject {
+  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::DeleteObject {
     key: key.clone(),
   }) {
     return StatusCode::UNAUTHORIZED;
