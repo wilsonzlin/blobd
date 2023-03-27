@@ -1,0 +1,13 @@
+[package]
+name = "blobc"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+blobd-client-rs = { version = "0.0.1", path = "../blobd-client-rs" }
+bytes = "1.4.0"
+clap = { version = "4.1.13", features = ["derive"] }
+futures = "0.3.27"
+indicatif = "0.17.3"
+tokio = { version = "1.26.0", features = ["macros", "fs", "rt"] }
+walkdir = "2.3.3"

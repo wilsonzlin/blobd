@@ -66,6 +66,7 @@ impl BlobdTokens {
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 // WARNING: Order of fields is significant, as rmp_serde will serialise in this order without field names.
 pub enum AuthTokenAction {
+  BatchCreateObjects {},
   CommitObject { object_id: u64 },
   CreateObject { key: Vec<u8>, size: u64 },
   DeleteObject { key: Vec<u8> },

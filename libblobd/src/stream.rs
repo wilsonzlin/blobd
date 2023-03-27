@@ -43,7 +43,8 @@ pub const STREAM_OFFSETOF_EVENTS: u64 = STREAM_OFFSETOF_VIRTUAL_HEAD + 8;
 pub fn STREAM_OFFSETOF_EVENT(event_id: u64) -> u64 {
   STREAM_OFFSETOF_EVENTS + (STREVT_SIZE * (event_id % STREAM_EVENT_CAP))
 }
-pub const STREAM_EVENT_CAP: u64 = 1_000_000;
+// Ensure this is large enough such that a replica can be created without a high chance of the stream wrapping before the storage is replicated. An event is only 15 bytes, so we can be gracious here.
+pub const STREAM_EVENT_CAP: u64 = 8_000_000;
 pub const STREAM_SIZE: u64 = STREAM_OFFSETOF_EVENTS + (STREAM_EVENT_CAP * STREVT_SIZE);
 
 #[derive(PartialEq, Eq, Clone, Copy, FromPrimitive)]

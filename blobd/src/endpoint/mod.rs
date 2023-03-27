@@ -1,11 +1,15 @@
+use axum::http::StatusCode;
 use axum::http::Uri;
 use blobd_token::BlobdTokens;
 use data_encoding::BASE64;
 use itertools::Itertools;
+use libblobd::op::OpError;
+use libblobd::Blobd;
 use percent_encoding::percent_decode;
 use serde::Deserialize;
 use serde::Serialize;
 
+pub mod batch_create_objects;
 pub mod commit_object;
 pub mod create_object;
 pub mod delete_object;
@@ -13,12 +17,26 @@ pub mod inspect_object;
 pub mod read_object;
 pub mod write_object;
 
+pub struct HttpCtx {
+  pub blobd: Blobd,
+  pub tokens: BlobdTokens,
+}
+
+pub fn transform_op_error(err: OpError) -> StatusCode {
+  match err {
+    OpError::DataStreamError(_) => StatusCode::REQUEST_TIMEOUT,
+    OpError::DataStreamLengthMismatch => StatusCode::RANGE_NOT_SATISFIABLE,
+    OpError::InexactWriteLength => StatusCode::RANGE_NOT_SATISFIABLE,
+    OpError::ObjectNotFound => StatusCode::NOT_FOUND,
+    OpError::RangeOutOfBounds => StatusCode::RANGE_NOT_SATISFIABLE,
+    OpError::UnalignedWrite => StatusCode::RANGE_NOT_SATISFIABLE,
+  }
+}
+
 // TODO Deny %2F (if slash is intentional, provide it directly; if not, it will be mixed with literal slashes once decoded).
 // TODO Deny empty string.
-pub fn parse_key(uri: &Uri) -> (Vec<u8>, u16) {
-  let key = percent_decode(uri.path().strip_prefix("/").unwrap().as_bytes()).collect_vec();
-  let key_len: u16 = key.len().try_into().unwrap();
-  (key, key_len)
+pub fn parse_key(uri: &Uri) -> Vec<u8> {
+  percent_decode(uri.path().strip_prefix("/").unwrap().as_bytes()).collect_vec()
 }
 
 // (inode_device_offset, salt, hmac)

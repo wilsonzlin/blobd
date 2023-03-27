@@ -2,7 +2,6 @@ use crate::bucket::Buckets;
 use crate::free_list::FreeList;
 use crate::object_id::ObjectIdSerial;
 use crate::stream::Stream;
-use blobd_token::BlobdTokens;
 use seekable_async_file::SeekableAsyncFile;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
@@ -95,5 +94,4 @@ pub struct Ctx {
   pub journal: Mutex<SequentialisedJournal>,
   pub object_id_serial: ObjectIdSerial,
   pub stream: RwLock<Stream>,
-  pub tokens: BlobdTokens,
 }

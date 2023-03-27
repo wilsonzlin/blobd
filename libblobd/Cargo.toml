@@ -1,0 +1,26 @@
+[package]
+name = "libblobd"
+version = "0.0.1"
+description = "Library for blobd"
+license = "SSPL-1.0"
+homepage = "https://github.com/wilsonzlin/blobd"
+repository = "https://github.com/wilsonzlin/blobd.git"
+authors = ["Wilson Lin <code@wilsonl.in>"]
+edition = "2021"
+
+[dependencies]
+futures = "0.3"
+itertools = "0.10"
+num-derive = "0.3"
+num-traits = "0.2"
+off64 = "0.3"
+roaring = "0.10"
+rustc-hash = "1.1"
+# NOTE: We must always use mmap, as we depend on ordered writes, and also want non-async writing capability.
+seekable-async-file = "0.5.3"
+signal-future = "0.0.1"
+# Pin the version as the docs mention that outputs could change in future versions: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
+strum = { version = "0.24", features = ["derive"] }
+tokio = { version = "1", features = ["sync"] }
+twox-hash = "=1.6.3"
+write-journal = "0.4.1"

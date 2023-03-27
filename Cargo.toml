@@ -1,8 +1,10 @@
 [workspace]
 members = [
+  "blobc",
   "blobd-client-rs",
   "blobd-token",
   "blobd",
+  "libblobd",
 ]
 
 [profile.release]

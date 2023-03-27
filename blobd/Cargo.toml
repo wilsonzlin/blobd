@@ -15,26 +15,15 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 axum = { version = "0.6", features = ["headers"] }
 blobd-token = { version = "0.0.1", path = "../blobd-token" }
-bytes = "1.4"
-chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.1", features = ["derive"] }
 data-encoding = "2.3"
 futures = "0.3"
-hex-literal = "0.3"
 itertools = "0.10"
-num-derive = "0.3"
-num-traits = "0.2"
+libblobd = { version = "0.0.1", path = "../libblobd" }
 off64 = "0.3"
 percent-encoding = "2.2"
-roaring = "0.10"
-rustc-hash = "1.1"
-# We must explicitly always use mmap, as we depend on ordered writes, and also want non-async writing capability.
-seekable-async-file =  { version = "0.5.3", features = ["mmap"] }
+seekable-async-file = "0.5.3"
 serde = { version = "1.0", features = ["derive"] }
-signal-future = "0.0.1"
-strum = { version = "0.24", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 toml = "0.7"
-# Pin the version as the docs mention that outputs could change in future versions: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
-twox-hash = "=1.6.3"
-write-journal = "0.4.1"
+tower-http = { version = "0.4", features = ["cors"] }

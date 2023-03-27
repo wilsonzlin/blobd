@@ -12,8 +12,9 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 blobd-token = { version = "0.0.1", path = "../blobd-token" }
-bytes = "1.4.0"
-futures = "0.3.27"
+bytes = "1.4"
+futures = "0.3"
+off64 = "0.3"
 percent-encoding = "2.2"
 reqwest = { version = "0.11", features = ["stream"] }
 serde = { version = "1.0", features = ["derive"] }
