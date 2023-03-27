@@ -117,7 +117,10 @@ pub struct OpReadObjectOutput {
   pub object_id: u64,
 }
 
-pub async fn op_read_object(ctx: Arc<Ctx>, req: OpReadObjectInput) -> OpResult<OpReadObjectOutput> {
+pub(crate) async fn op_read_object(
+  ctx: Arc<Ctx>,
+  req: OpReadObjectInput,
+) -> OpResult<OpReadObjectOutput> {
   let key_len: u16 = req.key.len().try_into().unwrap();
 
   let bucket_id = ctx.buckets.bucket_id_for_key(&req.key);

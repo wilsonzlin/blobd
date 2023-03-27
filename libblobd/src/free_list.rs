@@ -49,18 +49,18 @@ Structure
 **/
 
 #[allow(non_snake_case)]
-pub fn FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no: u32) -> u64 {
+pub(crate) fn FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no: u32) -> u64 {
   6 * u64::from(tile_no)
 }
 #[allow(non_snake_case)]
-pub fn FREELIST_OFFSETOF_TILE_RELEASED_SPACE(tile_no: u32) -> u64 {
+pub(crate) fn FREELIST_OFFSETOF_TILE_RELEASED_SPACE(tile_no: u32) -> u64 {
   6 * u64::from(tile_no) + 3
 }
 
-pub const FREELIST_TILE_CAP: u32 = 16777216;
+pub(crate) const FREELIST_TILE_CAP: u32 = 16777216;
 
 #[allow(non_snake_case)]
-pub fn FREELIST_SIZE() -> u64 {
+pub(crate) fn FREELIST_SIZE() -> u64 {
   FREELIST_OFFSETOF_TILE_USED_SPACE(FREELIST_TILE_CAP)
 }
 
@@ -148,7 +148,7 @@ impl FragmentedTiles {
   }
 }
 
-pub struct FreeList {
+pub(crate) struct FreeList {
   dev_offset: u64,
   solid_tiles: RoaringBitmap,
   fragmented_tiles: FragmentedTiles,

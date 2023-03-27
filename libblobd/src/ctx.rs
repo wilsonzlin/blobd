@@ -16,11 +16,11 @@ use write_journal::AtomicWriteGroup;
 use write_journal::WriteJournal;
 
 // Since updated state to the free list on storage must be reflected in order, and we don't want to lock free list for entire write + fdatasync, we don't append to journal directly, but take a serial, and require that journal writes are sequentialised. This also sequentialises writes to object ID serial, stream, etc., which they rely on.
-pub struct ChangeSerial {
+pub(crate) struct ChangeSerial {
   num: u64,
 }
 
-pub struct FreeListWithChangeTracker {
+pub(crate) struct FreeListWithChangeTracker {
   free_list: FreeList,
   next_change_serial: u64,
 }
@@ -54,7 +54,7 @@ impl DerefMut for FreeListWithChangeTracker {
   }
 }
 
-pub struct SequentialisedJournal {
+pub(crate) struct SequentialisedJournal {
   journal: Arc<WriteJournal>,
   next_serial: u64,
   pending: BTreeMap<u64, (AtomicWriteGroup, SignalFutureController)>,
@@ -87,7 +87,7 @@ impl SequentialisedJournal {
   }
 }
 
-pub struct Ctx {
+pub(crate) struct Ctx {
   pub buckets: Buckets,
   pub device: SeekableAsyncFile,
   pub free_list: Mutex<FreeListWithChangeTracker>,

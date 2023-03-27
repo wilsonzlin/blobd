@@ -28,7 +28,7 @@ pub struct OpCreateObjectOutput {
   pub inode_dev_offset: u64,
 }
 
-pub async fn op_create_object(
+pub(crate) async fn op_create_object(
   ctx: Arc<Ctx>,
   req: OpCreateObjectInput,
 ) -> OpResult<OpCreateObjectOutput> {

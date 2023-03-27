@@ -32,24 +32,24 @@ u64 virtual_head
 
 **/
 
-pub const STREVT_OFFSETOF_TYPE: u64 = 0;
-pub const STREVT_OFFSETOF_BUCKET_ID: u64 = STREVT_OFFSETOF_TYPE + 1;
-pub const STREVT_OFFSETOF_OBJECT_ID: u64 = STREVT_OFFSETOF_BUCKET_ID + 6;
-pub const STREVT_SIZE: u64 = STREVT_OFFSETOF_OBJECT_ID + 8;
+pub(crate) const STREVT_OFFSETOF_TYPE: u64 = 0;
+pub(crate) const STREVT_OFFSETOF_BUCKET_ID: u64 = STREVT_OFFSETOF_TYPE + 1;
+pub(crate) const STREVT_OFFSETOF_OBJECT_ID: u64 = STREVT_OFFSETOF_BUCKET_ID + 6;
+pub(crate) const STREVT_SIZE: u64 = STREVT_OFFSETOF_OBJECT_ID + 8;
 
-pub const STREAM_OFFSETOF_VIRTUAL_HEAD: u64 = 0;
-pub const STREAM_OFFSETOF_EVENTS: u64 = STREAM_OFFSETOF_VIRTUAL_HEAD + 8;
+pub(crate) const STREAM_OFFSETOF_VIRTUAL_HEAD: u64 = 0;
+pub(crate) const STREAM_OFFSETOF_EVENTS: u64 = STREAM_OFFSETOF_VIRTUAL_HEAD + 8;
 #[allow(non_snake_case)]
-pub fn STREAM_OFFSETOF_EVENT(event_id: u64) -> u64 {
+pub(crate) fn STREAM_OFFSETOF_EVENT(event_id: u64) -> u64 {
   STREAM_OFFSETOF_EVENTS + (STREVT_SIZE * (event_id % STREAM_EVENT_CAP))
 }
 // Ensure this is large enough such that a replica can be created without a high chance of the stream wrapping before the storage is replicated. An event is only 15 bytes, so we can be gracious here.
-pub const STREAM_EVENT_CAP: u64 = 8_000_000;
-pub const STREAM_SIZE: u64 = STREAM_OFFSETOF_EVENTS + (STREAM_EVENT_CAP * STREVT_SIZE);
+pub(crate) const STREAM_EVENT_CAP: u64 = 8_000_000;
+pub(crate) const STREAM_SIZE: u64 = STREAM_OFFSETOF_EVENTS + (STREAM_EVENT_CAP * STREVT_SIZE);
 
 #[derive(PartialEq, Eq, Clone, Copy, FromPrimitive)]
 #[repr(u8)]
-pub enum StreamEventType {
+pub(crate) enum StreamEventType {
   // Special marker when the stream is not fully filled.
   // WARNING: This must be zero, so that empty slots are automatically detected as this since formatting fills storage with zero.
   EndOfEvents,
@@ -57,13 +57,13 @@ pub enum StreamEventType {
   ObjectDelete,
 }
 
-pub struct StreamEvent {
+pub(crate) struct StreamEvent {
   pub typ: StreamEventType,
   pub bucket_id: u64,
   pub object_id: u64,
 }
 
-pub struct Stream {
+pub(crate) struct Stream {
   dev_offset: u64,
   virtual_head: u64,
   events: BTreeMap<u64, StreamEvent>,

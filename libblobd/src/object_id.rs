@@ -4,7 +4,7 @@ use seekable_async_file::SeekableAsyncFile;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-pub struct ObjectIdSerial {
+pub(crate) struct ObjectIdSerial {
   dev_offset: u64,
   next: AtomicU64,
 }

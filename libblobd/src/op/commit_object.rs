@@ -23,7 +23,7 @@ pub struct OpCommitObjectInput {
 pub struct OpCommitObjectOutput {}
 
 // See op_delete_object for why we hold RwLock write lock for entire request.
-pub async fn op_commit_object(
+pub(crate) async fn op_commit_object(
   ctx: Arc<Ctx>,
   req: OpCommitObjectInput,
 ) -> OpResult<OpCommitObjectOutput> {

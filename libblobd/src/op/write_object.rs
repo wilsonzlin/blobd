@@ -31,7 +31,7 @@ pub struct OpWriteObjectInput<
 pub struct OpWriteObjectOutput {}
 
 // TODO We currently don't verify that the key is correct.
-pub async fn op_write_object<
+pub(crate) async fn op_write_object<
   S: Unpin + Stream<Item = Result<Vec<u8>, Box<dyn Error + Send + Sync>>>,
 >(
   ctx: Arc<Ctx>,

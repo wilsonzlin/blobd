@@ -16,7 +16,7 @@ pub struct OpInspectObjectOutput {
   pub object_id: u64,
 }
 
-pub async fn op_inspect_object(
+pub(crate) async fn op_inspect_object(
   ctx: Arc<Ctx>,
   req: OpInspectObjectInput,
 ) -> OpResult<OpInspectObjectOutput> {
