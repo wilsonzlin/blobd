@@ -10,7 +10,7 @@ use crate::server::start_http_server_loop;
 use crate::stream::Stream;
 use crate::stream::STREAM_SIZE;
 use crate::tile::TILE_SIZE;
-use crate::token::BlobdTokens;
+use blobd_token::BlobdTokens;
 use clap::Parser;
 use conf::Conf;
 use data_encoding::BASE64;
@@ -35,7 +35,6 @@ pub mod object_id;
 pub mod server;
 pub mod stream;
 pub mod tile;
-pub mod token;
 
 /**
 

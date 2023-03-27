@@ -2,7 +2,7 @@ use crate::bucket::Buckets;
 use crate::free_list::FreeList;
 use crate::object_id::ObjectIdSerial;
 use crate::stream::Stream;
-use crate::token::BlobdTokens;
+use blobd_token::BlobdTokens;
 use seekable_async_file::SeekableAsyncFile;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;

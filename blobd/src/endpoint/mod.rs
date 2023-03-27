@@ -1,5 +1,5 @@
-use crate::token::BlobdTokens;
 use axum::http::Uri;
+use blobd_token::BlobdTokens;
 use chrono::DateTime;
 use chrono::Utc;
 use data_encoding::BASE64;
