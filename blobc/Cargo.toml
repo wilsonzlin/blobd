@@ -1,6 +1,11 @@
 [package]
 name = "blobc"
 version = "0.0.1"
+description = "CLI for blobd"
+license = "Apache-2.0"
+homepage = "https://github.com/wilsonzlin/blobd"
+repository = "https://github.com/wilsonzlin/blobd.git"
+authors = ["Wilson Lin <code@wilsonl.in>"]
 edition = "2021"
 
 [dependencies]

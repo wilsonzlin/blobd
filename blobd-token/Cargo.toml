@@ -2,6 +2,7 @@
 name = "blobd-token"
 version = "0.0.1"
 description = "Generate and verify tokens used by blobd"
+license = "Apache-2.0"
 homepage = "https://github.com/wilsonzlin/blobd"
 repository = "https://github.com/wilsonzlin/blobd.git"
 authors = ["Wilson Lin <code@wilsonl.in>"]
