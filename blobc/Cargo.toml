@@ -7,7 +7,11 @@ edition = "2021"
 blobd-client-rs = { version = "0.0.1", path = "../blobd-client-rs" }
 bytes = "1.4.0"
 clap = { version = "4.1.13", features = ["derive"] }
+data-encoding = "2.3.3"
+dirs = "5.0.0"
 futures = "0.3.27"
 indicatif = "0.17.3"
+serde = { version = "1.0.158", features = ["derive"] }
 tokio = { version = "1.26.0", features = ["macros", "fs", "rt"] }
+toml = "0.7.3"
 walkdir = "2.3.3"

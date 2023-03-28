@@ -27,7 +27,7 @@ pub struct InputQueryParams {
 }
 
 // This is extremely fast for creating lots of small objects, as there's no overhead of having to make multiple requests (create + n * write + commit) and using many parallel connections, all of which only have very small transfer sizes. This is really to avoid the overhead of HTTP (pipelining, multiplexing, parsing).
-// This endpoint will never return a bad status. However, as soon as there's a parsing error, the processing stops immediately. The amount of successfully created objects is returned in a header, and objects are created in order. This endpoint is not atomic, not even at the individual object level.
+// This endpoint will never return a bad status. However, as soon as there's an error, the processing stops immediately. The amount of successfully created objects is returned in a header, and objects are created in order. This endpoint is not atomic, not even at the individual object level.
 pub async fn endpoint_batch_create_objects(
   State(ctx): State<Arc<HttpCtx>>,
   req: Query<InputQueryParams>,
