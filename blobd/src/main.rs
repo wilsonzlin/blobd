@@ -10,6 +10,7 @@ use seekable_async_file::SeekableAsyncFile;
 use seekable_async_file::SeekableAsyncFileMetrics;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::read_to_string;
 use tokio::join;
 
@@ -45,7 +46,7 @@ async fn main() {
     &conf.device_path,
     dev_size,
     io_metrics,
-    std::time::Duration::from_micros(200),
+    Duration::from_micros(200),
     0,
   )
   .await;

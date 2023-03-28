@@ -23,7 +23,7 @@ struct Conf {
 #[command(author, version, about)]
 struct Cli {
   /// Override blobd server endpoint e.g. https://my.blobd.turbod.io, http://127.0.0.1:9981.
-  #[arg(short, long)]
+  #[arg(long)]
   endpoint: Option<String>,
 
   #[command(subcommand)]

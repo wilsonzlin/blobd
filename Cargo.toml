@@ -5,6 +5,7 @@ members = [
   "blobd-token",
   "blobd",
   "libblobd",
+  "stochastic-stresser",
 ]
 
 [profile.release]
