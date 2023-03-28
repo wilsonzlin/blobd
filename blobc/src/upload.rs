@@ -5,50 +5,29 @@ use bytes::Bytes;
 use futures::channel::mpsc::unbounded;
 use futures::Stream;
 use futures::StreamExt;
+use futures::TryStreamExt;
 use indicatif::MultiProgress;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
 use std::error::Error;
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
-use std::pin::Pin;
-use std::task::Context;
-use std::task::Poll;
+use tokio::runtime::Handle;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
+use tokio_sync_read_stream::SyncReadStream;
 use walkdir::DirEntry;
 use walkdir::WalkDir;
 
-struct FileStream {
-  file: File,
-}
-
-impl Stream for FileStream {
-  type Item = Result<Bytes, Box<dyn Error + Send + Sync>>;
-
-  fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-    let mut buf = vec![0u8; 1024 * 64];
-    let item = match self.file.read(&mut buf) {
-      Ok(n) => {
-        if n == 0 {
-          None
-        } else {
-          buf.truncate(n);
-          Some(Ok(Bytes::from(buf)))
-        }
-      }
-      Err(err) => Some(Err(Box::<dyn Error + Send + Sync>::from(err))),
-    };
-    Poll::Ready(item)
-  }
-}
-
 fn process_dir_ent(
+  tokio: Handle,
   base_dir: &Path,
   prefix: &str,
   ent: walkdir::Result<DirEntry>,
-) -> Result<BatchCreateObjectEntry<FileStream>, Box<dyn Error>> {
+) -> Result<
+  BatchCreateObjectEntry<impl Stream<Item = Result<Bytes, Box<dyn Error + Send + Sync + 'static>>>>,
+  Box<dyn Error>,
+> {
   let ent = ent?;
   let size = ent.metadata()?.len();
   let path_str = ent
@@ -58,13 +37,17 @@ fn process_dir_ent(
   let key = format!("{}{}", &prefix, path_str).into_bytes();
   let file = File::open(base_dir.join(ent.path()))?;
   Ok(BatchCreateObjectEntry {
-    data_stream: FileStream { file },
+    data_stream: SyncReadStream::with_tokio_handle(tokio, file)
+      .map_ok(|b| Bytes::from(b))
+      .map_err(|e| Box::from(e)),
     key,
     size,
   })
 }
 
 pub(crate) async fn cmd_upload(ctx: Ctx, cmd: CmdUpload) {
+  let tokio = Handle::current();
+
   let mp = MultiProgress::new();
   let walk_progress = mp.add(ProgressBar::new_spinner());
   walk_progress.set_message("Finding files");
@@ -82,7 +65,7 @@ pub(crate) async fn cmd_upload(ctx: Ctx, cmd: CmdUpload) {
       let mut total_bytes = 0;
       for ent in WalkDir::new(&dir) {
         walk_progress.set_message(format!("Found {} files", total_objects));
-        let obj = match process_dir_ent(&dir, &prefix, ent) {
+        let obj = match process_dir_ent(tokio.clone(), &dir, &prefix, ent) {
           Ok(o) => o,
           Err(err) => {
             walk_progress.println(format!("⚠️ {}", err));
