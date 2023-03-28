@@ -10,7 +10,7 @@
 - On-device configurable fixed-size hash map with linked list of objects on the heap.
 - Optimised for reads, then creates, then deletes. There is no way to list objects.
 - Create an object, then write its data in 16 MiB aligned and exact chunks, then commit it.
-- Objects are immutable once committed. Versioning is currently not possible.
+- Objects are immutable once committed. Versioning is currently not possible. An object replaces all other objects with the same key when it's committed (not created).
 - Only the size is stored with an object. No other metadata is collected, and custom metadata cannot be set.
 - The device must be under 256 TiB. Objects are limited to 1 TiB. The peak optimal amount of objects stored is around 280 trillion.
 - Uncommitted objects may be deleted after 7 days. Space used by objects may not be immediately freed when the object is deleted.

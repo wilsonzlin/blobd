@@ -37,10 +37,6 @@ struct CmdUpload {
 
   /// Path to local directory to use as source of truth. New and changed files will overwrite blobd objects.
   source: PathBuf,
-
-  /// Maximum concurrent uploads. Defaults to 8.
-  #[arg(default_value_t = 8)]
-  concurrency: usize,
 }
 
 #[derive(Debug, Subcommand)]
