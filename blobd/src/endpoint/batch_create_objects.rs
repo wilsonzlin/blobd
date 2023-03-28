@@ -13,6 +13,7 @@ use futures::TryStreamExt;
 use libblobd::op::create_object::OpCreateObjectInput;
 use libblobd::op::write_object::OpWriteObjectInput;
 use libblobd::tile::TILE_SIZE;
+use libblobd::tile::TILE_SIZE_U64;
 use off64::usz;
 use off64::Off64Int;
 use serde::Deserialize;
@@ -69,7 +70,7 @@ pub async fn endpoint_batch_create_objects(
     };
 
     for offset in (0..size).step_by(usz!(TILE_SIZE)) {
-      let mut chunk = vec![0u8; usz!(min(u64::from(TILE_SIZE), size - offset))];
+      let mut chunk = vec![0u8; usz!(min(TILE_SIZE_U64, size - offset))];
       let Ok(_) = body.read_exact(&mut chunk).await else {
         break 'outer;
       };

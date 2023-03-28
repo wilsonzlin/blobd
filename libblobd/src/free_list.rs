@@ -1,4 +1,5 @@
 use crate::tile::TILE_SIZE;
+use crate::tile::TILE_SIZE_U64;
 use off64::create_u24_be;
 use off64::usz;
 use off64::Off64Int;
@@ -239,7 +240,7 @@ impl FreeList {
     dev_offset: u64,
     frag_len: u32,
   ) -> () {
-    let tile_no = u32::try_from(dev_offset / u64::from(TILE_SIZE)).unwrap();
+    let tile_no = u32::try_from(dev_offset / TILE_SIZE_U64).unwrap();
     let new_released_bytes = self.fragmented_tiles.get(tile_no).released_bytes + frag_len;
     self
       .fragmented_tiles

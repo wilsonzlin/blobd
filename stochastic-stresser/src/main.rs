@@ -8,7 +8,7 @@ use libblobd::op::commit_object::OpCommitObjectInput;
 use libblobd::op::create_object::OpCreateObjectInput;
 use libblobd::op::read_object::OpReadObjectInput;
 use libblobd::op::write_object::OpWriteObjectInput;
-use libblobd::tile::TILE_SIZE;
+use libblobd::tile::TILE_SIZE_U64;
 use libblobd::BlobdLoader;
 use rand::thread_rng;
 use rand::Rng;
@@ -223,7 +223,7 @@ async fn main() {
             object_id,
             inode_dev_offset,
           } => {
-            let new_chunk_offset = chunk_offset + u64::from(TILE_SIZE);
+            let new_chunk_offset = chunk_offset + TILE_SIZE_U64;
             blobd
               .write_object(OpWriteObjectInput {
                 data_len,
@@ -231,7 +231,7 @@ async fn main() {
                   Ok(pool.get(
                     data_offset + chunk_offset,
                     if new_chunk_offset < data_len {
-                      TILE_SIZE.into()
+                      TILE_SIZE_U64
                     } else {
                       data_len - chunk_offset
                     },

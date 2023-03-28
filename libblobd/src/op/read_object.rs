@@ -9,6 +9,7 @@ use crate::inode::INO_OFFSETOF_SIZE;
 use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_TILE_IDX;
 use crate::tile::TILE_SIZE;
+use crate::tile::TILE_SIZE_U64;
 use futures::Stream;
 use off64::Off64Int;
 use std::cmp::min;
@@ -70,7 +71,6 @@ impl Stream for ReadObjectStream {
     let tile_idx = u16::try_from(self.next / u64::from(TILE_SIZE)).unwrap();
     let data_dev_offset = if tile_idx < self.alloc_cfg.tile_count {
       // mmap memory should already be in page cache.
-      // WARNING: Convert both operand values to u64 separately; do not multiply then convert result, as multiplication may overflow in u32.
       u64::from(
         ctx
           .device
@@ -79,7 +79,7 @@ impl Stream for ReadObjectStream {
             3,
           )
           .read_u24_be_at(0),
-      ) * u64::from(TILE_SIZE)
+      ) * TILE_SIZE_U64
     } else {
       // mmap memory should already be in page cache.
       ctx
@@ -90,7 +90,7 @@ impl Stream for ReadObjectStream {
     assert!(data_dev_offset > 0);
 
     let max_end = min(
-      min(self.end, (u64::from(tile_idx) + 1) * u64::from(TILE_SIZE)),
+      min(self.end, (u64::from(tile_idx) + 1) * TILE_SIZE_U64),
       self.object_size,
     );
     let end = min(max_end, self.next + self.buf_size);

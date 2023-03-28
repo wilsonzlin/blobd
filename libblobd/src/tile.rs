@@ -8,3 +8,4 @@ For simplicity, the entire device is split into tiles, including reserved space 
 **/
 
 pub const TILE_SIZE: u32 = 1024 * 1024 * 16;
+pub const TILE_SIZE_U64: u64 = TILE_SIZE as u64;

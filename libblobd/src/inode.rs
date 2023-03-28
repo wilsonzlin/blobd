@@ -1,4 +1,5 @@
 use crate::tile::TILE_SIZE;
+use crate::tile::TILE_SIZE_U64;
 
 /**
 
@@ -53,8 +54,8 @@ pub(crate) struct ObjectAllocCfg {
 
 pub(crate) fn get_object_alloc_cfg(object_size: u64) -> ObjectAllocCfg {
   // We only allow up to 65,536 solid tiles for a single object.
-  let mut tile_count: u16 = (object_size / u64::from(TILE_SIZE)).try_into().unwrap();
-  let mut tail_len: u32 = (object_size % u64::from(TILE_SIZE)).try_into().unwrap();
+  let mut tile_count: u16 = (object_size / TILE_SIZE_U64).try_into().unwrap();
+  let mut tail_len: u32 = (object_size % TILE_SIZE_U64).try_into().unwrap();
   if tail_len >= TILE_SIZE - 128 {
     // The tail is too close to a full tile, so just allocate and use an extra tile instead.
     tile_count += 1;

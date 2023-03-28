@@ -10,7 +10,7 @@ use crate::inode::INO_OFFSETOF_SIZE;
 use crate::inode::INO_OFFSETOF_STATE;
 use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_TILE_IDX;
-use crate::tile::TILE_SIZE;
+use crate::tile::TILE_SIZE_U64;
 use futures::Stream;
 use futures::StreamExt;
 use off64::Off64Int;
@@ -40,11 +40,11 @@ pub(crate) async fn op_write_object<
   let len = req.data_len;
   let ino_dev_offset = req.inode_dev_offset;
 
-  if req.offset % u64::from(TILE_SIZE) != 0 {
+  if req.offset % TILE_SIZE_U64 != 0 {
     // Invalid offset.
     return Err(OpError::UnalignedWrite);
   };
-  if len > u64::from(TILE_SIZE) {
+  if len > TILE_SIZE_U64 {
     // Cannot write greater than one tile size in one request.
     return Err(OpError::InexactWriteLength);
   };
@@ -82,7 +82,7 @@ pub(crate) async fn op_write_object<
     return Err(OpError::RangeOutOfBounds);
   };
 
-  if req.offset + len < min(req.offset + u64::from(TILE_SIZE), size) {
+  if req.offset + len < min(req.offset + TILE_SIZE_U64, size) {
     // Write does not fully fill solid tile or tail data fragment. All writes must fill as otherwise uninitialised data will get exposed.
     return Err(OpError::InexactWriteLength);
   };
@@ -95,17 +95,16 @@ pub(crate) async fn op_write_object<
 
   let ObjectAllocCfg { tile_count, .. } = get_object_alloc_cfg(size);
   let write_dev_offset = {
-    let tile_idx = u16::try_from(req.offset / u64::from(TILE_SIZE)).unwrap();
+    let tile_idx = u16::try_from(req.offset / TILE_SIZE_U64).unwrap();
     debug_assert!(tile_idx <= tile_count);
     if tile_idx < tile_count {
-      // WARNING: Convert both operand values to u64 separately; do not multiply then convert result, as multiplication may overflow in u32.
       u64::from(
         ctx
           .device
           .read_at(ino_dev_offset + INO_OFFSETOF_TILE_IDX(key_len, tile_idx), 3)
           .await
           .read_u24_be_at(0),
-      ) * u64::from(TILE_SIZE)
+      ) * TILE_SIZE_U64
     } else {
       ctx
         .device

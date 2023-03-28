@@ -3,7 +3,7 @@ use crate::free_list::FreeList;
 use crate::object_id::ObjectIdSerial;
 use crate::stream::Stream;
 use crate::stream::STREAM_SIZE;
-use crate::tile::TILE_SIZE;
+use crate::tile::TILE_SIZE_U64;
 use bucket::BUCKETS_SIZE;
 use ctx::Ctx;
 use ctx::FreeListWithChangeTracker;
@@ -92,10 +92,8 @@ impl BlobdLoader {
     let offsetof_buckets = offsetof_free_list + FREELIST_SIZE();
     let sizeof_buckets = BUCKETS_SIZE(bucket_count);
     let reserved_space = offsetof_buckets + sizeof_buckets;
-    let reserved_tiles: u32 = div_ceil(reserved_space, u64::from(TILE_SIZE))
-      .try_into()
-      .unwrap();
-    let total_tiles: u32 = (device_size / u64::from(TILE_SIZE)).try_into().unwrap();
+    let reserved_tiles: u32 = div_ceil(reserved_space, TILE_SIZE_U64).try_into().unwrap();
+    let total_tiles: u32 = (device_size / TILE_SIZE_U64).try_into().unwrap();
 
     let journal = Arc::new(WriteJournal::new(
       device.clone(),
