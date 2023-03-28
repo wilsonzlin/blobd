@@ -17,7 +17,7 @@ dirs = "5.0.0"
 futures = "0.3.27"
 indicatif = "0.17.3"
 serde = { version = "1.0.158", features = ["derive"] }
-tokio = { version = "1.26.0", features = ["macros", "fs", "rt"] }
+tokio = { version = "1.26.0", features = ["macros", "fs", "rt", "rt-multi-thread"] }
 tokio-sync-read-stream = "0.1.0"
 toml = "0.7.3"
 walkdir = "2.3.3"
