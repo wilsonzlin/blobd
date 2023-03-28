@@ -7,14 +7,17 @@ use futures::Stream;
 use futures::StreamExt;
 use indicatif::MultiProgress;
 use indicatif::ProgressBar;
+use indicatif::ProgressStyle;
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
+use walkdir::DirEntry;
 use walkdir::WalkDir;
 
 struct FileStream {
@@ -41,6 +44,26 @@ impl Stream for FileStream {
   }
 }
 
+fn process_dir_ent(
+  base_dir: &Path,
+  prefix: &str,
+  ent: walkdir::Result<DirEntry>,
+) -> Result<BatchCreateObjectEntry<FileStream>, Box<dyn Error>> {
+  let ent = ent?;
+  let size = ent.metadata()?.len();
+  let path_str = ent
+    .path()
+    .to_str()
+    .ok_or_else(|| Box::<dyn Error>::from(format!("{:?} is a non-Unicode path", ent.path())))?;
+  let key = format!("{}{}", &prefix, path_str).into_bytes();
+  let file = File::open(base_dir.join(ent.path()))?;
+  Ok(BatchCreateObjectEntry {
+    data_stream: FileStream { file },
+    key,
+    size,
+  })
+}
+
 pub(crate) async fn cmd_upload(ctx: Ctx, cmd: CmdUpload) {
   let mp = MultiProgress::new();
   let walk_progress = mp.add(ProgressBar::new_spinner());
@@ -59,44 +82,21 @@ pub(crate) async fn cmd_upload(ctx: Ctx, cmd: CmdUpload) {
       let mut total_bytes = 0;
       for ent in WalkDir::new(&dir) {
         walk_progress.set_message(format!("Found {} files", total_objects));
-        let ent = match ent {
-          Ok(ent) => ent,
+        let obj = match process_dir_ent(&dir, &prefix, ent) {
+          Ok(o) => o,
           Err(err) => {
             walk_progress.println(format!("⚠️ {}", err));
             continue;
           }
         };
-        let size = match ent.metadata() {
-          Ok(m) => m.len(),
-          Err(err) => {
-            walk_progress.println(format!("⚠️ {}", err));
-            continue;
-          }
-        };
-        let Some(path) = ent.path().to_str() else {
-          walk_progress.println(format!("⚠️ {:?} is a non-Unicode path", ent.path()));
-          continue;
-        };
-        let key = format!("{}{}", &prefix, path).into_bytes();
-        let file = match File::open(dir.join(ent.path())) {
-          Ok(f) => f,
-          Err(err) => {
-            walk_progress.println(format!("⚠️ failed to open file {}: {}", path, err));
-            continue;
-          }
-        };
-        sender
-          .unbounded_send(BatchCreateObjectEntry {
-            data_stream: FileStream { file },
-            key,
-            size,
-          })
-          .unwrap();
+        let size = obj.size;
+        sender.unbounded_send(obj).unwrap();
         total_objects += 1;
         total_bytes += size;
       }
       walk_progress.finish_with_message(format!("Will upload {} files", total_objects));
       upload_progress.update(|s| s.set_len(total_bytes));
+      upload_progress.set_style(ProgressStyle::with_template("{spinner} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})").unwrap().progress_chars("#>-"));
     });
   };
 
@@ -104,13 +104,14 @@ pub(crate) async fn cmd_upload(ctx: Ctx, cmd: CmdUpload) {
   spawn({
     let upload_progress = upload_progress.clone();
     async move {
-      if let Err(err) = ctx
+      let res = ctx
         .client
         .batch_create_objects(receiver, transfer_counter_sender)
-        .await
-      {
-        upload_progress.println(format!("❌ {}", err));
-      };
+        .await;
+      upload_progress.finish_with_message(match res {
+        Ok(_) => "✔️ All done".to_string(),
+        Err(err) => format!("❌ Aborted: {}", err),
+      });
     }
   });
   transfer_counter_receiver
@@ -121,5 +122,4 @@ pub(crate) async fn cmd_upload(ctx: Ctx, cmd: CmdUpload) {
       async move { total }
     })
     .await;
-  upload_progress.finish_with_message("✔️ All done");
 }

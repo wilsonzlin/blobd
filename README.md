@@ -7,7 +7,7 @@
 
 ## Design
 
-- On-device configurable fixed-size hash map with linked list of objects on the heap.
+- On-device configurable fixed-size hash map with linked list of objects on the heap. The entire device is mapped to memory.
 - Optimised for reads, then creates, then deletes. There is no way to list objects.
 - Create an object, then write its data in 16 MiB aligned and exact chunks, then commit it.
 - Objects are immutable once committed. Versioning is currently not possible. An object replaces all other objects with the same key when it's committed (not created).
