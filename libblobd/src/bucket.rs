@@ -57,8 +57,7 @@ pub(crate) struct FoundInode {
 }
 
 impl Bucket {
-  // This needs to be non-async as it is called from non-async contexts.
-  pub fn find_inode(
+  pub async fn find_inode(
     &self,
     buckets: &Buckets,
     bucket_id: u64,
@@ -71,12 +70,15 @@ impl Bucket {
       dev, dev_offset, ..
     } = buckets;
     let mut dev_offset = dev
-      .read_at_sync(dev_offset + BUCKETS_OFFSETOF_BUCKET(bucket_id), 6)
+      .read_at(dev_offset + BUCKETS_OFFSETOF_BUCKET(bucket_id), 6)
+      .await
       .read_u48_be_at(0);
     let mut prev_dev_offset = None;
     while dev_offset > 0 {
       let base = INO_OFFSETOF_STATE;
-      let raw = dev.read_at_sync(dev_offset + base, INO_OFFSETOF_KEY - base);
+      let raw = dev
+        .read_at(dev_offset + base, INO_OFFSETOF_KEY - base)
+        .await;
       let next_dev_offset = raw.read_u48_be_at(INO_OFFSETOF_NEXT_INODE_DEV_OFFSET - base);
       let object_id = raw.read_u64_be_at(INO_OFFSETOF_OBJ_ID - base);
       if raw[usz!(INO_OFFSETOF_STATE - base)] == expected_state as u8

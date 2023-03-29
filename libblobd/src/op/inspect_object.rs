@@ -31,7 +31,7 @@ pub(crate) async fn op_inspect_object(
     key_len,
     InodeState::Ready,
     None,
-  ) else {
+  ).await else {
     return Err(OpError::ObjectNotFound);
   };
   // mmap memory should already be in page cache.

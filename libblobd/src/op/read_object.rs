@@ -58,7 +58,6 @@ fn create_read_object_stream(
       };
       let bkt = ctx.buckets.get_bucket(bucket_id).read().await;
       if bkt.version != bucket_version {
-        // TODO Ideally this would be async, however calling async from a poll_next is difficult.
         let Some(f) = bkt.find_inode(
           &ctx.buckets,
           bucket_id,
@@ -66,7 +65,7 @@ fn create_read_object_stream(
           key_len,
           InodeState::Ready,
           Some(object_id),
-        ) else {
+        ).await else {
           break;
         };
         inode_dev_offset = f.dev_offset;
@@ -99,8 +98,7 @@ fn create_read_object_stream(
         object_size,
       );
       let end = min(max_end, next + buf_size);
-      // TODO Ideally this would be async, however calling async from a poll_next is difficult.
-      let data = ctx.device.read_at_sync(next, end - next);
+      let data = ctx.device.read_at(next, end - next).await;
       next = end;
       yield data;
     };
@@ -139,7 +137,7 @@ pub(crate) async fn op_read_object(
     key_len,
     InodeState::Ready,
     None,
-  ) else {
+  ).await else {
     return Err(OpError::ObjectNotFound);
   };
   // mmap memory should already be in page cache.
