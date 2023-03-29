@@ -13,8 +13,12 @@ use rand::RngCore;
 use seekable_async_file::get_file_len_via_seek;
 use seekable_async_file::SeekableAsyncFile;
 use seekable_async_file::SeekableAsyncFileMetrics;
+use stochastic_queue::StochasticMpmcRecvTimeoutError;
+use tokio::time::Instant;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use stochastic_queue::stochastic_channel;
 use tokio::join;
@@ -166,6 +170,9 @@ async fn main() {
 
   // Progress bars would look nice and fancy, but we are more likely to want logs/traces than in-flight animations, and a summary of performance metrics at the end will be enough. Using progress bars will clash with the logger.
 
+  let started = Instant::now();
+  let completed = Arc::new(AtomicU64::new(0));
+
   let (tasks_sender, tasks_receiver) = stochastic_channel::<Task>();
   spawn_blocking({
     let tasks_sender = tasks_sender.clone();
@@ -186,16 +193,27 @@ async fn main() {
           })
           .unwrap();
       }
+      info!("sender complete");
     }
   });
   let mut threads = Vec::new();
-  for _ in 0..cli.threads {
+  for thread_no in 0..cli.threads {
     let blobd = blobd.clone();
     let pool = pool.clone();
+    let completed = completed.clone();
     let tasks_sender = tasks_sender.clone();
     let tasks_receiver = tasks_receiver.clone();
     threads.push(spawn(async move {
-      for t in tasks_receiver {
+      // We must use a timeout and regularly check the completion count, as we hold a sender so the channel won't naturally end.
+      loop {
+        if completed.load(Ordering::Relaxed) == cli.objects {
+          break;
+        };
+        let t = match tasks_receiver.recv_timeout(std::time::Duration::from_secs(1)) {
+          Ok(t) => t,
+          Err(StochasticMpmcRecvTimeoutError::NoSenders) => break,
+          Err(StochasticMpmcRecvTimeoutError::Timeout) => continue,
+        };
         match t {
           Task::Create {
             key_len,
@@ -333,10 +351,13 @@ async fn main() {
                   chunk_offset,
                 })
                 .unwrap();
+            } else {
+              completed.fetch_add(1, Ordering::Relaxed);
             };
           }
         };
       }
+      info!(thread_no, "thread complete");
     }));
   }
   drop(tasks_sender);
@@ -344,4 +365,7 @@ async fn main() {
   for t in threads {
     t.await.unwrap();
   }
+
+  let exec_sec = started.elapsed().as_secs_f64();
+  info!(execution_seconds = exec_sec, "all done");
 }

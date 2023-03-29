@@ -10,7 +10,7 @@ indicatif = "0.17.3"
 libblobd = { version = "0.0.1", path = "../libblobd" }
 rand = "0.8.5"
 seekable-async-file = "0.5.3"
-stochastic-queue = "0.1.0"
+stochastic-queue = "0.1.1"
 tokio = { version = "1.27.0", features = ["full"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
