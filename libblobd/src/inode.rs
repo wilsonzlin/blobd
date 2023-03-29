@@ -1,5 +1,6 @@
 use crate::tile::TILE_SIZE;
 use crate::tile::TILE_SIZE_U64;
+use num_derive::FromPrimitive;
 
 /**
 
@@ -67,7 +68,7 @@ pub(crate) fn get_object_alloc_cfg(object_size: u64) -> ObjectAllocCfg {
   }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, FromPrimitive)]
 #[repr(u8)]
 pub(crate) enum InodeState {
   Incomplete,

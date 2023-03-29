@@ -4,19 +4,25 @@ use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
 use crate::inode::InodeState;
 use crate::inode::ObjectAllocCfg;
+use crate::inode::INO_OFFSETOF_KEY;
 use crate::inode::INO_OFFSETOF_KEY_LEN;
+use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_OBJ_ID;
 use crate::inode::INO_OFFSETOF_SIZE;
 use crate::inode::INO_OFFSETOF_STATE;
 use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_TILE_IDX;
+use crate::op::key_debug_str;
 use crate::tile::TILE_SIZE_U64;
 use futures::Stream;
 use futures::StreamExt;
+use num_traits::FromPrimitive;
+use off64::usz;
 use off64::Off64Int;
 use std::cmp::min;
 use std::error::Error;
 use std::sync::Arc;
+use tracing::trace;
 
 pub struct OpWriteObjectInput<
   S: Unpin + Stream<Item = Result<Vec<u8>, Box<dyn Error + Send + Sync>>>,
@@ -39,6 +45,13 @@ pub(crate) async fn op_write_object<
 ) -> OpResult<OpWriteObjectOutput> {
   let len = req.data_len;
   let ino_dev_offset = req.inode_dev_offset;
+  trace!(
+    object_id = req.object_id,
+    inode_dev_offset = req.inode_dev_offset,
+    offset = req.offset,
+    length = req.data_len,
+    "writing object"
+  );
 
   if req.offset % TILE_SIZE_U64 != 0 {
     // Invalid offset.
@@ -49,49 +62,50 @@ pub(crate) async fn op_write_object<
     return Err(OpError::InexactWriteLength);
   };
 
-  // TODO Optimisation: make one read, or don't use await.
-
-  if ctx
+  let base = INO_OFFSETOF_SIZE;
+  let raw = ctx
     .device
-    .read_at(ino_dev_offset + INO_OFFSETOF_STATE, 1)
-    .await[0]
-    != InodeState::Incomplete as u8
-  {
+    .read_at(
+      ino_dev_offset + base,
+      INO_OFFSETOF_NEXT_INODE_DEV_OFFSET - base,
+    )
+    .await;
+  let state = InodeState::from_u8(raw[usz!(INO_OFFSETOF_STATE - base)]).unwrap();
+  let object_id = raw.read_u64_be_at(INO_OFFSETOF_OBJ_ID - base);
+  let size = raw.read_u40_be_at(INO_OFFSETOF_SIZE - base);
+  let key_len = raw.read_u16_be_at(INO_OFFSETOF_KEY_LEN - base);
+  trace!(
+    object_id = req.object_id,
+    inode_dev_offset = req.inode_dev_offset,
+    state = format!("{:?}", state),
+    size,
+    key = key_debug_str(
+      &ctx
+        .device
+        .read_at_sync(ino_dev_offset + INO_OFFSETOF_KEY, key_len.into())
+    ),
+    "found object to write to"
+  );
+
+  if state != InodeState::Incomplete {
     // Inode has incorrect state.
     return Err(OpError::ObjectNotFound);
   };
 
-  if ctx
-    .device
-    .read_at(ino_dev_offset + INO_OFFSETOF_OBJ_ID, 8)
-    .await
-    .read_u64_be_at(0)
-    != req.object_id
-  {
+  if object_id != req.object_id {
     // Inode has different object ID.
     return Err(OpError::ObjectNotFound);
   };
 
-  let size = ctx
-    .device
-    .read_at(ino_dev_offset + INO_OFFSETOF_SIZE, 5)
-    .await
-    .read_u40_be_at(0);
   if req.offset + len > size {
     // Offset is past size.
     return Err(OpError::RangeOutOfBounds);
   };
 
-  if req.offset + len < min(req.offset + TILE_SIZE_U64, size) {
+  if req.offset + len != min(req.offset + TILE_SIZE_U64, size) {
     // Write does not fully fill solid tile or tail data fragment. All writes must fill as otherwise uninitialised data will get exposed.
     return Err(OpError::InexactWriteLength);
   };
-
-  let key_len = ctx
-    .device
-    .read_at(ino_dev_offset + INO_OFFSETOF_KEY_LEN, 2)
-    .await
-    .read_u16_be_at(0);
 
   let ObjectAllocCfg { tile_count, .. } = get_object_alloc_cfg(size);
   let write_dev_offset = {
@@ -99,17 +113,17 @@ pub(crate) async fn op_write_object<
     debug_assert!(tile_idx <= tile_count);
     if tile_idx < tile_count {
       u64::from(
+        // mmap data should already be in page cache.
         ctx
           .device
-          .read_at(ino_dev_offset + INO_OFFSETOF_TILE_IDX(key_len, tile_idx), 3)
-          .await
+          .read_at_sync(ino_dev_offset + INO_OFFSETOF_TILE_IDX(key_len, tile_idx), 3)
           .read_u24_be_at(0),
       ) * TILE_SIZE_U64
     } else {
+      // mmap data should already be in page cache.
       ctx
         .device
-        .read_at(ino_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6)
-        .await
+        .read_at_sync(ino_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6)
         .read_u48_be_at(0)
     }
   };
@@ -123,6 +137,12 @@ pub(crate) async fn op_write_object<
     };
     // Optimisation: fdatasync at end of all writes.
     ctx.device.write_at(write_dev_offset + written, chunk).await;
+    trace!(
+      object_id,
+      write_dev_offset = write_dev_offset + written,
+      chunk_len,
+      "wrote chunk"
+    );
     written += chunk_len;
   }
   if written != len {

@@ -7,6 +7,7 @@ use roaring::RoaringBitmap;
 use rustc_hash::FxHashMap;
 use seekable_async_file::SeekableAsyncFile;
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use tracing::debug;
 
 /**
@@ -66,6 +67,7 @@ pub(crate) fn FREELIST_SIZE() -> u64 {
   FREELIST_OFFSETOF_TILE_USED_SPACE(FREELIST_TILE_CAP)
 }
 
+#[derive(PartialEq, Eq, Debug)]
 struct FragmentedTile {
   released_bytes: u32,
   used_bytes: u32,
@@ -84,6 +86,22 @@ impl FragmentedTile {
 struct FragmentedTiles {
   tiles: FxHashMap<u32, FragmentedTile>,
   by_free_space: BTreeMap<u32, RoaringBitmap>,
+}
+
+impl PartialEq for FragmentedTiles {
+  fn eq(&self, other: &Self) -> bool {
+    self.tiles == other.tiles
+  }
+}
+
+impl Eq for FragmentedTiles {}
+
+impl Debug for FragmentedTiles {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("FragmentedTiles")
+      .field("tiles", &self.tiles)
+      .finish()
+  }
 }
 
 impl FragmentedTiles {
@@ -121,7 +139,7 @@ impl FragmentedTiles {
 
   pub fn remove(&mut self, no: u32) -> FragmentedTile {
     let t = self.tiles.remove(&no).unwrap();
-    let free_space = TILE_SIZE - t.used_bytes;
+    let free_space = t.free_bytes();
     let removed = self.by_free_space.get_mut(&free_space).unwrap().remove(no);
     assert!(removed);
     t
@@ -146,7 +164,7 @@ impl FragmentedTiles {
   pub fn update_used_bytes(&mut self, no: u32, new_used: u32) {
     let mut t = self.tiles.get_mut(&no).unwrap();
     let new_free = TILE_SIZE - new_used;
-    let old_free = TILE_SIZE - t.used_bytes;
+    let old_free = t.free_bytes();
     t.used_bytes = new_used;
     self.remove_free_space_entry(no, old_free);
     let inserted = self.by_free_space.entry(new_free).or_default().insert(no);
@@ -154,6 +172,7 @@ impl FragmentedTiles {
   }
 }
 
+#[derive(PartialEq, Debug)]
 pub(crate) struct FreeList {
   dev_offset: u64,
   solid_tiles: RoaringBitmap,
@@ -241,15 +260,15 @@ impl FreeList {
         tile_no
       }
     };
-    let cur_free_bytes = self.fragmented_tiles.get(tile_no).free_bytes();
-    let dev_offset = u64::from(tile_no) * TILE_SIZE_U64 + u64::from(TILE_SIZE - cur_free_bytes);
-    let new_free_bytes = cur_free_bytes - bytes_needed;
+    let tile = self.fragmented_tiles.get(tile_no);
+    let dev_offset = u64::from(tile_no) * TILE_SIZE_U64 + u64::from(tile.used_bytes);
+    let new_used_bytes = tile.used_bytes + bytes_needed;
     self
       .fragmented_tiles
-      .update_used_bytes(tile_no, TILE_SIZE - new_free_bytes);
+      .update_used_bytes(tile_no, new_used_bytes);
     mutation_writes.push((
       self.dev_offset + FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no),
-      create_u24_be(TILE_SIZE - new_free_bytes).to_vec(),
+      create_u24_be(new_used_bytes).to_vec(),
     ));
     dev_offset
   }
@@ -313,5 +332,62 @@ impl FreeList {
         create_u24_be(0).to_vec(),
       ));
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::FragmentedTile;
+  use super::FragmentedTiles;
+  use super::FreeList;
+  use crate::free_list::FREELIST_OFFSETOF_TILE_USED_SPACE;
+  use crate::tile::TILE_SIZE_U64;
+  use off64::create_u24_be;
+  use roaring::RoaringBitmap;
+
+  const SAMPLE_DEV_OFFSET: u64 = 100_000;
+
+  fn create_sample_free_list() -> FreeList {
+    let mut solid_tiles = RoaringBitmap::new();
+    let mut fragmented_tiles = FragmentedTiles::new();
+    solid_tiles.insert(15);
+    solid_tiles.insert(16);
+    solid_tiles.insert(19);
+    solid_tiles.insert(25);
+    solid_tiles.insert(26);
+    fragmented_tiles.add(8, FragmentedTile {
+      released_bytes: 100,
+      used_bytes: 4321,
+    });
+    fragmented_tiles.add(17, FragmentedTile {
+      released_bytes: 4355,
+      used_bytes: 8,
+    });
+    fragmented_tiles.add(33, FragmentedTile {
+      released_bytes: 0,
+      used_bytes: 10000,
+    });
+    FreeList {
+      dev_offset: SAMPLE_DEV_OFFSET,
+      solid_tiles,
+      fragmented_tiles,
+    }
+  }
+
+  #[test]
+  fn test_free_list_allocate_fragment() {
+    let mut fl = create_sample_free_list();
+    let mut w = Vec::new();
+    let a = fl.allocate_fragment(&mut w, 5);
+    assert_eq!(a, TILE_SIZE_U64 * 17 + 8);
+    assert_eq!(fl, {
+      let mut fl = create_sample_free_list();
+      fl.fragmented_tiles.update_used_bytes(17, 13);
+      fl
+    });
+    assert_eq!(w, vec![(
+      SAMPLE_DEV_OFFSET + FREELIST_OFFSETOF_TILE_USED_SPACE(17),
+      create_u24_be(13).to_vec(),
+    )]);
   }
 }

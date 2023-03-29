@@ -48,7 +48,6 @@ pub fn parse_key(uri: &Uri) -> Vec<u8> {
   percent_decode(uri.path().strip_prefix("/").unwrap().as_bytes()).collect_vec()
 }
 
-// (inode_device_offset, salt, hmac)
 // We don't respond with or require the inode device offset directly, as an incorrect value (unintentional or otherwise) could cause corruption.
 #[derive(Serialize, Deserialize)]
 // WARNING: Order of fields is significant, as rmp_serde will serialise in this order without field names.

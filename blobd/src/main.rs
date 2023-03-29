@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs::read_to_string;
 use tokio::join;
+use tracing::info;
 
 pub mod conf;
 pub mod endpoint;
@@ -32,6 +33,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
+  tracing_subscriber::fmt::init();
+
   let cli = Cli::parse();
 
   let conf_raw = read_to_string(cli.config).await.expect("read config file");
@@ -75,7 +78,7 @@ async fn main() {
 
   if cli.format {
     blobd.format().await;
-    println!("Formatted");
+    info!("device formatted");
     return;
   };
 

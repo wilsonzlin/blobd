@@ -12,10 +12,12 @@ use crate::inode::INO_OFFSETOF_STATE;
 use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_TILE_IDX;
 use crate::inode::INO_SIZE;
+use crate::op::key_debug_str;
 use off64::usz;
 use off64::Off64Int;
 use off64::Off64Slice;
 use std::sync::Arc;
+use tracing::trace;
 use write_journal::AtomicWriteGroup;
 
 pub struct OpCreateObjectInput {
@@ -38,6 +40,14 @@ pub(crate) async fn op_create_object(
     tail_len,
   } = get_object_alloc_cfg(req.size);
   let ino_size = INO_SIZE(key_len, tile_count.into());
+  trace!(
+    key = key_debug_str(&req.key),
+    inode_size = ino_size,
+    size = req.size,
+    solid_tile_count = tile_count,
+    tail_fragment_len = tail_len,
+    "creating object"
+  );
 
   let mut writes = Vec::with_capacity(4 + usz!(tile_count));
 
@@ -57,8 +67,16 @@ pub(crate) async fn op_create_object(
       tail_dev_offset,
     )
   };
-
   let object_id = ctx.object_id_serial.next(&mut writes);
+
+  trace!(
+    key = key_debug_str(&req.key),
+    object_id,
+    inode_dev_offset,
+    solid_tiles = format!("{:?}", tiles),
+    tail_fragment_dev_offset = tail_dev_offset,
+    "allocated object"
+  );
 
   let mut ino_raw = vec![0u8; usz!(ino_size)];
   ino_raw.write_u48_be_at(INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, 0);
@@ -73,8 +91,7 @@ pub(crate) async fn op_create_object(
     ino_raw.write_u24_be_at(INO_OFFSETOF_TILE_IDX(key_len, tile_idx), tile_no);
   }
 
-  // The inode must be journalled as well, as the GC depends on consistent data when reading raw tiles directly.
-  writes.push((inode_dev_offset, ino_raw));
+  ctx.device.write_at(inode_dev_offset, ino_raw).await;
 
   ctx
     .journal
@@ -82,6 +99,7 @@ pub(crate) async fn op_create_object(
     .await
     .write(change_serial, AtomicWriteGroup(writes))
     .await;
+  trace!(key = key_debug_str(&req.key), object_id, "object created");
 
   Ok(OpCreateObjectOutput {
     inode_dev_offset,

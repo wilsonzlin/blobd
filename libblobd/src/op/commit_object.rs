@@ -6,12 +6,14 @@ use crate::inode::INO_OFFSETOF_KEY_LEN;
 use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_OBJ_ID;
 use crate::inode::INO_OFFSETOF_STATE;
+use crate::op::key_debug_str;
 use crate::stream::StreamEvent;
 use crate::stream::StreamEventType;
 use off64::create_u48_be;
 use off64::usz;
 use off64::Off64Int;
 use std::sync::Arc;
+use tracing::trace;
 use write_journal::AtomicWriteGroup;
 
 pub struct OpCommitObjectInput {
@@ -30,9 +32,15 @@ pub(crate) async fn op_commit_object(
   let bkt_id = ctx.buckets.bucket_id_for_key(&req.key);
   let mut bkt = ctx.buckets.get_bucket(bkt_id).write().await;
   let inode_dev_offset = req.inode_dev_offset;
+  trace!(
+    key = key_debug_str(&req.key),
+    object_id = req.object_id,
+    inode_dev_offset,
+    "committing object"
+  );
 
   // Check AFTER acquiring lock in case two requests try to commit the same inode.
-  let obj_id = {
+  {
     let base = INO_OFFSETOF_STATE;
     let raw = ctx
       .device
@@ -43,7 +51,6 @@ pub(crate) async fn op_commit_object(
     if state != InodeState::Incomplete as u8 || obj_id != req.object_id {
       return Err(OpError::ObjectNotFound);
     };
-    obj_id
   };
 
   // We have to acquire a change serial even though we don't change the free list.
@@ -77,7 +84,7 @@ pub(crate) async fn op_commit_object(
     .create_event(&mut writes, StreamEvent {
       typ: StreamEventType::ObjectCommit,
       bucket_id: bkt_id,
-      object_id: obj_id,
+      object_id: req.object_id,
     });
 
   ctx
@@ -86,6 +93,13 @@ pub(crate) async fn op_commit_object(
     .await
     .write(change_serial, AtomicWriteGroup(writes))
     .await;
+
+  trace!(
+    key = key_debug_str(&req.key),
+    object_id = req.object_id,
+    inode_dev_offset,
+    "committed object"
+  );
 
   Ok(OpCommitObjectOutput {})
 }

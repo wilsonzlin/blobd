@@ -8,24 +8,24 @@ use crate::inode::ObjectAllocCfg;
 use crate::inode::INO_OFFSETOF_SIZE;
 use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_TILE_IDX;
-use crate::tile::TILE_SIZE;
+use crate::op::key_debug_str;
 use crate::tile::TILE_SIZE_U64;
 use futures::Stream;
 use off64::Off64Int;
 use std::cmp::min;
 use std::pin::Pin;
 use std::sync::Arc;
+use tracing::trace;
 
 struct ReadObjectStreamCfg {
   buf_size: u64,
   ctx: Arc<Ctx>,
   key: Vec<u8>,
-  key_len: u16,
   bucket_id: u64,
   bucket_version: u64,
   object_id: u64,
   object_size: u64,
-  next: u64,
+  start: u64,
   end: u64,
   inode_dev_offset: u64,
   alloc_cfg: ObjectAllocCfg,
@@ -45,19 +45,22 @@ fn create_read_object_stream(
     end,
     mut inode_dev_offset,
     key,
-    key_len,
-    mut next,
+    start,
     object_id,
     object_size,
   }: ReadObjectStreamCfg,
 ) -> impl Stream<Item = Vec<u8>> {
+  let key_len: u16 = key.len().try_into().unwrap();
+  let mut chunk_start = start;
   async_stream::stream! {
     loop {
-      if next >= end {
+      if chunk_start >= end {
+        trace!(key = key_debug_str(&key), object_id, object_size, start, chunk_start, end, "no more data to stream");
         break;
       };
       let bkt = ctx.buckets.get_bucket(bucket_id).read().await;
       if bkt.version != bucket_version {
+        trace!(key = key_debug_str(&key), object_id, object_size, start, chunk_start, end, "bucket has changed, looking up object again using key");
         let Some(f) = bkt.find_inode(
           &ctx.buckets,
           bucket_id,
@@ -72,7 +75,10 @@ fn create_read_object_stream(
         bucket_version = bkt.version;
       };
 
-      let tile_idx = u16::try_from(next / u64::from(TILE_SIZE)).unwrap();
+      let tile_idx = u16::try_from(chunk_start / TILE_SIZE_U64).unwrap();
+      // The device offset of the current tile or tail data fragment (`data_dev_offset`) changes each TILE_SIZE, so this is not the same as `chunk_start`. Think of `chunk_start` as the virtual pointer within a contiguous span of the object's data bytes, and this as the physical offset within the physical tile that backs the current position of the virtual pointer within the object's data made from many physical tiles + tail data fragment.
+      let chunk_start_within_tile = chunk_start % TILE_SIZE_U64;
+      // This is the device offset of the current tile or tail data fragment that contains the data at the current `chunk_start`.
       let data_dev_offset = if tile_idx < alloc_cfg.tile_count {
         // mmap memory should already be in page cache.
         u64::from(
@@ -93,13 +99,17 @@ fn create_read_object_stream(
       };
       assert!(data_dev_offset > 0);
 
-      let max_end = min(
-        min(end, (u64::from(tile_idx) + 1) * TILE_SIZE_U64),
-        object_size,
+      // Can't read past current tile, as we'll need to switch to a different tile then.
+      let max_chunk_end = min(
+        end,
+        (u64::from(tile_idx) + 1) * TILE_SIZE_U64,
       );
-      let end = min(max_end, next + buf_size);
-      let data = ctx.device.read_at(next, end - next).await;
-      next = end;
+      let chunk_end = min(max_chunk_end, chunk_start + buf_size);
+      let chunk_len = chunk_end - chunk_start;
+      let read_dev_offset = data_dev_offset + chunk_start_within_tile;
+      trace!(key = key_debug_str(&key), object_id, object_size, start, chunk_start, chunk_end, end, read_dev_offset, chunk_len, "streaming data");
+      let data = ctx.device.read_at(read_dev_offset, chunk_len).await;
+      chunk_start = chunk_end;
       yield data;
     };
   }
@@ -125,6 +135,12 @@ pub(crate) async fn op_read_object(
   ctx: Arc<Ctx>,
   req: OpReadObjectInput,
 ) -> OpResult<OpReadObjectOutput> {
+  trace!(
+    key = key_debug_str(&req.key),
+    start = req.start,
+    end = req.end,
+    "reading object"
+  );
   let key_len: u16 = req.key.len().try_into().unwrap();
 
   let bucket_id = ctx.buckets.bucket_id_for_key(&req.key);
@@ -152,21 +168,29 @@ pub(crate) async fn op_read_object(
   if start >= end || start >= object_size || end > object_size {
     return Err(OpError::RangeOutOfBounds);
   };
+  trace!(
+    key = key_debug_str(&req.key),
+    inode_dev_offset,
+    object_id,
+    object_size,
+    start,
+    end,
+    "found object to read"
+  );
 
   let alloc_cfg = get_object_alloc_cfg(object_size);
   let stream_cfg = ReadObjectStreamCfg {
     alloc_cfg,
-    buf_size: req.stream_buffer_size,
     bucket_id,
     bucket_version,
+    buf_size: req.stream_buffer_size,
     ctx: ctx.clone(),
     end,
     inode_dev_offset,
-    key_len,
     key: req.key,
-    next: start,
     object_id,
     object_size,
+    start,
   };
 
   Ok(OpReadObjectOutput {

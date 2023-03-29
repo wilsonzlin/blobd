@@ -12,6 +12,7 @@ use off64::create_u40_be;
 use percent_encoding::utf8_percent_encode;
 use percent_encoding::CONTROLS;
 use reqwest::header::CONTENT_LENGTH;
+use reqwest::header::RANGE;
 use reqwest::Body;
 use serde::Deserialize;
 use serde::Serialize;
@@ -19,6 +20,7 @@ use std::error::Error;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+// This client has internal state that is not very cheap to clone, nor memory efficient when cloned lots. Therefore, we don't derive Clone for it; wrap it in an Arc for cheap sharing.
 pub struct BlobdClient {
   client: reqwest::Client,
   url_prefix: String,
@@ -215,7 +217,7 @@ impl BlobdClient {
     self
       .client
       .delete(url)
-      .query(&("t", t))
+      .query(&[("t", t)])
       .send()
       .await?
       .error_for_status()?;
@@ -234,7 +236,7 @@ impl BlobdClient {
     let res = self
       .client
       .head(url)
-      .query(&("t", t))
+      .query(&[("t", t)])
       .send()
       .await?
       .error_for_status()?;
@@ -261,6 +263,8 @@ impl BlobdClient {
   pub async fn read_object(
     &self,
     key: &str,
+    start: u64,
+    end: Option<u64>,
   ) -> reqwest::Result<impl Stream<Item = reqwest::Result<Bytes>>> {
     let t = AuthToken::new(
       &self.tokens,
@@ -273,7 +277,15 @@ impl BlobdClient {
     let res = self
       .client
       .get(url)
-      .query(&("t", t))
+      .query(&[("t", t)])
+      .header(
+        RANGE,
+        format!(
+          "bytes={}-{}",
+          start,
+          end.map(|e| e.to_string()).unwrap_or_default()
+        ),
+      )
       .send()
       .await?
       .error_for_status()?;

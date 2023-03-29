@@ -1,4 +1,4 @@
-use crate::CmdUpload;
+use crate::CmdUploadDir;
 use crate::Ctx;
 use blobd_client_rs::BatchCreateObjectEntry;
 use bytes::Bytes;
@@ -45,7 +45,7 @@ fn process_dir_ent(
   })
 }
 
-pub(crate) async fn cmd_upload(ctx: Ctx, cmd: CmdUpload) {
+pub(crate) async fn cmd_upload_dir(ctx: Ctx, cmd: CmdUploadDir) {
   let tokio = Handle::current();
 
   let mp = MultiProgress::new();

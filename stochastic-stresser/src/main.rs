@@ -1,8 +1,6 @@
 use clap::Parser;
 use futures::stream::once;
 use futures::StreamExt;
-use indicatif::MultiProgress;
-use indicatif::ProgressBar;
 use libblobd::op::commit_object::OpCommitObjectInput;
 use libblobd::op::create_object::OpCreateObjectInput;
 use libblobd::op::read_object::OpReadObjectInput;
@@ -155,6 +153,10 @@ async fn main() {
     }
   });
 
+  info!(
+    "initialising pool of size {} MiB, this may take a while",
+    (cli.pool_size as f64) / 1024.0 / 1024.0
+  );
   let pool = Pool::new(cli.pool_size);
   info!("pool initialised");
   let key_len_seed = thread_rng().next_u64();
@@ -162,11 +164,7 @@ async fn main() {
   let data_len_seed = thread_rng().next_u64();
   let data_offset_seed = thread_rng().next_u64();
 
-  let mp = MultiProgress::new();
-  let pb_create = mp.add(ProgressBar::new(cli.objects));
-  let pb_write = mp.add(ProgressBar::new(cli.objects));
-  let pb_commit = mp.add(ProgressBar::new(cli.objects));
-  let pb_read = mp.add(ProgressBar::new(cli.objects));
+  // Progress bars would look nice and fancy, but we are more likely to want logs/traces than in-flight animations, and a summary of performance metrics at the end will be enough. Using progress bars will clash with the logger.
 
   let (tasks_sender, tasks_receiver) = stochastic_channel::<Task>();
   spawn_blocking({
@@ -196,10 +194,6 @@ async fn main() {
     let pool = pool.clone();
     let tasks_sender = tasks_sender.clone();
     let tasks_receiver = tasks_receiver.clone();
-    let pb_create = pb_create.clone();
-    let pb_write = pb_write.clone();
-    let pb_commit = pb_commit.clone();
-    let pb_read = pb_read.clone();
     threads.push(spawn(async move {
       for t in tasks_receiver {
         match t {
@@ -216,7 +210,6 @@ async fn main() {
               })
               .await
               .unwrap();
-            pb_create.inc(1);
             tasks_sender
               .send(Task::Write {
                 key_len,
@@ -267,7 +260,6 @@ async fn main() {
                   chunk_offset: next_chunk_offset,
                 }
               } else {
-                pb_write.inc(1);
                 Task::Commit {
                   key_len,
                   key_offset,
@@ -295,7 +287,6 @@ async fn main() {
               })
               .await
               .unwrap();
-            pb_commit.inc(1);
             tasks_sender
               .send(Task::Read {
                 key_len,
@@ -314,7 +305,7 @@ async fn main() {
             mut chunk_offset,
           } => {
             // Read a random amount to test various cases stochastically.
-            let end = thread_rng().gen_range(chunk_offset..data_len);
+            let end = thread_rng().gen_range(chunk_offset + 1..=data_len);
             let mut res = blobd
               .read_object(OpReadObjectInput {
                 end: Some(end),
@@ -342,8 +333,6 @@ async fn main() {
                   chunk_offset,
                 })
                 .unwrap();
-            } else {
-              pb_read.inc(1);
             };
           }
         };
