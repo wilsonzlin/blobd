@@ -1,0 +1,3 @@
+[build]
+# For Tokio Instrumentation. See https://github.com/tokio-rs/console/blob/main/console-subscriber/README.md#enabling-tokio-instrumentation.
+rustflags = ["--cfg", "tokio_unstable"]

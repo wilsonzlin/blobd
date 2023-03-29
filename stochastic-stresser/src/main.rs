@@ -13,23 +13,29 @@ use rand::RngCore;
 use seekable_async_file::get_file_len_via_seek;
 use seekable_async_file::SeekableAsyncFile;
 use seekable_async_file::SeekableAsyncFileMetrics;
-use stochastic_queue::StochasticMpmcRecvTimeoutError;
-use tokio::time::Instant;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 use stochastic_queue::stochastic_channel;
+use stochastic_queue::StochasticMpmcRecvTimeoutError;
 use tokio::join;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
+use tokio::time::sleep;
+use tokio::time::Instant;
 use tracing::info;
 use twox_hash::xxh3::hash64_with_seed;
 
 /*
 
 # Stochastic stress tester
+
+Run this program with this env var for logging: RUST_LOG=<log level>,runtime=info,tokio=info
+This will prevent the [Tokio Instrumentation](https://github.com/tokio-rs/console/tree/main/console-subscriber) events from being printed.
+Use [tokio-console](https://github.com/tokio-rs/console#running-the-console) to debug Tokio tasks (e.g. deadlocks).
+
 
 - We should not have to generate and/or store much data in memory, as that will hit performance.
 - Inputs should vary in length and content.
@@ -86,6 +92,7 @@ impl Pool {
   }
 }
 
+// TODO Delete, inspect.
 enum Task {
   Create {
     key_len: u64,
@@ -121,7 +128,7 @@ enum Task {
 
 #[tokio::main]
 async fn main() {
-  tracing_subscriber::fmt::init();
+  console_subscriber::init();
 
   let cli = Cli::parse();
 
@@ -196,6 +203,19 @@ async fn main() {
       info!("sender complete");
     }
   });
+  spawn({
+    let completed = completed.clone();
+    async move {
+      loop {
+        sleep(Duration::from_secs(10)).await;
+        let completed = completed.load(Ordering::Relaxed);
+        if completed == cli.objects {
+          break;
+        };
+        info!(completed, "progress");
+      }
+    }
+  });
   let mut threads = Vec::new();
   for thread_no in 0..cli.threads {
     let blobd = blobd.clone();
@@ -204,6 +224,7 @@ async fn main() {
     let tasks_sender = tasks_sender.clone();
     let tasks_receiver = tasks_receiver.clone();
     threads.push(spawn(async move {
+      info!(thread_no, "started thread");
       // We must use a timeout and regularly check the completion count, as we hold a sender so the channel won't naturally end.
       loop {
         if completed.load(Ordering::Relaxed) == cli.objects {

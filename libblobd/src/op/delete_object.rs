@@ -31,7 +31,7 @@ pub(crate) async fn op_delete_object(
   let key_len: u16 = req.key.len().try_into().unwrap();
 
   let bkt_id = ctx.buckets.bucket_id_for_key(&req.key);
-  let bkt = ctx.buckets.get_bucket(bkt_id).write().await;
+  let mut bkt = ctx.buckets.get_bucket(bkt_id).write().await;
   let Some(FoundInode { prev_dev_offset: prev_inode, next_dev_offset: next_inode, dev_offset: inode_dev_offset, object_id }) = bkt.find_inode(
     &ctx.buckets,
     bkt_id,
@@ -76,6 +76,7 @@ pub(crate) async fn op_delete_object(
     };
     free_list.generate_change_serial()
   };
+  bkt.version += 1;
 
   match prev_inode {
     Some(prev_inode_dev_offset) => {
