@@ -91,8 +91,10 @@ impl SequentialisedJournal {
         next_serial += 1;
         writes.push(e.1);
       }
-      // This await is just to acquire the journal internal queue lock, not actually wait for a full journal commit.
-      self.journal.write_many_with_custom_signal(writes).await;
+      if !writes.is_empty() {
+        // This await is just to acquire the journal internal queue lock, not actually wait for a full journal commit.
+        self.journal.write_many_with_custom_signal(writes).await;
+      };
     }
   }
 }

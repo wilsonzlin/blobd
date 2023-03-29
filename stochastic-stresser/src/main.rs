@@ -187,6 +187,11 @@ async fn main() {
   spawn_blocking({
     let tasks_sender = tasks_sender.clone();
     move || {
+      info!(
+        object_count = cli.objects,
+        maximum_object_size = cli.maximum_object_size,
+        "objects"
+      );
       for i in 0..cli.objects {
         let key_len = (hash64_with_seed(&i.to_be_bytes(), key_len_seed) % 65535) + 1;
         let key_offset =
