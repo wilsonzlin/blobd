@@ -12,6 +12,7 @@ libblobd = { version = "0.0.1", path = "../libblobd" }
 rand = "0.8.5"
 seekable-async-file = "0.5.3"
 stochastic-queue = "0.1.1"
+strum_macros = "0.24.3"
 # `tracing` is for Tokio Instrumentation: https://github.com/tokio-rs/console/blob/main/console-subscriber/README.md#enabling-tokio-instrumentation.
 tokio = { version = "1.27.0", features = ["full", "tracing"] }
 tracing = "0.1.37"

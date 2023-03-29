@@ -10,6 +10,7 @@ edition = "2021"
 
 [dependencies]
 async-stream = "0.3.4"
+dashmap = "5.4.0"
 futures = "0.3"
 itertools = "0.10"
 num-derive = "0.3"
@@ -25,4 +26,4 @@ strum = { version = "0.24", features = ["derive"] }
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1.37"
 twox-hash = "=1.6.3"
-write-journal = "0.4.2"
+write-journal = "0.4.3"

@@ -144,11 +144,13 @@ impl BlobdLoader {
     );
     let buckets = Buckets::load_from_device(dev.clone(), self.offsetof_buckets);
 
+    let journal = SequentialisedJournal::new(self.journal.clone());
+
     let ctx = Arc::new(Ctx {
       buckets,
       device: dev.clone(),
       free_list: Mutex::new(FreeListWithChangeTracker::new(free_list)),
-      journal: Mutex::new(SequentialisedJournal::new(self.journal.clone())),
+      journal,
       object_id_serial,
       stream: RwLock::new(stream),
     });
@@ -169,7 +171,10 @@ pub struct Blobd {
 impl Blobd {
   // WARNING: `device.start_delayed_data_sync_background_loop()` must also be running. Since `device` was provided, it's left up to the provider to run it.
   pub async fn start(&self) {
-    self.journal.start_commit_background_loop().await;
+    join! {
+      self.ctx.journal.start_commit_background_loop(),
+      self.journal.start_commit_background_loop(),
+    };
   }
 
   pub async fn commit_object(&self, input: OpCommitObjectInput) -> OpResult<OpCommitObjectOutput> {

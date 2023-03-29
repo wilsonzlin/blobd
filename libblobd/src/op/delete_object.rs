@@ -107,8 +107,6 @@ pub(crate) async fn op_delete_object(
 
   ctx
     .journal
-    .lock()
-    .await
     .write(change_serial, AtomicWriteGroup(writes))
     .await;
 

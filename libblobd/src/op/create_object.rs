@@ -95,8 +95,6 @@ pub(crate) async fn op_create_object(
 
   ctx
     .journal
-    .lock()
-    .await
     .write(change_serial, AtomicWriteGroup(writes))
     .await;
   trace!(key = key_debug_str(&req.key), object_id, "object created");

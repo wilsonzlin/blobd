@@ -2,16 +2,19 @@ use crate::bucket::Buckets;
 use crate::free_list::FreeList;
 use crate::object_id::ObjectIdSerial;
 use crate::stream::Stream;
+use dashmap::DashMap;
+use rustc_hash::FxHasher;
 use seekable_async_file::SeekableAsyncFile;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
-use std::collections::BTreeMap;
+use std::hash::BuildHasherDefault;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync::Arc;
-use tokio::spawn;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
+use tokio::time::sleep;
 use write_journal::AtomicWriteGroup;
 use write_journal::WriteJournal;
 
@@ -54,36 +57,43 @@ impl DerefMut for FreeListWithChangeTracker {
   }
 }
 
+#[derive(Clone)]
 pub(crate) struct SequentialisedJournal {
   journal: Arc<WriteJournal>,
-  next_serial: u64,
-  pending: BTreeMap<u64, (AtomicWriteGroup, SignalFutureController)>,
+  pending:
+    Arc<DashMap<u64, (AtomicWriteGroup, SignalFutureController), BuildHasherDefault<FxHasher>>>,
 }
 
 impl SequentialisedJournal {
   pub fn new(journal: Arc<WriteJournal>) -> Self {
     Self {
       journal,
-      next_serial: 0,
-      pending: BTreeMap::new(),
+      pending: Default::default(),
     }
   }
 
-  pub async fn write(&mut self, serial: ChangeSerial, write: AtomicWriteGroup) {
+  pub async fn write(&self, serial: ChangeSerial, write: AtomicWriteGroup) {
     let (fut, fut_ctl) = SignalFuture::new();
-    self.pending.insert(serial.num, (write, fut_ctl));
-    while let Some(e) = self.pending.first_entry() {
-      if *e.key() != self.next_serial {
-        break;
-      };
-      self.next_serial += 1;
-      let (write, fut_ctl) = e.remove();
-      let journal = self.journal.clone();
-      spawn(async move {
-        journal.write_with_custom_signal(write, fut_ctl).await;
-      });
-    }
+    let None = self.pending.insert(serial.num, (write, fut_ctl)) else {
+      unreachable!();
+    };
     fut.await;
+  }
+
+  // We must use a background loop. If we try to commit pending and await future inside `write`, we'll deadlock because the caller holds lock on `journal` (it needs one because `pending` would not be wrapped with Mutex) but `write` will wait forever for some previous serial entry to be written.
+  pub async fn start_commit_background_loop(&self) {
+    let mut next_serial = 0;
+    loop {
+      sleep(Duration::from_micros(200)).await;
+
+      let mut writes = Vec::new();
+      while let Some(e) = self.pending.remove(&next_serial) {
+        next_serial += 1;
+        writes.push(e.1);
+      }
+      // This await is just to acquire the journal internal queue lock, not actually wait for a full journal commit.
+      self.journal.write_many_with_custom_signal(writes).await;
+    }
   }
 }
 
@@ -91,7 +101,7 @@ pub(crate) struct Ctx {
   pub buckets: Buckets,
   pub device: SeekableAsyncFile,
   pub free_list: Mutex<FreeListWithChangeTracker>,
-  pub journal: Mutex<SequentialisedJournal>,
+  pub journal: SequentialisedJournal,
   pub object_id_serial: ObjectIdSerial,
   pub stream: RwLock<Stream>,
 }

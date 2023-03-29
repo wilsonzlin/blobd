@@ -89,8 +89,6 @@ pub(crate) async fn op_commit_object(
 
   ctx
     .journal
-    .lock()
-    .await
     .write(change_serial, AtomicWriteGroup(writes))
     .await;
 
