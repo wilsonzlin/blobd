@@ -7,7 +7,6 @@ use axum::http::header::CONTENT_LENGTH;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::Uri;
-use blobd_token::AuthToken;
 use blobd_token::AuthTokenAction;
 use libblobd::op::inspect_object::OpInspectObjectInput;
 use serde::Deserialize;
@@ -25,9 +24,7 @@ pub async fn endpoint_inspect_object(
   req: Query<InputQueryParams>,
 ) -> (StatusCode, HeaderMap) {
   let key = parse_key(&uri);
-  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::InspectObject {
-    key: key.clone(),
-  }) {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::InspectObject { key: key.clone() }) {
     return (StatusCode::UNAUTHORIZED, HeaderMap::new());
   };
 

@@ -1,5 +1,7 @@
 use axum::http::StatusCode;
 use axum::http::Uri;
+use blobd_token::AuthToken;
+use blobd_token::AuthTokenAction;
 use blobd_token::BlobdTokens;
 use data_encoding::BASE64;
 use itertools::Itertools;
@@ -18,8 +20,15 @@ pub mod read_object;
 pub mod write_object;
 
 pub struct HttpCtx {
+  pub authentication_is_enabled: bool,
   pub blobd: Blobd,
   pub tokens: BlobdTokens,
+}
+
+impl HttpCtx {
+  pub fn verify_auth(&self, t: &str, expected: AuthTokenAction) -> bool {
+    !self.authentication_is_enabled || AuthToken::verify(&self.tokens, t, expected)
+  }
 }
 
 pub fn transform_op_error(err: OpError) -> StatusCode {

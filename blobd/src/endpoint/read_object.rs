@@ -9,7 +9,6 @@ use axum::http::StatusCode;
 use axum::http::Uri;
 use axum::response::Response;
 use axum::TypedHeader;
-use blobd_token::AuthToken;
 use blobd_token::AuthTokenAction;
 use bytes::Bytes;
 use futures::Stream;
@@ -36,9 +35,7 @@ pub async fn endpoint_read_object(
   req: Query<InputQueryParams>,
 ) -> Result<Response<StreamBody<impl Stream<Item = Result<Bytes, std::io::Error>>>>, StatusCode> {
   let key = parse_key(&uri);
-  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::ReadObject {
-    key: key.clone(),
-  }) {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::ReadObject { key: key.clone() }) {
     return Err(StatusCode::UNAUTHORIZED);
   };
 

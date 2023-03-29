@@ -11,7 +11,10 @@ pub struct Conf {
 
   pub device_path: PathBuf,
 
+  // This is required even if authentication is disabled, as it's used for other internal features too.
   pub token_secret_base64: String,
+  #[serde(default)]
+  pub disable_authentication: bool,
 
   pub interface: Ipv4Addr,
   pub port: u16,

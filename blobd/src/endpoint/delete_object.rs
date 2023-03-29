@@ -5,7 +5,6 @@ use axum::extract::Query;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::Uri;
-use blobd_token::AuthToken;
 use blobd_token::AuthTokenAction;
 use libblobd::op::delete_object::OpDeleteObjectInput;
 use serde::Deserialize;
@@ -23,9 +22,7 @@ pub async fn endpoint_delete_object(
   req: Query<InputQueryParams>,
 ) -> StatusCode {
   let key = parse_key(&uri);
-  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::DeleteObject {
-    key: key.clone(),
-  }) {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::DeleteObject { key: key.clone() }) {
     return StatusCode::UNAUTHORIZED;
   };
 

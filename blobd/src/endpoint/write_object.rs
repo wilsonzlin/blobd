@@ -7,7 +7,6 @@ use axum::extract::State;
 use axum::headers::ContentLength;
 use axum::http::StatusCode;
 use axum::TypedHeader;
-use blobd_token::AuthToken;
 use blobd_token::AuthTokenAction;
 use futures::StreamExt;
 use libblobd::op::write_object::OpWriteObjectInput;
@@ -29,7 +28,7 @@ pub async fn endpoint_write_object(
   req: Query<InputQueryParams>,
   body: BodyStream,
 ) -> StatusCode {
-  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::WriteObject {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::WriteObject {
     object_id: req.object_id,
     offset: req.offset,
   }) {

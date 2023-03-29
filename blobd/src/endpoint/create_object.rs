@@ -7,7 +7,6 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::Uri;
-use blobd_token::AuthToken;
 use blobd_token::AuthTokenAction;
 use libblobd::op::create_object::OpCreateObjectInput;
 use serde::Deserialize;
@@ -26,7 +25,7 @@ pub async fn endpoint_create_object(
   req: Query<InputQueryParams>,
 ) -> (StatusCode, HeaderMap) {
   let key = parse_key(&uri);
-  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::CreateObject {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::CreateObject {
     key: key.clone(),
     size: req.size,
   }) {

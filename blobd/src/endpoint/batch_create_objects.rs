@@ -4,7 +4,6 @@ use axum::extract::Query;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
-use blobd_token::AuthToken;
 use blobd_token::AuthTokenAction;
 use futures::stream::once;
 use futures::AsyncReadExt;
@@ -34,7 +33,7 @@ pub async fn endpoint_batch_create_objects(
   req: Query<InputQueryParams>,
   body: BodyStream,
 ) -> (StatusCode, HeaderMap) {
-  if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::BatchCreateObjects {}) {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::BatchCreateObjects {}) {
     return (StatusCode::UNAUTHORIZED, HeaderMap::new());
   };
 

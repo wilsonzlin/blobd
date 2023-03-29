@@ -82,6 +82,7 @@ async fn main() {
   let blobd = blobd.load().await;
 
   let ctx = Arc::new(HttpCtx {
+    authentication_is_enabled: !conf.disable_authentication,
     blobd: blobd.clone(),
     tokens,
   });
