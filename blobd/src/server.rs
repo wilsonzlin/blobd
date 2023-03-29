@@ -17,6 +17,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::Any;
 use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
+use tracing::info;
 
 async fn method_not_allowed() -> StatusCode {
   StatusCode::METHOD_NOT_ALLOWED
@@ -44,9 +46,11 @@ pub async fn start_http_server_loop(interface: Ipv4Addr, port: u16, ctx: Arc<Htt
         .allow_origin(Any)
         .max_age(std::time::Duration::from_secs(60 * 60 * 24)),
     )
+    .layer(TraceLayer::new_for_http())
     .with_state(ctx.clone());
 
   let addr = SocketAddr::from((interface, port));
+  info!(interface = interface.to_string(), port, "starting server");
 
   Server::bind(&addr)
     .serve(app.into_make_service())
