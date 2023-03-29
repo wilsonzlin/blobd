@@ -3,6 +3,8 @@ use futures::stream::once;
 use futures::StreamExt;
 use libblobd::op::commit_object::OpCommitObjectInput;
 use libblobd::op::create_object::OpCreateObjectInput;
+use libblobd::op::delete_object::OpDeleteObjectInput;
+use libblobd::op::inspect_object::OpInspectObjectInput;
 use libblobd::op::read_object::OpReadObjectInput;
 use libblobd::op::write_object::OpWriteObjectInput;
 use libblobd::tile::TILE_SIZE_U64;
@@ -94,7 +96,6 @@ impl Pool {
   }
 }
 
-// TODO Delete, inspect.
 #[derive(Display)]
 enum Task {
   Create {
@@ -120,12 +121,23 @@ enum Task {
     object_id: u64,
     inode_dev_offset: u64,
   },
+  Inspect {
+    key_len: u64,
+    key_offset: u64,
+    data_len: u64,
+    data_offset: u64,
+    object_id: u64,
+  },
   Read {
     key_len: u64,
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
     chunk_offset: u64,
+  },
+  Delete {
+    key_len: u64,
+    key_offset: u64,
   },
 }
 
@@ -338,6 +350,31 @@ async fn main() {
               .await
               .unwrap();
             tasks_sender
+              .send(Task::Inspect {
+                key_len,
+                key_offset,
+                data_len,
+                data_offset,
+                object_id,
+              })
+              .unwrap();
+          }
+          Task::Inspect {
+            key_len,
+            key_offset,
+            data_len,
+            data_offset,
+            object_id,
+          } => {
+            let res = blobd
+              .inspect_object(OpInspectObjectInput {
+                key: pool.get(key_offset, key_len),
+              })
+              .await
+              .unwrap();
+            assert_eq!(res.object_id, object_id);
+            assert_eq!(res.size, data_len);
+            tasks_sender
               .send(Task::Read {
                 key_len,
                 key_offset,
@@ -384,8 +421,25 @@ async fn main() {
                 })
                 .unwrap();
             } else {
-              completed.fetch_add(1, Ordering::Relaxed);
+              tasks_sender
+                .send(Task::Delete {
+                  key_len,
+                  key_offset,
+                })
+                .unwrap();
             };
+          }
+          Task::Delete {
+            key_len,
+            key_offset,
+          } => {
+            blobd
+              .delete_object(OpDeleteObjectInput {
+                key: pool.get(key_offset, key_len),
+              })
+              .await
+              .unwrap();
+            completed.fetch_add(1, Ordering::Relaxed);
           }
         };
       }
@@ -397,6 +451,8 @@ async fn main() {
   for t in threads {
     t.await.unwrap();
   }
+
+  // TODO Assert all tiles are solid, no fragmented files.
 
   let exec_sec = started.elapsed().as_secs_f64();
   info!(execution_seconds = exec_sec, "all done");
