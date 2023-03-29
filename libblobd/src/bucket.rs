@@ -10,6 +10,7 @@ use off64::usz;
 use off64::Off64Int;
 use seekable_async_file::SeekableAsyncFile;
 use tokio::sync::RwLock;
+use tracing::debug;
 use twox_hash::xxh3::hash64;
 
 /**
@@ -80,7 +81,7 @@ impl Bucket {
       let object_id = raw.read_u64_be_at(INO_OFFSETOF_OBJ_ID - base);
       if raw[usz!(INO_OFFSETOF_STATE - base)] == expected_state as u8
       && (expected_object_id.is_none() || expected_object_id.unwrap() == object_id)
-      && raw.read_u16_be_at(INO_OFFSETOF_KEY_LEN) == key_len
+      && raw.read_u16_be_at(INO_OFFSETOF_KEY_LEN - base) == key_len
       // mmap region should already be in page cache, so no need to use async.
       && dev.read_at_sync(dev_offset + INO_OFFSETOF_KEY, key_len.into()) == key
       {
@@ -112,6 +113,7 @@ impl Buckets {
     let buckets = (0..count)
       .map(|_| RwLock::new(Bucket { version: 0 }))
       .collect_vec();
+    debug!(bucket_count = count, "buckets loaded");
     Buckets {
       buckets,
       dev,

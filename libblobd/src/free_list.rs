@@ -7,6 +7,7 @@ use roaring::RoaringBitmap;
 use rustc_hash::FxHashMap;
 use seekable_async_file::SeekableAsyncFile;
 use std::collections::BTreeMap;
+use tracing::debug;
 
 /**
 
@@ -45,7 +46,7 @@ Structure
 {
   u24 tile_used_space_in_bytes
   u24 tile_released_space_in_bytes
-}[16777216]
+}[FREELIST_TILE_CAP]
 
 **/
 
@@ -91,6 +92,10 @@ impl FragmentedTiles {
       tiles: FxHashMap::default(),
       by_free_space: BTreeMap::new(),
     }
+  }
+
+  pub fn len(&self) -> usize {
+    self.tiles.len()
   }
 
   pub fn add(&mut self, no: u32, t: FragmentedTile) {
@@ -164,22 +169,39 @@ impl FreeList {
   ) -> FreeList {
     let mut solid_tiles = RoaringBitmap::new();
     let mut fragmented_tiles = FragmentedTiles::new();
+    let mut released_fragmented_bytes_total = 0u64;
+    let mut used_fragmented_bytes_total = 0u64;
     for tile_no in reserved_tile_count..total_tile_count {
-      let dev_offset_used_bytes = FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no);
-      let dev_offset_released_bytes = FREELIST_OFFSETOF_TILE_RELEASED_SPACE(tile_no);
-      let used_bytes = dev.read_at_sync(dev_offset_used_bytes, 3).read_u24_be_at(0);
+      let used_bytes = dev
+        .read_at_sync(dev_offset + FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no), 3)
+        .read_u24_be_at(0);
       let released_bytes = dev
-        .read_at_sync(dev_offset_released_bytes, 3)
+        .read_at_sync(
+          dev_offset + FREELIST_OFFSETOF_TILE_RELEASED_SPACE(tile_no),
+          3,
+        )
         .read_u24_be_at(0);
       if used_bytes == 0 {
-        solid_tiles.insert(used_bytes);
+        assert_eq!(released_bytes, 0);
+        solid_tiles.insert(tile_no);
       } else {
+        released_fragmented_bytes_total += u64::from(released_bytes);
+        used_fragmented_bytes_total += u64::from(used_bytes);
         fragmented_tiles.add(tile_no, FragmentedTile {
           released_bytes,
           used_bytes,
         });
       };
     }
+    debug!(
+      total_tile_count,
+      reserved_tile_count,
+      solid_tile_count = solid_tiles.len(),
+      fragmented_tile_count = fragmented_tiles.len(),
+      fragment_bytes_used = used_fragmented_bytes_total,
+      fragment_bytes_released = released_fragmented_bytes_total,
+      "free list loaded",
+    );
     FreeList {
       dev_offset,
       solid_tiles,
@@ -220,9 +242,7 @@ impl FreeList {
       }
     };
     let cur_free_bytes = self.fragmented_tiles.get(tile_no).free_bytes();
-    let dev_offset = self.dev_offset
-      + FREELIST_OFFSETOF_TILE_USED_SPACE(tile_no)
-      + u64::from(TILE_SIZE - cur_free_bytes);
+    let dev_offset = u64::from(tile_no) * TILE_SIZE_U64 + u64::from(TILE_SIZE - cur_free_bytes);
     let new_free_bytes = cur_free_bytes - bytes_needed;
     self
       .fragmented_tiles

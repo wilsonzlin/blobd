@@ -9,6 +9,7 @@ authors = ["Wilson Lin <code@wilsonl.in>"]
 edition = "2021"
 
 [dependencies]
+async-stream = "0.3.4"
 futures = "0.3"
 itertools = "0.10"
 num-derive = "0.3"
@@ -22,5 +23,6 @@ signal-future = "0.0.1"
 # Pin the version as the docs mention that outputs could change in future versions: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
 strum = { version = "0.24", features = ["derive"] }
 tokio = { version = "1", features = ["sync"] }
+tracing = "0.1.37"
 twox-hash = "=1.6.3"
-write-journal = "0.4.1"
+write-journal = "0.4.2"

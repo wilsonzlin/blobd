@@ -1,7 +1,6 @@
 use clap::Parser;
 use futures::stream::once;
 use futures::StreamExt;
-use futures::TryStreamExt;
 use indicatif::MultiProgress;
 use indicatif::ProgressBar;
 use libblobd::op::commit_object::OpCommitObjectInput;
@@ -23,7 +22,18 @@ use stochastic_queue::stochastic_channel;
 use tokio::join;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
+use tracing::info;
 use twox_hash::xxh3::hash64_with_seed;
+
+/*
+
+# Stochastic stress tester
+
+- We should not have to generate and/or store much data in memory, as that will hit performance.
+- Inputs should vary in length and content.
+- We want to vary tasks, not just sequentially create => write => commit => read, either horizontally (create all then write all then ...) or vertically (per object). In the future we could use more complex dynamic probabilities, but for now a random pick of possible tasks is good enough.
+
+*/
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -109,6 +119,8 @@ enum Task {
 
 #[tokio::main]
 async fn main() {
+  tracing_subscriber::fmt::init();
+
   let cli = Cli::parse();
 
   assert!(cli.buckets.is_power_of_two());
@@ -128,7 +140,9 @@ async fn main() {
 
   let blobd = BlobdLoader::new(device.clone(), device_size, bkt_cnt_log2);
   blobd.format().await;
+  info!("formatted device");
   let blobd = blobd.load().await;
+  info!("loaded device");
 
   spawn({
     let blobd = blobd.clone();
@@ -142,6 +156,7 @@ async fn main() {
   });
 
   let pool = Pool::new(cli.pool_size);
+  info!("pool initialised");
   let key_len_seed = thread_rng().next_u64();
   let key_offset_seed = thread_rng().next_u64();
   let data_len_seed = thread_rng().next_u64();
@@ -154,9 +169,9 @@ async fn main() {
   let pb_read = mp.add(ProgressBar::new(cli.objects));
 
   let (tasks_sender, tasks_receiver) = stochastic_channel::<Task>();
-  {
+  spawn_blocking({
     let tasks_sender = tasks_sender.clone();
-    spawn_blocking(move || {
+    move || {
       for i in 0..cli.objects {
         let key_len = (hash64_with_seed(&i.to_be_bytes(), key_len_seed) % 65535) + 1;
         let key_offset =
@@ -173,8 +188,8 @@ async fn main() {
           })
           .unwrap();
       }
-    });
-  };
+    }
+  });
   let mut threads = Vec::new();
   for _ in 0..cli.threads {
     let blobd = blobd.clone();
@@ -223,21 +238,17 @@ async fn main() {
             object_id,
             inode_dev_offset,
           } => {
-            let new_chunk_offset = chunk_offset + TILE_SIZE_U64;
+            let next_chunk_offset = chunk_offset + TILE_SIZE_U64;
+            let chunk_len = if next_chunk_offset <= data_len {
+              TILE_SIZE_U64
+            } else {
+              data_len - chunk_offset
+            };
             blobd
               .write_object(OpWriteObjectInput {
-                data_len,
-                data_stream: once(async {
-                  Ok(pool.get(
-                    data_offset + chunk_offset,
-                    if new_chunk_offset < data_len {
-                      TILE_SIZE_U64
-                    } else {
-                      data_len - chunk_offset
-                    },
-                  ))
-                })
-                .boxed(),
+                data_len: chunk_len,
+                data_stream: once(async { Ok(pool.get(data_offset + chunk_offset, chunk_len)) })
+                  .boxed(),
                 inode_dev_offset,
                 object_id,
                 offset: chunk_offset,
@@ -245,7 +256,7 @@ async fn main() {
               .await
               .unwrap();
             tasks_sender
-              .send(if new_chunk_offset < data_len {
+              .send(if next_chunk_offset < data_len {
                 Task::Write {
                   key_len,
                   key_offset,
@@ -253,7 +264,7 @@ async fn main() {
                   data_offset,
                   object_id,
                   inode_dev_offset,
-                  chunk_offset: new_chunk_offset,
+                  chunk_offset: next_chunk_offset,
                 }
               } else {
                 pb_write.inc(1);
@@ -307,15 +318,16 @@ async fn main() {
             let mut res = blobd
               .read_object(OpReadObjectInput {
                 end: Some(end),
-                start: Some(chunk_offset),
+                start: chunk_offset,
                 key: pool.get(key_offset, key_len),
                 stream_buffer_size: 1024 * 16,
               })
               .await
               .unwrap();
-            while let Some(chunk) = res.data_stream.try_next().await.unwrap() {
+            while let Some(chunk) = res.data_stream.next().await {
               let chunk_len: u64 = chunk.len().try_into().unwrap();
-              assert_eq!(chunk, pool.get(data_offset + chunk_offset, chunk_len));
+              // Don't use assert_eq! as it will print a lot of raw bytes.
+              assert!(chunk == pool.get(data_offset + chunk_offset, chunk_len));
               chunk_offset += chunk_len;
               assert!(chunk_offset <= end);
             }

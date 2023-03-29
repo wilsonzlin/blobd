@@ -3,6 +3,7 @@ use off64::Off64Int;
 use seekable_async_file::SeekableAsyncFile;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use tracing::debug;
 
 pub(crate) struct ObjectIdSerial {
   dev_offset: u64,
@@ -12,6 +13,7 @@ pub(crate) struct ObjectIdSerial {
 impl ObjectIdSerial {
   pub fn load_from_device(dev: &SeekableAsyncFile, dev_offset: u64) -> Self {
     let next = dev.read_at_sync(dev_offset, 8).read_u64_be_at(0);
+    debug!(next_id = next, "object ID serial loaded");
     Self {
       dev_offset,
       next: AtomicU64::new(next),

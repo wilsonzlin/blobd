@@ -6,6 +6,7 @@ use off64::Off64Int;
 use off64::Off64Slice;
 use seekable_async_file::SeekableAsyncFile;
 use std::collections::BTreeMap;
+use tracing::debug;
 
 /**
 
@@ -89,6 +90,7 @@ impl Stream {
         typ,
       });
     }
+    debug!(event_count = events.len(), virtual_head, "stream loaded");
     Stream {
       dev_offset,
       virtual_head,

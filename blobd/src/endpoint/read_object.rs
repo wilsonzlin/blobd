@@ -11,10 +11,12 @@ use axum::response::Response;
 use axum::TypedHeader;
 use blobd_token::AuthToken;
 use blobd_token::AuthTokenAction;
+use bytes::Bytes;
+use futures::Stream;
+use futures::StreamExt;
 use itertools::Itertools;
 use libblobd::op::read_object::OpReadObjectInput;
 use libblobd::op::read_object::OpReadObjectOutput;
-use libblobd::op::read_object::ReadObjectStream;
 use serde::Deserialize;
 use serde::Serialize;
 use std::ops::Bound;
@@ -32,7 +34,7 @@ pub async fn endpoint_read_object(
   TypedHeader(range): TypedHeader<Range>,
   uri: Uri,
   req: Query<InputQueryParams>,
-) -> Result<Response<StreamBody<ReadObjectStream>>, StatusCode> {
+) -> Result<Response<StreamBody<impl Stream<Item = Result<Bytes, std::io::Error>>>>, StatusCode> {
   let key = parse_key(&uri);
   if AuthToken::verify(&ctx.tokens, &req.t, AuthTokenAction::ReadObject {
     key: key.clone(),
@@ -50,10 +52,10 @@ pub async fn endpoint_read_object(
     .unwrap_or((Bound::Unbounded, Bound::Unbounded));
 
   let start = match range.0 {
-    Bound::Included(v) => Some(v),
+    Bound::Included(v) => v,
     // Lower bound must always be inclusive.
     Bound::Excluded(_) => return Err(StatusCode::RANGE_NOT_SATISFIABLE),
-    Bound::Unbounded => None,
+    Bound::Unbounded => 0,
   };
   // Exclusive.
   let end = match range.1 {
@@ -93,7 +95,9 @@ pub async fn endpoint_read_object(
           format!("bytes {start}-{end}/{object_size}"),
         )
         .header("x-blobd-object-id", object_id.to_string())
-        .body(StreamBody::new(data_stream))
+        .body(StreamBody::new(
+          data_stream.map(|chunk| Ok(Bytes::from(chunk))),
+        ))
         .unwrap(),
     ),
     Err(err) => Err(transform_op_error(err)),
