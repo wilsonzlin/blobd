@@ -25,6 +25,7 @@ const STREAM_BUFSIZE: u64 = 1024 * 8;
 
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
+  #[serde(default)]
   pub t: String,
 }
 

@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
+  #[serde(default)]
   pub t: String,
 }
 

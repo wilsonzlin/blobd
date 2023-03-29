@@ -19,6 +19,7 @@ pub struct InputQueryParams {
   pub offset: u64,
   pub object_id: u64,
   pub upload_id: String,
+  #[serde(default)]
   pub t: String,
 }
 
