@@ -38,10 +38,10 @@ pub(crate) async fn op_create_object(
     tile_count,
     tail_len,
   } = get_object_alloc_cfg(req.size);
-  let ino_size = INO_SIZE(key_len, tile_count.into());
+  let inode_size = INO_SIZE(key_len, tile_count.into());
   trace!(
     key = key_debug_str(&req.key),
-    inode_size = ino_size,
+    inode_size,
     size = req.size,
     solid_tile_count = tile_count,
     tail_fragment_len = tail_len,
@@ -52,7 +52,7 @@ pub(crate) async fn op_create_object(
 
   let (change_serial, inode_dev_offset, tiles, tail_dev_offset) = {
     let mut free_list = ctx.free_list.lock().await;
-    let inode_dev_offset = free_list.allocate_fragment(&mut writes, ino_size.try_into().unwrap());
+    let inode_dev_offset = free_list.allocate_fragment(&mut writes, inode_size.try_into().unwrap());
     let tiles = free_list.allocate_tiles(&mut writes, tile_count);
     let tail_dev_offset = if tail_len == 0 {
       0
@@ -81,19 +81,19 @@ pub(crate) async fn op_create_object(
     "allocated object"
   );
 
-  let mut ino_raw = vec![0u8; usz!(ino_size)];
-  ino_raw.write_u48_be_at(INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, 0);
-  ino_raw.write_u48_be_at(INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, tail_dev_offset);
-  ino_raw.write_u40_be_at(INO_OFFSETOF_SIZE, req.size);
-  ino_raw.write_u64_be_at(INO_OFFSETOF_OBJ_ID, object_id);
-  ino_raw.write_u16_be_at(INO_OFFSETOF_KEY_LEN, key_len);
-  ino_raw.write_slice_at(INO_OFFSETOF_KEY, &req.key);
+  let mut inode_raw = vec![0u8; usz!(inode_size)];
+  inode_raw.write_u48_be_at(INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, 0);
+  inode_raw.write_u48_be_at(INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, tail_dev_offset);
+  inode_raw.write_u40_be_at(INO_OFFSETOF_SIZE, req.size);
+  inode_raw.write_u64_be_at(INO_OFFSETOF_OBJ_ID, object_id);
+  inode_raw.write_u16_be_at(INO_OFFSETOF_KEY_LEN, key_len);
+  inode_raw.write_slice_at(INO_OFFSETOF_KEY, &req.key);
   for (tile_idx, &tile_no) in tiles.iter().enumerate() {
     let tile_idx: u16 = tile_idx.try_into().unwrap();
-    ino_raw.write_u24_be_at(INO_OFFSETOF_TILE_IDX(key_len, tile_idx), tile_no);
+    inode_raw.write_u24_be_at(INO_OFFSETOF_TILE_IDX(key_len, tile_idx), tile_no);
   }
 
-  ctx.device.write_at(inode_dev_offset, ino_raw).await;
+  ctx.device.write_at(inode_dev_offset, inode_raw).await;
 
   ctx
     .journal

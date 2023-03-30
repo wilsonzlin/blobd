@@ -45,10 +45,10 @@ pub(crate) async fn op_write_object<
   };
 
   let len = req.data_len;
-  let ino_dev_offset = incomplete_slot_lock.inode_dev_offset();
+  let inode_dev_offset = incomplete_slot_lock.inode_dev_offset();
   trace!(
     object_id = req.object_id,
-    inode_dev_offset = ino_dev_offset,
+    inode_dev_offset,
     offset = req.offset,
     length = req.data_len,
     "writing object"
@@ -67,7 +67,7 @@ pub(crate) async fn op_write_object<
   let raw = ctx
     .device
     .read_at(
-      ino_dev_offset + base,
+      inode_dev_offset + base,
       INO_OFFSETOF_NEXT_INODE_DEV_OFFSET - base,
     )
     .await;
@@ -76,12 +76,12 @@ pub(crate) async fn op_write_object<
   let key_len = raw.read_u16_be_at(INO_OFFSETOF_KEY_LEN - base);
   trace!(
     object_id = req.object_id,
-    inode_dev_offset = ino_dev_offset,
+    inode_dev_offset,
     size,
     key = key_debug_str(
       &ctx
         .device
-        .read_at_sync(ino_dev_offset + INO_OFFSETOF_KEY, key_len.into())
+        .read_at_sync(inode_dev_offset + INO_OFFSETOF_KEY, key_len.into())
     ),
     "found object to write to"
   );
@@ -110,14 +110,17 @@ pub(crate) async fn op_write_object<
         // mmap data should already be in page cache.
         ctx
           .device
-          .read_at_sync(ino_dev_offset + INO_OFFSETOF_TILE_IDX(key_len, tile_idx), 3)
+          .read_at_sync(
+            inode_dev_offset + INO_OFFSETOF_TILE_IDX(key_len, tile_idx),
+            3,
+          )
           .read_u24_be_at(0),
       ) * TILE_SIZE_U64
     } else {
       // mmap data should already be in page cache.
       ctx
         .device
-        .read_at_sync(ino_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6)
+        .read_at_sync(inode_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6)
         .read_u48_be_at(0)
     }
   };
