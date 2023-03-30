@@ -67,10 +67,10 @@ pub(crate) async fn op_create_object(
     )
   };
   let object_id = ctx.object_id_serial.next(&mut writes);
-  let incomplete_slot_id =
-    ctx
-      .incomplete_slots
-      .allocate_slot(&mut writes, object_id, inode_dev_offset);
+  let incomplete_slot_id = ctx
+    .incomplete_slots
+    .allocate_slot(&mut writes, object_id, inode_dev_offset)
+    .await;
 
   trace!(
     key = key_debug_str(&req.key),

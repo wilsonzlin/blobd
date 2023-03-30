@@ -86,7 +86,7 @@ impl IncompleteSlot {
   }
 
   fn is_vacant(&self) -> bool {
-    self.inode_dev_offset == 0
+    self.created_hour_ts == 0
   }
 
   #[allow(dead_code)]
@@ -95,7 +95,7 @@ impl IncompleteSlot {
   }
 
   pub fn inode_dev_offset(&self) -> u64 {
-    assert!(self.created_hour_ts != 0);
+    // NOTE: Do not assert self is not vacant, as a slot is vacated when committing and then returned to the caller.
     self.inode_dev_offset
   }
 }
@@ -153,14 +153,15 @@ impl IncompleteSlots {
       .await;
   }
 
-  pub fn allocate_slot(
+  pub async fn allocate_slot(
     &self,
     mutation_writes: &mut Vec<(u64, Vec<u8>)>,
     object_id: u64,
     inode_dev_offset: u64,
   ) -> IncompleteSlotId {
     let id = self.vacant_slot_ids.1.try_recv().unwrap();
-    let mut slot = self.slots[usz!(id)].try_write().unwrap();
+    // This may be blocked if we're acquiring a slot that has just been vacated but is still being committed (and the lock is still being held).
+    let mut slot = self.slots[usz!(id)].write().await;
     assert!(slot.is_vacant());
     let now = Utc::now().timestamp();
     let created_hour_ts: u32 = (now / 60 / 60).try_into().unwrap();
@@ -200,6 +201,8 @@ impl IncompleteSlots {
       return None;
     };
     slot.vacate();
+    // This is safe, as we'll hold the write lock while the return value hasn't been dropped, so even if another caller wants to acquire this one they won't be able to mutate the state yet.
+    self.vacant_slot_ids.0.try_send(slot_id).unwrap();
     mutation_writes.push((INCOMPLETE_SLOTS_OFFSETOF_SLOT(slot_id), vec![
       0u8;
       usz!(
