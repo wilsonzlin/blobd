@@ -3,8 +3,6 @@ use hmac::digest::CtOutput;
 use hmac::digest::Output;
 use hmac::Hmac;
 use hmac::Mac;
-use rand::thread_rng;
-use rand::RngCore;
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Sha256;
@@ -20,46 +18,37 @@ type BlobdTokenHmac = Hmac<Sha256>;
 
 const BLOBD_TOKEN_HMAC_LEN: usize = size_of::<Output<BlobdTokenHmac>>();
 
-const BLOBD_HMAC_SALT_LEN: usize = 16;
-
 impl BlobdTokens {
   pub fn new(secret: [u8; 32]) -> Self {
     Self { secret }
   }
 
-  fn calculate_mac(&self, salt_and_token_data: &[u8]) -> CtOutput<BlobdTokenHmac> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(self.secret.as_slice()).unwrap();
-    mac.update(salt_and_token_data);
-    mac.finalize()
-  }
-
-  pub fn generate<T: Serialize>(&self, token_data: T) -> Vec<u8> {
-    let mut salt = [0u8; BLOBD_HMAC_SALT_LEN];
-    thread_rng().fill_bytes(&mut salt);
-    let mut raw = salt.to_vec();
+  fn calculate_mac<T: Serialize>(&self, token_data: &T) -> CtOutput<BlobdTokenHmac> {
+    let mut raw = Vec::new();
     token_data
       .serialize(&mut rmp_serde::Serializer::new(&mut raw))
       .unwrap();
-    let mac = self.calculate_mac(&raw).into_bytes();
-    raw.splice(0..0, mac);
-    raw
+    let mut mac = Hmac::<Sha256>::new_from_slice(self.secret.as_slice()).unwrap();
+    mac.update(&raw);
+    mac.finalize()
   }
 
-  pub fn parse_and_verify<'de, T: Deserialize<'de>>(&self, token: &'de [u8]) -> Option<T> {
-    if token.len() < BLOBD_TOKEN_HMAC_LEN + BLOBD_HMAC_SALT_LEN {
-      return None;
+  pub fn generate<T: Serialize>(&self, token_data: &T) -> Vec<u8> {
+    self.calculate_mac(token_data).into_bytes().to_vec()
+  }
+
+  pub fn verify<T: Serialize>(&self, token: &[u8], expected_token_data: &T) -> bool {
+    if token.len() != BLOBD_TOKEN_HMAC_LEN {
+      return false;
     };
-    let (mac, raw) = token.split_at(BLOBD_TOKEN_HMAC_LEN);
-    let mac: [u8; BLOBD_TOKEN_HMAC_LEN] = mac.try_into().unwrap();
+    let mac: [u8; BLOBD_TOKEN_HMAC_LEN] = token.try_into().unwrap();
     let mac: Output<Hmac<Sha256>> = mac.into();
     // We must use CtOutput to avoid timing attacks that defeat HMAC security.
     let mac = CtOutput::from(mac);
-    if self.calculate_mac(raw) != mac {
-      return None;
+    if self.calculate_mac(expected_token_data) != mac {
+      return false;
     };
-    // The salt has already been verified as the HMAC check has passed.
-    let (_salt, raw) = raw.split_at(BLOBD_HMAC_SALT_LEN);
-    rmp_serde::decode::from_slice(raw).ok()
+    true
   }
 }
 
@@ -85,8 +74,10 @@ pub struct AuthToken {
 impl AuthToken {
   pub fn new(tokens: &BlobdTokens, action: AuthTokenAction, expires: u64) -> String {
     let token_data = AuthToken { action, expires };
-    let token_raw = tokens.generate(token_data);
-    BASE64URL_NOPAD.encode(&token_raw)
+    let token_raw = tokens.generate(&token_data);
+    let mut raw = expires.to_be_bytes().to_vec();
+    raw.extend_from_slice(&token_raw);
+    BASE64URL_NOPAD.encode(&raw)
   }
 
   pub fn verify(tokens: &BlobdTokens, token: &str, expected_action: AuthTokenAction) -> bool {
@@ -94,12 +85,23 @@ impl AuthToken {
       .duration_since(UNIX_EPOCH)
       .expect("system clock is before 1970")
       .as_secs();
-    let Ok(token_raw) = BASE64URL_NOPAD.decode(token.as_bytes()) else {
+    let Ok(raw) = BASE64URL_NOPAD.decode(token.as_bytes()) else {
       return false;
     };
-    let Some(v): Option<AuthToken> = tokens.parse_and_verify(&token_raw) else {
+    if raw.len() != 8 + BLOBD_TOKEN_HMAC_LEN {
       return false;
     };
-    v.expires > now && v.action == expected_action
+    let (expires_raw, token_raw) = raw.split_at(size_of::<u64>());
+    let expires = u64::from_be_bytes(expires_raw.try_into().unwrap());
+    if !tokens.verify(token_raw, &AuthToken {
+      action: expected_action,
+      expires,
+    }) {
+      return false;
+    };
+    if expires <= now {
+      return false;
+    };
+    true
   }
 }

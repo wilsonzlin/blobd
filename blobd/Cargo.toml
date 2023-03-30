@@ -13,6 +13,7 @@ edition = "2021"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
+aes-gcm = "0.10.1"
 axum = { version = "0.6", features = ["headers"] }
 blobd-token = { version = "0.0.1", path = "../blobd-token" }
 bytes = "1.4.0"
@@ -23,6 +24,7 @@ itertools = "0.10"
 libblobd = { version = "0.0.1", path = "../libblobd" }
 off64 = "0.3"
 percent-encoding = "2.2"
+rand = "0.8.5"
 seekable-async-file = "0.5.3"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }

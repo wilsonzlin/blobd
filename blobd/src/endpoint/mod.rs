@@ -1,15 +1,18 @@
+use aes_gcm::aead::Aead;
+use aes_gcm::Aes256Gcm;
+use aes_gcm::Nonce;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use blobd_token::AuthToken;
 use blobd_token::AuthTokenAction;
 use blobd_token::BlobdTokens;
-use data_encoding::BASE64;
+use data_encoding::BASE64URL_NOPAD;
 use itertools::Itertools;
 use libblobd::op::OpError;
 use libblobd::Blobd;
 use percent_encoding::percent_decode;
-use serde::Deserialize;
-use serde::Serialize;
+use rand::thread_rng;
+use rand::RngCore;
 
 pub mod batch_create_objects;
 pub mod commit_object;
@@ -23,11 +26,37 @@ pub struct HttpCtx {
   pub authentication_is_enabled: bool,
   pub blobd: Blobd,
   pub tokens: BlobdTokens,
+  pub token_secret_aes_gcm: Aes256Gcm,
 }
 
 impl HttpCtx {
   pub fn verify_auth(&self, t: &str, expected: AuthTokenAction) -> bool {
     !self.authentication_is_enabled || AuthToken::verify(&self.tokens, t, expected)
+  }
+
+  // We don't respond with or require the slot ID directly, as an incorrect value (unintentional or otherwise) could cause corruption.
+  pub fn generate_upload_id(&self, slot_id: u64) -> String {
+    let mut nonce = vec![0u8; 12];
+    thread_rng().fill_bytes(&mut nonce);
+    let ciphertext = self
+      .token_secret_aes_gcm
+      .encrypt(Nonce::from_slice(&nonce), slot_id.to_be_bytes().as_ref())
+      .unwrap();
+    let mut raw = nonce;
+    raw.extend_from_slice(&ciphertext);
+    BASE64URL_NOPAD.encode(&raw)
+  }
+
+  // Returns slot ID.
+  pub fn parse_and_verify_upload_id(&self, upload_id: &str) -> Option<u64> {
+    let raw = BASE64URL_NOPAD.decode(upload_id.as_bytes()).ok()?;
+    if raw.len() <= 12 {
+      return None;
+    };
+    let (nonce, ciphertext) = raw.split_at(12);
+    let nonce = Nonce::from_slice(nonce);
+    let bytes = self.token_secret_aes_gcm.decrypt(nonce, ciphertext).ok()?;
+    Some(u64::from_be_bytes(bytes.try_into().unwrap()))
   }
 }
 
@@ -46,25 +75,4 @@ pub fn transform_op_error(err: OpError) -> StatusCode {
 // TODO Deny empty string.
 pub fn parse_key(uri: &Uri) -> Vec<u8> {
   percent_decode(uri.path().strip_prefix("/").unwrap().as_bytes()).collect_vec()
-}
-
-// We don't respond with or require the inode device offset directly, as an incorrect value (unintentional or otherwise) could cause corruption.
-#[derive(Serialize, Deserialize)]
-// WARNING: Order of fields is significant, as rmp_serde will serialise in this order without field names.
-pub struct UploadId {
-  inode_dev_offset: u64,
-}
-
-impl UploadId {
-  pub fn new(tokens: &BlobdTokens, inode_dev_offset: u64) -> String {
-    let id = UploadId { inode_dev_offset };
-    let token_raw = tokens.generate(id);
-    BASE64.encode(&token_raw)
-  }
-
-  pub fn parse_and_verify(tokens: &BlobdTokens, token: &str) -> Option<u64> {
-    let token_raw = BASE64.decode(token.as_bytes()).ok()?;
-    let id = tokens.parse_and_verify::<UploadId>(&token_raw)?;
-    Some(id.inode_dev_offset)
-  }
 }
