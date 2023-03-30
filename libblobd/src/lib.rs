@@ -1,6 +1,8 @@
 use crate::bucket::Buckets;
 use crate::free_list::FreeList;
 use crate::free_list::FREELIST_TILE_CAP;
+use crate::incomplete_slots::IncompleteSlots;
+use crate::incomplete_slots::INCOMPLETE_SLOTS_SIZE;
 use crate::object_id::ObjectIdSerial;
 use crate::stream::Stream;
 use crate::stream::STREAM_SIZE;
@@ -40,6 +42,7 @@ use write_journal::WriteJournal;
 pub mod bucket;
 pub mod ctx;
 pub mod free_list;
+pub mod incomplete_slots;
 pub mod inode;
 pub mod object_id;
 pub mod op;
@@ -57,6 +60,7 @@ Structure
 journal
 object_id_serial
 stream
+incomplete_slots
 free_list
 buckets
 heap
@@ -74,6 +78,7 @@ pub struct BlobdLoader {
 
   offsetof_object_id_serial: u64,
   offsetof_stream: u64,
+  offsetof_incomplete_slots: u64,
   offsetof_free_list: u64,
   offsetof_buckets: u64,
   reserved_tiles: u32,
@@ -89,7 +94,8 @@ impl BlobdLoader {
     let sizeof_journal = 1024 * 1024 * 8;
     let offsetof_object_id_serial = offsetof_journal + sizeof_journal;
     let offsetof_stream = offsetof_object_id_serial + 8;
-    let offsetof_free_list = offsetof_stream + STREAM_SIZE;
+    let offsetof_incomplete_slots = offsetof_stream + INCOMPLETE_SLOTS_SIZE;
+    let offsetof_free_list = offsetof_incomplete_slots + STREAM_SIZE;
     let offsetof_buckets = offsetof_free_list + FREELIST_SIZE();
     let sizeof_buckets = BUCKETS_SIZE(bucket_count);
     let reserved_space = offsetof_buckets + sizeof_buckets;
@@ -109,6 +115,7 @@ impl BlobdLoader {
       journal,
       offsetof_buckets,
       offsetof_free_list,
+      offsetof_incomplete_slots,
       offsetof_object_id_serial,
       offsetof_stream,
       reserved_tiles,
@@ -122,6 +129,7 @@ impl BlobdLoader {
       self.journal.format_device(),
       ObjectIdSerial::format_device(dev, self.offsetof_object_id_serial),
       Stream::format_device(dev, self.offsetof_stream),
+      IncompleteSlots::format_device(dev, self.offsetof_incomplete_slots),
       FreeList::format_device(dev, self.offsetof_free_list),
       Buckets::format_device(dev, self.offsetof_buckets, self.bucket_count),
     };
@@ -136,6 +144,7 @@ impl BlobdLoader {
     // Ensure journal has been recovered first before loading any other data.
     let object_id_serial = ObjectIdSerial::load_from_device(dev, self.offsetof_object_id_serial);
     let stream = Stream::load_from_device(&dev, self.offsetof_stream);
+    let incomplete_slots = IncompleteSlots::load_from_device(&dev, self.offsetof_incomplete_slots);
     let free_list = FreeList::load_from_device(
       &dev,
       self.offsetof_free_list,
@@ -150,6 +159,7 @@ impl BlobdLoader {
       buckets,
       device: dev.clone(),
       free_list: Mutex::new(FreeListWithChangeTracker::new(free_list)),
+      incomplete_slots,
       journal,
       object_id_serial,
       stream: RwLock::new(stream),

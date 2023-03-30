@@ -1,14 +1,13 @@
 use super::OpResult;
 use crate::ctx::Ctx;
+use crate::incomplete_slots::IncompleteSlotId;
 use crate::inode::get_object_alloc_cfg;
-use crate::inode::InodeState;
 use crate::inode::ObjectAllocCfg;
 use crate::inode::INO_OFFSETOF_KEY;
 use crate::inode::INO_OFFSETOF_KEY_LEN;
 use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_OBJ_ID;
 use crate::inode::INO_OFFSETOF_SIZE;
-use crate::inode::INO_OFFSETOF_STATE;
 use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_TILE_IDX;
 use crate::inode::INO_SIZE;
@@ -27,7 +26,7 @@ pub struct OpCreateObjectInput {
 
 pub struct OpCreateObjectOutput {
   pub object_id: u64,
-  pub inode_dev_offset: u64,
+  pub incomplete_slot_id: IncompleteSlotId,
 }
 
 pub(crate) async fn op_create_object(
@@ -49,7 +48,7 @@ pub(crate) async fn op_create_object(
     "creating object"
   );
 
-  let mut writes = Vec::with_capacity(4 + usz!(tile_count));
+  let mut writes = Vec::with_capacity(5 + usz!(tile_count));
 
   let (change_serial, inode_dev_offset, tiles, tail_dev_offset) = {
     let mut free_list = ctx.free_list.lock().await;
@@ -68,6 +67,10 @@ pub(crate) async fn op_create_object(
     )
   };
   let object_id = ctx.object_id_serial.next(&mut writes);
+  let incomplete_slot_id =
+    ctx
+      .incomplete_slots
+      .allocate_slot(&mut writes, object_id, inode_dev_offset);
 
   trace!(
     key = key_debug_str(&req.key),
@@ -80,7 +83,6 @@ pub(crate) async fn op_create_object(
 
   let mut ino_raw = vec![0u8; usz!(ino_size)];
   ino_raw.write_u48_be_at(INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, 0);
-  ino_raw[usz!(INO_OFFSETOF_STATE)] = InodeState::Incomplete as u8;
   ino_raw.write_u48_be_at(INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, tail_dev_offset);
   ino_raw.write_u40_be_at(INO_OFFSETOF_SIZE, req.size);
   ino_raw.write_u64_be_at(INO_OFFSETOF_OBJ_ID, object_id);
@@ -100,7 +102,7 @@ pub(crate) async fn op_create_object(
   trace!(key = key_debug_str(&req.key), object_id, "object created");
 
   Ok(OpCreateObjectOutput {
-    inode_dev_offset,
     object_id,
+    incomplete_slot_id,
   })
 }

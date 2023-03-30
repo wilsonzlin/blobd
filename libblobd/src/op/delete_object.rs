@@ -3,7 +3,6 @@ use super::OpResult;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
-use crate::inode::InodeState;
 use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_SIZE;
 use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
@@ -37,7 +36,6 @@ pub(crate) async fn op_delete_object(
     bkt_id,
     &req.key,
     key_len,
-    InodeState::Ready,
     None,
   ).await else {
     return Err(OpError::ObjectNotFound);

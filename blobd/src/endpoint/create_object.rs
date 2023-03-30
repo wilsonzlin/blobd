@@ -1,10 +1,10 @@
 use super::parse_key;
 use super::transform_op_error;
 use super::HttpCtx;
-use super::UploadId;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::http::HeaderMap;
+use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use blobd_token::AuthTokenAction;
@@ -47,9 +47,7 @@ pub async fn endpoint_create_object(
       headers.insert("x-blobd-object-id", c.object_id.into());
       headers.insert(
         "x-blobd-upload-id",
-        UploadId::new(&ctx.tokens, c.inode_dev_offset)
-          .parse()
-          .unwrap(),
+        HeaderValue::from_str(&ctx.generate_upload_id(c.incomplete_slot_id)).unwrap(),
       );
       (StatusCode::ACCEPTED, headers)
     }

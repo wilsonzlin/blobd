@@ -77,7 +77,7 @@ pub async fn endpoint_batch_create_objects(
       let Ok(_) = ctx.blobd.write_object(OpWriteObjectInput {
         data_len: chunk.len().try_into().unwrap(),
         data_stream: once(async { Ok(chunk) }).boxed(),
-        inode_dev_offset: creation.inode_dev_offset,
+        incomplete_slot_id: creation.incomplete_slot_id,
         object_id: creation.object_id,
         offset,
       }).await else {

@@ -1,7 +1,6 @@
 use super::parse_key;
 use super::transform_op_error;
 use super::HttpCtx;
-use super::UploadId;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -32,14 +31,14 @@ pub async fn endpoint_commit_object(
     return StatusCode::UNAUTHORIZED;
   };
 
-  let Some(inode_dev_offset) = UploadId::parse_and_verify(&ctx.tokens, &req.upload_id) else {
+  let Some(incomplete_slot_id) = ctx.parse_and_verify_upload_id(&req.upload_id) else {
     return StatusCode::NOT_FOUND;
   };
 
   let res = ctx
     .blobd
     .commit_object(OpCommitObjectInput {
-      inode_dev_offset,
+      incomplete_slot_id,
       key,
       object_id: req.object_id,
     })

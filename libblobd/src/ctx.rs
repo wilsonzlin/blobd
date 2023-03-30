@@ -1,5 +1,6 @@
 use crate::bucket::Buckets;
 use crate::free_list::FreeList;
+use crate::incomplete_slots::IncompleteSlots;
 use crate::object_id::ObjectIdSerial;
 use crate::stream::Stream;
 use dashmap::DashMap;
@@ -103,6 +104,7 @@ pub(crate) struct Ctx {
   pub buckets: Buckets,
   pub device: SeekableAsyncFile,
   pub free_list: Mutex<FreeListWithChangeTracker>,
+  pub incomplete_slots: IncompleteSlots,
   pub journal: SequentialisedJournal,
   pub object_id_serial: ObjectIdSerial,
   pub stream: RwLock<Stream>,

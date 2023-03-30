@@ -110,7 +110,7 @@ enum Task {
     data_len: u64,
     data_offset: u64,
     object_id: u64,
-    inode_dev_offset: u64,
+    incomplete_slot_id: u64,
     chunk_offset: u64,
   },
   Commit {
@@ -119,7 +119,7 @@ enum Task {
     data_len: u64,
     data_offset: u64,
     object_id: u64,
-    inode_dev_offset: u64,
+    incomplete_slot_id: u64,
   },
   Inspect {
     key_len: u64,
@@ -279,7 +279,7 @@ async fn main() {
                 data_len,
                 data_offset,
                 object_id: res.object_id,
-                inode_dev_offset: res.inode_dev_offset,
+                incomplete_slot_id: res.incomplete_slot_id,
                 chunk_offset: 0,
               })
               .unwrap();
@@ -291,7 +291,7 @@ async fn main() {
             data_offset,
             chunk_offset,
             object_id,
-            inode_dev_offset,
+            incomplete_slot_id,
           } => {
             let next_chunk_offset = chunk_offset + TILE_SIZE_U64;
             let chunk_len = if next_chunk_offset <= data_len {
@@ -304,7 +304,7 @@ async fn main() {
                 data_len: chunk_len,
                 data_stream: once(async { Ok(pool.get(data_offset + chunk_offset, chunk_len)) })
                   .boxed(),
-                inode_dev_offset,
+                incomplete_slot_id,
                 object_id,
                 offset: chunk_offset,
               })
@@ -318,7 +318,7 @@ async fn main() {
                   data_len,
                   data_offset,
                   object_id,
-                  inode_dev_offset,
+                  incomplete_slot_id,
                   chunk_offset: next_chunk_offset,
                 }
               } else {
@@ -328,7 +328,7 @@ async fn main() {
                   data_len,
                   data_offset,
                   object_id,
-                  inode_dev_offset,
+                  incomplete_slot_id,
                 }
               })
               .unwrap();
@@ -339,11 +339,11 @@ async fn main() {
             data_len,
             data_offset,
             object_id,
-            inode_dev_offset,
+            incomplete_slot_id,
           } => {
             blobd
               .commit_object(OpCommitObjectInput {
-                inode_dev_offset,
+                incomplete_slot_id,
                 object_id,
                 key: pool.get(key_offset, key_len),
               })

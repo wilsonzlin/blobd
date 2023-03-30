@@ -1,6 +1,5 @@
 use super::transform_op_error;
 use super::HttpCtx;
-use super::UploadId;
 use axum::extract::BodyStream;
 use axum::extract::Query;
 use axum::extract::State;
@@ -36,7 +35,7 @@ pub async fn endpoint_write_object(
     return StatusCode::UNAUTHORIZED;
   };
 
-  let Some(inode_dev_offset) = UploadId::parse_and_verify(&ctx.tokens, &req.upload_id) else {
+  let Some(incomplete_slot_id) = ctx.parse_and_verify_upload_id(&req.upload_id) else {
     return StatusCode::NOT_FOUND;
   };
 
@@ -44,7 +43,7 @@ pub async fn endpoint_write_object(
     .blobd
     .write_object(OpWriteObjectInput {
       data_len: len,
-      inode_dev_offset,
+      incomplete_slot_id,
       object_id: req.object_id,
       offset: req.offset,
       data_stream: body.map(|chunk| {

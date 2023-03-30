@@ -8,6 +8,7 @@ use blobd_token::AuthTokenAction;
 use blobd_token::BlobdTokens;
 use data_encoding::BASE64URL_NOPAD;
 use itertools::Itertools;
+use libblobd::incomplete_slots::IncompleteSlotId;
 use libblobd::op::OpError;
 use libblobd::Blobd;
 use percent_encoding::percent_decode;
@@ -35,7 +36,7 @@ impl HttpCtx {
   }
 
   // We don't respond with or require the slot ID directly, as an incorrect value (unintentional or otherwise) could cause corruption.
-  pub fn generate_upload_id(&self, slot_id: u64) -> String {
+  pub fn generate_upload_id(&self, slot_id: IncompleteSlotId) -> String {
     let mut nonce = vec![0u8; 12];
     thread_rng().fill_bytes(&mut nonce);
     let ciphertext = self
@@ -47,8 +48,7 @@ impl HttpCtx {
     BASE64URL_NOPAD.encode(&raw)
   }
 
-  // Returns slot ID.
-  pub fn parse_and_verify_upload_id(&self, upload_id: &str) -> Option<u64> {
+  pub fn parse_and_verify_upload_id(&self, upload_id: &str) -> Option<IncompleteSlotId> {
     let raw = BASE64URL_NOPAD.decode(upload_id.as_bytes()).ok()?;
     if raw.len() <= 12 {
       return None;

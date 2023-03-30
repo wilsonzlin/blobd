@@ -2,7 +2,6 @@ use super::OpError;
 use super::OpResult;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
-use crate::inode::InodeState;
 use crate::inode::INO_OFFSETOF_SIZE;
 use off64::Off64Int;
 use std::sync::Arc;
@@ -29,7 +28,6 @@ pub(crate) async fn op_inspect_object(
     bucket_id,
     &req.key,
     key_len,
-    InodeState::Ready,
     None,
   ).await else {
     return Err(OpError::ObjectNotFound);

@@ -1,23 +1,20 @@
 use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
+use crate::incomplete_slots::IncompleteSlotId;
 use crate::inode::get_object_alloc_cfg;
-use crate::inode::InodeState;
 use crate::inode::ObjectAllocCfg;
 use crate::inode::INO_OFFSETOF_KEY;
 use crate::inode::INO_OFFSETOF_KEY_LEN;
 use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_OBJ_ID;
 use crate::inode::INO_OFFSETOF_SIZE;
-use crate::inode::INO_OFFSETOF_STATE;
 use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_TILE_IDX;
 use crate::op::key_debug_str;
 use crate::tile::TILE_SIZE_U64;
 use futures::Stream;
 use futures::StreamExt;
-use num_traits::FromPrimitive;
-use off64::usz;
 use off64::Off64Int;
 use std::cmp::min;
 use std::error::Error;
@@ -29,7 +26,7 @@ pub struct OpWriteObjectInput<
 > {
   pub offset: u64,
   pub object_id: u64,
-  pub inode_dev_offset: u64,
+  pub incomplete_slot_id: IncompleteSlotId,
   pub data_len: u64,
   pub data_stream: S,
 }
@@ -43,11 +40,15 @@ pub(crate) async fn op_write_object<
   ctx: Arc<Ctx>,
   mut req: OpWriteObjectInput<S>,
 ) -> OpResult<OpWriteObjectOutput> {
+  let Some(incomplete_slot_lock) = ctx.incomplete_slots.lock_slot_for_writing(req.incomplete_slot_id, req.object_id).await else {
+    return Err(OpError::ObjectNotFound);
+  };
+
   let len = req.data_len;
-  let ino_dev_offset = req.inode_dev_offset;
+  let ino_dev_offset = incomplete_slot_lock.inode_dev_offset();
   trace!(
     object_id = req.object_id,
-    inode_dev_offset = req.inode_dev_offset,
+    inode_dev_offset = ino_dev_offset,
     offset = req.offset,
     length = req.data_len,
     "writing object"
@@ -70,14 +71,12 @@ pub(crate) async fn op_write_object<
       INO_OFFSETOF_NEXT_INODE_DEV_OFFSET - base,
     )
     .await;
-  let state = InodeState::from_u8(raw[usz!(INO_OFFSETOF_STATE - base)]).unwrap();
   let object_id = raw.read_u64_be_at(INO_OFFSETOF_OBJ_ID - base);
   let size = raw.read_u40_be_at(INO_OFFSETOF_SIZE - base);
   let key_len = raw.read_u16_be_at(INO_OFFSETOF_KEY_LEN - base);
   trace!(
     object_id = req.object_id,
-    inode_dev_offset = req.inode_dev_offset,
-    state = format!("{:?}", state),
+    inode_dev_offset = ino_dev_offset,
     size,
     key = key_debug_str(
       &ctx
@@ -86,11 +85,6 @@ pub(crate) async fn op_write_object<
     ),
     "found object to write to"
   );
-
-  if state != InodeState::Incomplete {
-    // Inode has incorrect state.
-    return Err(OpError::ObjectNotFound);
-  };
 
   if object_id != req.object_id {
     // Inode has different object ID.

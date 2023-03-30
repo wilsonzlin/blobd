@@ -1,9 +1,7 @@
-use crate::inode::InodeState;
 use crate::inode::INO_OFFSETOF_KEY;
 use crate::inode::INO_OFFSETOF_KEY_LEN;
 use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
 use crate::inode::INO_OFFSETOF_OBJ_ID;
-use crate::inode::INO_OFFSETOF_STATE;
 use itertools::Itertools;
 use off64::create_u48_be;
 use off64::usz;
@@ -63,7 +61,6 @@ impl Bucket {
     bucket_id: u64,
     key: &[u8],
     key_len: u16,
-    expected_state: InodeState,
     expected_object_id: Option<u64>,
   ) -> Option<FoundInode> {
     let Buckets {
@@ -75,14 +72,13 @@ impl Bucket {
       .read_u48_be_at(0);
     let mut prev_dev_offset = None;
     while dev_offset > 0 {
-      let base = INO_OFFSETOF_STATE;
+      let base = INO_OFFSETOF_OBJ_ID;
       let raw = dev
         .read_at(dev_offset + base, INO_OFFSETOF_KEY - base)
         .await;
       let next_dev_offset = raw.read_u48_be_at(INO_OFFSETOF_NEXT_INODE_DEV_OFFSET - base);
       let object_id = raw.read_u64_be_at(INO_OFFSETOF_OBJ_ID - base);
-      if raw[usz!(INO_OFFSETOF_STATE - base)] == expected_state as u8
-      && (expected_object_id.is_none() || expected_object_id.unwrap() == object_id)
+      if (expected_object_id.is_none() || expected_object_id.unwrap() == object_id)
       && raw.read_u16_be_at(INO_OFFSETOF_KEY_LEN - base) == key_len
       // mmap region should already be in page cache, so no need to use async.
       && dev.read_at_sync(dev_offset + INO_OFFSETOF_KEY, key_len.into()) == key

@@ -1,5 +1,7 @@
 use crate::endpoint::HttpCtx;
 use crate::server::start_http_server_loop;
+use aes_gcm::Aes256Gcm;
+use aes_gcm::KeyInit;
 use blobd_token::BlobdTokens;
 use clap::Parser;
 use conf::Conf;
@@ -68,7 +70,7 @@ async fn main() {
     .expect("decode configured token secret")
     .try_into()
     .expect("configured token secret must have length of 32");
-  let tokens = BlobdTokens::new(token_secret);
+  let tokens = BlobdTokens::new(token_secret.clone());
 
   let blobd = BlobdLoader::new(
     dev.clone(),
@@ -87,6 +89,7 @@ async fn main() {
   let ctx = Arc::new(HttpCtx {
     authentication_is_enabled: !conf.disable_authentication,
     blobd: blobd.clone(),
+    token_secret_aes_gcm: Aes256Gcm::new(&token_secret.into()),
     tokens,
   });
 
