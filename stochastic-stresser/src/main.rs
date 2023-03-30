@@ -196,7 +196,7 @@ async fn main() {
   let completed = Arc::new(AtomicU64::new(0));
 
   let (tasks_sender, tasks_receiver) = stochastic_channel::<Task>();
-  spawn_blocking({
+  let total_data_bytes = spawn_blocking({
     let tasks_sender = tasks_sender.clone();
     move || {
       info!(
@@ -204,13 +204,16 @@ async fn main() {
         maximum_object_size = cli.maximum_object_size,
         "objects"
       );
+      let mut total_data_bytes = 0;
       for i in 0..cli.objects {
         let key_len = (hash64_with_seed(&i.to_be_bytes(), key_len_seed) % 65535) + 1;
         let key_offset =
           hash64_with_seed(&i.to_be_bytes(), key_offset_seed) % (cli.pool_size - key_len);
-        let data_len = hash64_with_seed(&i.to_be_bytes(), data_len_seed) % cli.maximum_object_size;
+        let data_len =
+          (hash64_with_seed(&i.to_be_bytes(), data_len_seed) % (cli.maximum_object_size - 1)) + 1;
         let data_offset =
           hash64_with_seed(&i.to_be_bytes(), data_offset_seed) % (cli.pool_size - data_len);
+        total_data_bytes += data_len;
         tasks_sender
           .send(Task::Create {
             key_len,
@@ -221,8 +224,11 @@ async fn main() {
           .unwrap();
       }
       info!("sender complete");
+      total_data_bytes
     }
-  });
+  })
+  .await
+  .unwrap();
   spawn({
     let completed = completed.clone();
     async move {
@@ -455,5 +461,11 @@ async fn main() {
   // TODO Assert all tiles are solid, no fragmented files.
 
   let exec_sec = started.elapsed().as_secs_f64();
-  info!(execution_seconds = exec_sec, "all done");
+  info!(
+    execution_seconds = exec_sec,
+    total_data_bytes,
+    data_mib_written_per_sec = (total_data_bytes as f64) / exec_sec / 1024.0 / 1024.0,
+    objects_processed_per_sec = (cli.objects as f64) / exec_sec,
+    "all done"
+  );
 }
