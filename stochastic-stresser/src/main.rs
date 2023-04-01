@@ -143,7 +143,10 @@ enum Task {
 
 #[tokio::main]
 async fn main() {
+  #[cfg(feature = "instrumentation")]
   console_subscriber::init();
+  #[cfg(not(feature = "instrumentation"))]
+  tracing_subscriber::fmt::init();
 
   let cli = Cli::parse();
 

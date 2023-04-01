@@ -1,6 +1,6 @@
 # blobd
 
-- Scales to millions of random concurrent partial reads over trillions of small objects with constant low latency.
+- Scales to millions of random concurrent partial reads over trillions of objects (tiny or huge) with constant low latency.
 - Asynchronous replication and event streaming.
 - Batch creation API for very high transfer and creation rates with many small objects.
 - HTTP RESTful API with support for CORS, range requests, presigned URLs, and HTTP/2.

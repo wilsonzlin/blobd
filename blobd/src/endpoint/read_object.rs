@@ -31,7 +31,7 @@ pub struct InputQueryParams {
 
 pub async fn endpoint_read_object(
   State(ctx): State<Arc<HttpCtx>>,
-  TypedHeader(range): TypedHeader<Range>,
+  ranges: Option<TypedHeader<Range>>,
   uri: Uri,
   req: Query<InputQueryParams>,
 ) -> Result<Response<StreamBody<impl Stream<Item = Result<Bytes, std::io::Error>>>>, StatusCode> {
@@ -40,8 +40,11 @@ pub async fn endpoint_read_object(
     return Err(StatusCode::UNAUTHORIZED);
   };
 
-  let ranges = range.iter().collect_vec();
+  let ranges = ranges
+    .map(|ranges| ranges.iter().collect_vec())
+    .unwrap_or_default();
   if ranges.len() > 1 {
+    // We currently don't support multirange requests.
     return Err(StatusCode::RANGE_NOT_SATISFIABLE);
   };
   let range = ranges
