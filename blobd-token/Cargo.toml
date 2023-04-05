@@ -1,6 +1,6 @@
 [package]
 name = "blobd-token"
-version = "0.0.1"
+version = "0.1.0"
 description = "Generate and verify tokens used by blobd"
 license = "Apache-2.0"
 homepage = "https://github.com/wilsonzlin/blobd"
