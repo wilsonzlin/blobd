@@ -17,6 +17,7 @@ use reqwest::Body;
 use serde::Deserialize;
 use serde::Serialize;
 use std::error::Error;
+use std::fmt::Write;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -75,6 +76,18 @@ impl BlobdClient {
       };
       url.extend(utf8_percent_encode(p, CONTROLS));
     }
+    url
+  }
+
+  pub fn generate_presigned_url(
+    &self,
+    key: &str,
+    action: AuthTokenAction,
+    expires_in_seconds: u64,
+  ) -> String {
+    let mut url = self.build_url(key);
+    let t = AuthToken::new(&self.tokens, action, now() + expires_in_seconds);
+    write!(url, "?t={}", utf8_percent_encode(&t, CONTROLS)).unwrap();
     url
   }
 
