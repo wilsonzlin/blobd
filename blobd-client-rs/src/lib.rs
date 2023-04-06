@@ -316,7 +316,6 @@ impl BlobdClient {
       &self.tokens,
       AuthTokenAction::WriteObject {
         object_id: creation.object_id,
-        offset,
       },
       now() + 300,
     );

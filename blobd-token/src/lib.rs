@@ -61,7 +61,7 @@ pub enum AuthTokenAction {
   DeleteObject { key: Vec<u8> },
   InspectObject { key: Vec<u8> },
   ReadObject { key: Vec<u8> },
-  WriteObject { object_id: u64, offset: u64 },
+  WriteObject { object_id: u64 },
 }
 
 #[derive(Serialize, Deserialize)]

@@ -30,7 +30,6 @@ pub async fn endpoint_write_object(
 ) -> StatusCode {
   if !ctx.verify_auth(&req.t, AuthTokenAction::WriteObject {
     object_id: req.object_id,
-    offset: req.offset,
   }) {
     return StatusCode::UNAUTHORIZED;
   };
