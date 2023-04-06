@@ -15,7 +15,7 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 aes-gcm = "0.10.1"
 axum = { version = "0.6", features = ["headers"] }
-blobd-token = { version = "0.1.0", path = "../blobd-token" }
+blobd-token = { version = "0.2.0", path = "../blobd-token" }
 bytes = "1.4.0"
 clap = { version = "4.1", features = ["derive"] }
 data-encoding = "2.3"
