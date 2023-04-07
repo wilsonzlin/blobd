@@ -1,6 +1,6 @@
 [package]
 name = "blobd"
-version = "0.1.0"
+version = "0.2.0"
 description = "Blob storage designed for huge amounts of random reads and small objects with constant latency"
 license = "SSPL-1.0"
 homepage = "https://github.com/wilsonzlin/blobd"
