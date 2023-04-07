@@ -17,14 +17,14 @@ use reqwest::Body;
 use serde::Deserialize;
 use serde::Serialize;
 use std::error::Error;
-use std::fmt::Write;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+use url::Url;
 
 // This client has internal state that is not very cheap to clone, nor memory efficient when cloned lots. Therefore, we don't derive Clone for it; wrap it in an Arc for cheap sharing.
 pub struct BlobdClient {
   client: reqwest::Client,
-  url_prefix: String,
+  endpoint: String,
   tokens: BlobdTokens,
 }
 
@@ -60,32 +60,32 @@ pub struct InspectedObject {
 }
 
 impl BlobdClient {
-  pub fn new(url_prefix: String, token_secret: [u8; 32]) -> BlobdClient {
+  /// The `endpoint` should be something like `https://127.0.0.1:8080` or `https://my.blobd.io`. Make sure to omit the trailing slash (i.e. empty path).
+  pub fn new(endpoint: String, token_secret: [u8; 32]) -> BlobdClient {
     BlobdClient {
       client: reqwest::Client::new(),
+      endpoint,
       tokens: BlobdTokens::new(token_secret),
-      url_prefix,
     }
   }
 
-  fn build_url(&self, key: &str) -> String {
-    let mut url = self.url_prefix.clone();
-    for (i, p) in key.split('/').enumerate() {
-      if i > 0 {
-        url.push('/');
-      };
+  fn build_url(&self, key: &str) -> Url {
+    let mut url = self.endpoint.clone();
+    for p in key.split('/') {
+      url.push('/');
       url.extend(utf8_percent_encode(p, CONTROLS));
     }
-    url
+    Url::parse(&url).unwrap()
   }
 
+  /// NOTE: This does not encode the parameter value, as it's expected this would be passed into a URL builder. However, currently the token doesn't contain any character that would require encoding anyway, so it's safe either way.
   pub fn generate_token_query_param(
     &self,
     action: AuthTokenAction,
     expires_in_seconds: u64,
   ) -> (&'static str, String) {
     let t = AuthToken::new(&self.tokens, action, now() + expires_in_seconds);
-    ("t", utf8_percent_encode(&t, CONTROLS).to_string())
+    ("t", t)
   }
 
   pub fn generate_presigned_url(
@@ -93,10 +93,10 @@ impl BlobdClient {
     key: &str,
     action: AuthTokenAction,
     expires_in_seconds: u64,
-  ) -> String {
+  ) -> Url {
     let mut url = self.build_url(key);
     let (k, v) = self.generate_token_query_param(action, expires_in_seconds);
-    write!(url, "?{k}={v}").unwrap();
+    url.query_pairs_mut().append_pair(k, &v);
     url
   }
 
@@ -144,15 +144,10 @@ impl BlobdClient {
       }))
     });
     let body = Body::wrap_stream(body_stream);
-    let t = AuthToken::new(
-      &self.tokens,
-      AuthTokenAction::BatchCreateObjects {},
-      now() + 300,
-    );
     let res = self
       .client
-      .post(self.url_prefix.clone())
-      .query(&[("t", t)])
+      .post(self.endpoint.clone())
+      .query(&[self.generate_token_query_param(AuthTokenAction::BatchCreateObjects {}, 300)])
       .body(body)
       .send()
       .await?
@@ -170,10 +165,9 @@ impl BlobdClient {
   }
 
   pub async fn create_object(&self, key: &str, size: u64) -> reqwest::Result<CreatedObject> {
-    let url = self.build_url(key);
     let res = self
       .client
-      .post(url)
+      .post(self.build_url(key))
       .query(&[
         ("size", size.to_string()),
         self.generate_token_query_param(
@@ -208,10 +202,9 @@ impl BlobdClient {
   }
 
   pub async fn commit_object(&self, key: &str, creation: CreatedObject) -> reqwest::Result<()> {
-    let url = self.build_url(key);
     self
       .client
-      .put(url)
+      .put(self.build_url(key))
       .query(&[
         ("object_id", creation.object_id.to_string()),
         ("upload_id", creation.upload_id.to_string()),
@@ -229,10 +222,9 @@ impl BlobdClient {
   }
 
   pub async fn delete_object(&self, key: &str) -> reqwest::Result<()> {
-    let url = self.build_url(key);
     self
       .client
-      .delete(url)
+      .delete(self.build_url(key))
       .query(&[self.generate_token_query_param(
         AuthTokenAction::DeleteObject {
           key: key.as_bytes().to_vec(),
@@ -246,10 +238,9 @@ impl BlobdClient {
   }
 
   pub async fn inspect_object(&self, key: &str) -> reqwest::Result<InspectedObject> {
-    let url = self.build_url(key);
     let res = self
       .client
-      .head(url)
+      .head(self.build_url(key))
       .query(&[self.generate_token_query_param(
         AuthTokenAction::InspectObject {
           key: key.as_bytes().to_vec(),
@@ -285,10 +276,9 @@ impl BlobdClient {
     start: u64,
     end: Option<u64>,
   ) -> reqwest::Result<impl Stream<Item = reqwest::Result<Bytes>>> {
-    let url = self.build_url(key);
     let res = self
       .client
-      .get(url)
+      .get(self.build_url(key))
       .query(&[self.generate_token_query_param(
         AuthTokenAction::ReadObject {
           key: key.as_bytes().to_vec(),
@@ -316,10 +306,9 @@ impl BlobdClient {
     offset: u64,
     data: impl Into<Body>,
   ) -> reqwest::Result<()> {
-    let url = self.build_url(key);
     self
       .client
-      .patch(url)
+      .patch(self.build_url(key))
       .query(&[
         ("offset", offset.to_string()),
         ("object_id", creation.object_id.to_string()),

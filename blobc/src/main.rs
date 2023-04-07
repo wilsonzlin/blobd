@@ -110,7 +110,7 @@ async fn main() {
     .expect("token secret must be 32 bytes after decoding");
 
   let ctx = Ctx {
-    client: Arc::new(BlobdClient::new(format!("{}/", endpoint), key)),
+    client: Arc::new(BlobdClient::new(endpoint, key)),
   };
   match cli.command {
     Commands::Get(cmd) => cmd_get(ctx, cmd).await,
