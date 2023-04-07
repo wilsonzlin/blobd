@@ -99,7 +99,7 @@ impl BlobdClient {
   /// - If it can be derived from an existing stream, use the `StreamExt` methods to transform items into `BatchCreateObjectEntry`.
   /// - If it is dynamically built from another thread/async function, use `futures::channel::mpsc::unbounded`; the receiver already implements `Stream` and can be provided as the list.
   /// Approaches to object data stream:
-  /// - If it's all in memory, use `futures::stream::Once(Ok(bytes::Bytes::from(my_object_data)))`.
+  /// - If it's all in memory, use `futures::stream::once(Ok(bytes::Bytes::from(my_object_data)))`.
   /// - If it's a synchronous Read, wrap in a Stream that reads chunks into a `Bytes`, preferably on a different thread (e.g. `spawn_blocking`).
   /// - If it's an AsyncRead, read in chunks and wrap each chunk with `Bytes::from`.
   /// Approaches to error handling:
@@ -107,12 +107,13 @@ impl BlobdClient {
   /// - However, reqwest will bail if the request body fails, which can occur if a `data_stream` of a `BatchCreateObjectEntry` yields an `Err` chunk.
   /// - If reqwest bails, the response will be unavailable and the amount of successfully committed objects will not be returned.
   /// - Therefore, there are some optional approaches worth considering:
-  ///   - Filter out `BatchCreateObjectEntry` items that have a `data_stream` that will definitely fail. Once an entry starts being transferred, there's no way to skip over it midway.
+  ///   - Filter out `BatchCreateObjectEntry` items that have a `data_stream` that will definitely fail, as once an entry starts being transferred, there's no way to skip over it midway.
   ///   - When a `data_stream` chunk is about to yield `Err`, return an `Ok` instead with empty data and stop the object list stream (as the current data transferred is midway in an object and there's no way to skip over it). The server will notice that the object was not completely uploaded, decide to bail, and return the successful count.
+  /// Provide an optional async channel sender for `transfer_byte_counter` to get data stream chunk sizes as they're about to be uploaded, which can be useful for calculating transfer progress or rate.
   pub async fn batch_create_objects<DS, Objects>(
     &self,
     objects: Objects,
-    transfer_byte_counter: UnboundedSender<usize>,
+    transfer_byte_counter: Option<UnboundedSender<usize>>,
   ) -> reqwest::Result<BatchCreatedObjects>
   where
     DS: 'static + Stream<Item = Result<Bytes, BoxErr>> + Send + Sync,
@@ -129,7 +130,7 @@ impl BlobdClient {
       ])
       .chain(
         e.data_stream
-          .inspect_ok(move |chunk| transfer_byte_counter.unbounded_send(chunk.len()).unwrap()),
+          .inspect_ok(move |chunk| { if let Some(c) = &transfer_byte_counter { c.unbounded_send(chunk.len()).unwrap(); } }),
       )
     });
     let body = Body::wrap_stream(body_stream);

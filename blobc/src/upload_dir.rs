@@ -89,7 +89,7 @@ pub(crate) async fn cmd_upload_dir(ctx: Ctx, cmd: CmdUploadDir) {
     async move {
       let res = ctx
         .client
-        .batch_create_objects(receiver, transfer_counter_sender)
+        .batch_create_objects(receiver, Some(transfer_counter_sender))
         .await;
       upload_progress.finish_with_message(match res {
         Ok(_) => "✔️ All done".to_string(),
