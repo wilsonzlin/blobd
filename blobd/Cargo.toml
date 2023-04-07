@@ -20,6 +20,7 @@ bytes = "1.4.0"
 clap = { version = "4.1", features = ["derive"] }
 data-encoding = "2.3"
 futures = "0.3"
+hmac = "0.12.1"
 itertools = "0.10"
 libblobd = { version = "0.1.0", path = "../libblobd" }
 off64 = "0.3"
@@ -27,6 +28,7 @@ percent-encoding = "2.2"
 rand = "0.8.5"
 seekable-async-file = "0.5.3"
 serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10.6"
 tokio = { version = "1", features = ["full"] }
 toml = "0.7"
 tower-http = { version = "0.4.0", features = ["cors", "trace"] }

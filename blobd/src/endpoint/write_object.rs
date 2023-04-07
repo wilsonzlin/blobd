@@ -4,11 +4,14 @@ use axum::extract::BodyStream;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::headers::ContentLength;
+use axum::http::HeaderMap;
+use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::TypedHeader;
 use blobd_token::AuthTokenAction;
 use futures::StreamExt;
 use libblobd::op::write_object::OpWriteObjectInput;
+use libblobd::tile::TILE_SIZE_U64;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
@@ -17,7 +20,7 @@ use std::sync::Arc;
 pub struct InputQueryParams {
   pub offset: u64,
   pub object_id: u64,
-  pub upload_id: String,
+  pub upload_token: String,
   #[serde(default)]
   pub t: String,
 }
@@ -27,15 +30,15 @@ pub async fn endpoint_write_object(
   TypedHeader(ContentLength(len)): TypedHeader<ContentLength>,
   req: Query<InputQueryParams>,
   body: BodyStream,
-) -> StatusCode {
+) -> (StatusCode, HeaderMap) {
   if !ctx.verify_auth(&req.t, AuthTokenAction::WriteObject {
     object_id: req.object_id,
   }) {
-    return StatusCode::UNAUTHORIZED;
+    return (StatusCode::UNAUTHORIZED, HeaderMap::new());
   };
 
-  let Some(incomplete_slot_id) = ctx.parse_and_verify_upload_id(&req.upload_id) else {
-    return StatusCode::NOT_FOUND;
+  let Some((incomplete_slot_id, _)) = ctx.parse_and_verify_upload_token(req.object_id, &req.upload_token) else {
+    return (StatusCode::NOT_FOUND,  HeaderMap::new());
   };
 
   let res = ctx
@@ -53,8 +56,21 @@ pub async fn endpoint_write_object(
     })
     .await;
 
+  let receipt = ctx.generate_write_receipt(
+    req.object_id,
+    incomplete_slot_id,
+    req.offset / TILE_SIZE_U64,
+  );
+
   match res {
-    Ok(_) => StatusCode::ACCEPTED,
-    Err(err) => transform_op_error(err),
+    Ok(_) => {
+      let mut headers = HeaderMap::new();
+      headers.insert(
+        "x-blobd-write-receipt",
+        HeaderValue::from_str(&receipt).unwrap(),
+      );
+      (StatusCode::ACCEPTED, headers)
+    }
+    Err(err) => (transform_op_error(err), HeaderMap::new()),
   }
 }

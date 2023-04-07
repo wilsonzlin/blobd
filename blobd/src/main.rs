@@ -89,6 +89,7 @@ async fn main() {
   let ctx = Arc::new(HttpCtx {
     authentication_is_enabled: !conf.disable_authentication,
     blobd: blobd.clone(),
+    token_secret: token_secret.clone(),
     token_secret_aes_gcm: Aes256Gcm::new(&token_secret.into()),
     tokens,
   });

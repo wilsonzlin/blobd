@@ -15,6 +15,7 @@ maintenance = { status = "actively-developed" }
 blobd-token = { version = "0.2.0", path = "../blobd-token" }
 bytes = "1.4"
 futures = "0.3"
+itertools = "0.10.5"
 off64 = "0.3"
 percent-encoding = "2.2"
 reqwest = { version = "0.11", features = ["stream"] }

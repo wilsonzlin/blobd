@@ -43,11 +43,13 @@ pub async fn endpoint_create_object(
 
   match res {
     Ok(c) => {
+      let upload_token = ctx.generate_upload_token(c.object_id, c.incomplete_slot_id, req.size);
+
       let mut headers = HeaderMap::new();
       headers.insert("x-blobd-object-id", c.object_id.into());
       headers.insert(
-        "x-blobd-upload-id",
-        HeaderValue::from_str(&ctx.generate_upload_id(c.incomplete_slot_id)).unwrap(),
+        "x-blobd-upload-token",
+        HeaderValue::from_str(&upload_token).unwrap(),
       );
       (StatusCode::ACCEPTED, headers)
     }

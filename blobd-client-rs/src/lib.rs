@@ -7,6 +7,7 @@ use futures::stream::iter;
 use futures::Stream;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use itertools::Itertools;
 use off64::create_u16_be;
 use off64::create_u40_be;
 use percent_encoding::utf8_percent_encode;
@@ -17,6 +18,7 @@ use reqwest::Body;
 use serde::Deserialize;
 use serde::Serialize;
 use std::error::Error;
+use std::fmt::Display;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use url::Url;
@@ -50,7 +52,12 @@ pub struct BatchCreatedObjects {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CreatedObject {
   pub object_id: u64,
-  pub upload_id: String,
+  pub upload_token: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct WrittenObjectPart {
+  pub write_receipt: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,9 +197,9 @@ impl BlobdClient {
         .unwrap()
         .parse()
         .unwrap(),
-      upload_id: res
+      upload_token: res
         .headers()
-        .get("x-blobd-upload-id")
+        .get("x-blobd-upload-token")
         .unwrap()
         .to_str()
         .unwrap()
@@ -201,13 +208,19 @@ impl BlobdClient {
     })
   }
 
-  pub async fn commit_object(&self, key: &str, creation: CreatedObject) -> reqwest::Result<()> {
+  pub async fn commit_object(
+    &self,
+    key: &str,
+    creation: CreatedObject,
+    write_receipts: impl IntoIterator<Item = impl Display>,
+  ) -> reqwest::Result<()> {
     self
       .client
       .put(self.build_url(key))
       .query(&[
         ("object_id", creation.object_id.to_string()),
-        ("upload_id", creation.upload_id.to_string()),
+        ("upload_token", creation.upload_token.to_string()),
+        ("write_receipts", write_receipts.into_iter().join(",")),
         self.generate_token_query_param(
           AuthTokenAction::CommitObject {
             object_id: creation.object_id,
@@ -305,14 +318,14 @@ impl BlobdClient {
     creation: CreatedObject,
     offset: u64,
     data: impl Into<Body>,
-  ) -> reqwest::Result<()> {
-    self
+  ) -> reqwest::Result<WrittenObjectPart> {
+    let res = self
       .client
       .patch(self.build_url(key))
       .query(&[
         ("offset", offset.to_string()),
         ("object_id", creation.object_id.to_string()),
-        ("upload_id", creation.upload_id.to_string()),
+        ("upload_token", creation.upload_token.to_string()),
         self.generate_token_query_param(
           AuthTokenAction::WriteObject {
             object_id: creation.object_id,
@@ -324,6 +337,15 @@ impl BlobdClient {
       .send()
       .await?
       .error_for_status()?;
-    Ok(())
+    Ok(WrittenObjectPart {
+      write_receipt: res
+        .headers()
+        .get("x-blobd-write-receipt")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap(),
+    })
   }
 }
