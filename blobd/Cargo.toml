@@ -22,7 +22,7 @@ data-encoding = "2.3"
 futures = "0.3"
 hmac = "0.12.1"
 itertools = "0.10"
-libblobd = { version = "0.1.0", path = "../libblobd" }
+libblobd = { version = "0.1.1", path = "../libblobd" }
 off64 = "0.3"
 percent-encoding = "2.2"
 rand = "0.8.5"
