@@ -1,6 +1,8 @@
 use super::OpError;
 use super::OpResult;
+use crate::bucket::Bucket;
 use crate::bucket::FoundInode;
+use crate::ctx::ChangeSerial;
 use crate::ctx::Ctx;
 use crate::inode::get_object_alloc_cfg;
 use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
@@ -14,31 +16,33 @@ use itertools::Itertools;
 use off64::create_u48_be;
 use off64::Off64Int;
 use std::sync::Arc;
+use tokio::sync::RwLockWriteGuard;
 use write_journal::AtomicWriteGroup;
 
-pub struct OpDeleteObjectInput {
-  pub key: Vec<u8>,
+pub(crate) struct DeletedObjectInLockedBucket {
+  // If the deleted inode was the bucket head, this is the value of the new bucket head. It has not be applied yet, so the caller must apply or use it somehow.
+  pub new_bucket_head: Option<u64>,
+  pub change_serial: ChangeSerial,
+  pub object_id: u64,
 }
 
-pub struct OpDeleteObjectOutput {}
-
-// We hold write lock on bucket RwLock for entire request (including writes and data sync) for simplicity and avoidance of subtle race conditions. Performance should still be great as one bucket equals one object given desired bucket count and load. If we release lock before we (or journal) finishes writes, we need to prevent/handle any possible intermediate read and write of the state of inode elements on the device, linked list pointers, garbage collectors, premature use of data or reuse of freed space, etc.
-pub(crate) async fn op_delete_object(
-  ctx: Arc<Ctx>,
-  req: OpDeleteObjectInput,
-) -> OpResult<OpDeleteObjectOutput> {
-  let key_len: u16 = req.key.len().try_into().unwrap();
-
-  let bkt_id = ctx.buckets.bucket_id_for_key(&req.key);
-  let mut bkt = ctx.buckets.get_bucket(bkt_id).write().await;
+// This will not actually update the disk state.
+pub(crate) async fn delete_object_in_locked_bucket_if_exists(
+  mutation_writes: &mut Vec<(u64, Vec<u8>)>,
+  ctx: &Ctx,
+  bkt: &mut RwLockWriteGuard<'_, Bucket>,
+  bkt_id: u64,
+  key: &[u8],
+  key_len: u16,
+) -> Option<DeletedObjectInLockedBucket> {
   let Some(FoundInode { prev_dev_offset: prev_inode, next_dev_offset: next_inode, dev_offset: inode_dev_offset, object_id }) = bkt.find_inode(
     &ctx.buckets,
     bkt_id,
-    &req.key,
+    key,
     key_len,
     None,
   ).await else {
-    return Err(OpError::ObjectNotFound);
+    return None;
   };
 
   // mmap memory should already be in page cache.
@@ -62,34 +66,66 @@ pub(crate) async fn op_delete_object(
     .collect_vec();
   let inode_size = INO_SIZE(key_len, alloc_cfg.tile_count);
 
-  let mut writes = Vec::with_capacity(tiles.len() + 4);
-
   // Release allocated space.
   let change_serial = {
     let mut free_list = ctx.free_list.lock().await;
-    free_list.release_tiles(&mut writes, &tiles);
-    free_list.release_fragment(&mut writes, inode_dev_offset, alloc_cfg.tail_len);
+    free_list.release_tiles(mutation_writes, &tiles);
+    free_list.release_fragment(mutation_writes, inode_dev_offset, alloc_cfg.tail_len);
     if tail_dev_offset != 0 {
-      free_list.release_fragment(&mut writes, tail_dev_offset, inode_size);
+      free_list.release_fragment(mutation_writes, tail_dev_offset, inode_size);
     };
     free_list.generate_change_serial()
   };
   bkt.version += 1;
 
-  match prev_inode {
+  let new_bucket_head = match prev_inode {
     Some(prev_inode_dev_offset) => {
       // Update next pointer of previous inode.
-      writes.push((
+      mutation_writes.push((
         prev_inode_dev_offset + INO_OFFSETOF_NEXT_INODE_DEV_OFFSET,
         create_u48_be(next_inode.unwrap_or(0)).to_vec(),
       ));
+      None
     }
     None => {
-      // Update bucket head.
-      ctx
-        .buckets
-        .mutate_bucket_head(&mut writes, bkt_id, next_inode.unwrap_or(0));
+      // Bucket head will change.
+      Some(next_inode.unwrap_or(0))
     }
+  };
+
+  Some(DeletedObjectInLockedBucket {
+    new_bucket_head,
+    change_serial,
+    object_id,
+  })
+}
+
+pub struct OpDeleteObjectInput {
+  pub key: Vec<u8>,
+}
+
+pub struct OpDeleteObjectOutput {}
+
+// We hold write lock on bucket RwLock for entire request (including writes and data sync) for simplicity and avoidance of subtle race conditions. Performance should still be great as one bucket equals one object given desired bucket count and load. If we release lock before we (or journal) finishes writes, we need to prevent/handle any possible intermediate read and write of the state of inode elements on the device, linked list pointers, garbage collectors, premature use of data or reuse of freed space, etc.
+pub(crate) async fn op_delete_object(
+  ctx: Arc<Ctx>,
+  req: OpDeleteObjectInput,
+) -> OpResult<OpDeleteObjectOutput> {
+  let key_len: u16 = req.key.len().try_into().unwrap();
+
+  let mut writes = Vec::new();
+
+  let bkt_id = ctx.buckets.bucket_id_for_key(&req.key);
+  let mut bkt = ctx.buckets.get_bucket(bkt_id).write().await;
+  let Some(del) = delete_object_in_locked_bucket_if_exists(&mut writes, &ctx, &mut bkt, bkt_id, &req.key, key_len).await else {
+    return Err(OpError::ObjectNotFound);
+  };
+
+  if let Some(new_bucket_head) = del.new_bucket_head {
+    // Update bucket head.
+    ctx
+      .buckets
+      .mutate_bucket_head(&mut writes, bkt_id, new_bucket_head);
   };
 
   // Create stream event.
@@ -100,12 +136,12 @@ pub(crate) async fn op_delete_object(
     .create_event(&mut writes, StreamEvent {
       typ: StreamEventType::ObjectDelete,
       bucket_id: bkt_id,
-      object_id,
+      object_id: del.object_id,
     });
 
   ctx
     .journal
-    .write(change_serial, AtomicWriteGroup(writes))
+    .write(del.change_serial, AtomicWriteGroup(writes))
     .await;
 
   Ok(OpDeleteObjectOutput {})
