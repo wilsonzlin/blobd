@@ -43,6 +43,7 @@ pub mod allocator;
 pub mod bucket;
 pub mod ctx;
 pub mod incomplete_slots;
+pub mod inode;
 pub mod object_id;
 pub mod op;
 pub mod page;

@@ -4,7 +4,6 @@ members = [
   "blobd-client-rs",
   "blobd-token",
   "blobd",
-  "lab/allocator",
   "libblobd",
   "stochastic-stresser",
 ]
