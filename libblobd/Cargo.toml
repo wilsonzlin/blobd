@@ -9,6 +9,7 @@ authors = ["Wilson Lin <code@wilsonl.in>"]
 edition = "2021"
 
 [dependencies]
+async-recursion = "1.0.4"
 async-stream = "0.3.4"
 chrono = "0.4.24"
 dashmap = "5.4.0"
@@ -18,6 +19,7 @@ itertools = "0.10"
 num-derive = "0.3"
 num-traits = "0.2"
 off64 = "0.3"
+parking_lot = "0.12.1"
 roaring = "0.10"
 rustc-hash = "1.1"
 seekable-async-file = "0.5.3" # NOTE: We must always use mmap, as we depend on ordered writes, and also want non-async writing capability.
@@ -26,4 +28,4 @@ strum = { version = "0.24", features = ["derive"] }
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1.37"
 twox-hash = "=1.6.3" # Pin the version as the docs mention that outputs could change in future versions: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
-write-journal = "0.4.3"
+write-journal = "0.6.0"

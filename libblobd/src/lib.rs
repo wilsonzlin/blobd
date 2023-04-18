@@ -39,15 +39,14 @@ use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use write_journal::WriteJournal;
 
+pub mod allocator;
 pub mod bucket;
 pub mod ctx;
-pub mod free_list;
 pub mod incomplete_slots;
-pub mod inode;
 pub mod object_id;
 pub mod op;
+pub mod page;
 pub mod stream;
-pub mod tile;
 
 /**
 

@@ -19,93 +19,18 @@ use tokio::time::sleep;
 use write_journal::AtomicWriteGroup;
 use write_journal::WriteJournal;
 
-// Since updated state to the free list on storage must be reflected in order, and we don't want to lock free list for entire write + fdatasync, we don't append to journal directly, but take a serial, and require that journal writes are sequentialised. This also sequentialises writes to object ID serial, stream, etc., which they rely on.
-pub(crate) struct ChangeSerial {
-  num: u64,
-}
-
-pub(crate) struct FreeListWithChangeTracker {
-  free_list: FreeList,
-  next_change_serial: u64,
-}
-
-impl FreeListWithChangeTracker {
-  pub fn new(free_list: FreeList) -> Self {
-    Self {
-      free_list,
-      next_change_serial: 0,
-    }
-  }
-
-  pub fn generate_change_serial(&mut self) -> ChangeSerial {
-    let serial = self.next_change_serial;
-    self.next_change_serial += 1;
-    ChangeSerial { num: serial }
-  }
-}
-
-impl Deref for FreeListWithChangeTracker {
-  type Target = FreeList;
-
-  fn deref(&self) -> &Self::Target {
-    &self.free_list
-  }
-}
-
-impl DerefMut for FreeListWithChangeTracker {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    &mut self.free_list
-  }
-}
-
-#[derive(Clone)]
-pub(crate) struct SequentialisedJournal {
-  journal: Arc<WriteJournal>,
-  pending:
-    Arc<DashMap<u64, (AtomicWriteGroup, SignalFutureController), BuildHasherDefault<FxHasher>>>,
-}
-
-impl SequentialisedJournal {
-  pub fn new(journal: Arc<WriteJournal>) -> Self {
-    Self {
-      journal,
-      pending: Default::default(),
-    }
-  }
-
-  pub async fn write(&self, serial: ChangeSerial, write: AtomicWriteGroup) {
-    let (fut, fut_ctl) = SignalFuture::new();
-    let None = self.pending.insert(serial.num, (write, fut_ctl)) else {
-      unreachable!();
-    };
-    fut.await;
-  }
-
-  // We must use a background loop. If we try to commit pending and await future inside `write`, we'll deadlock because the caller holds lock on `journal` (it needs one because `pending` would not be wrapped with Mutex) but `write` will wait forever for some previous serial entry to be written.
-  pub async fn start_commit_background_loop(&self) {
-    let mut next_serial = 0;
-    loop {
-      sleep(Duration::from_micros(200)).await;
-
-      let mut writes = Vec::new();
-      while let Some(e) = self.pending.remove(&next_serial) {
-        next_serial += 1;
-        writes.push(e.1);
-      }
-      if !writes.is_empty() {
-        // This await is just to acquire the journal internal queue lock, not actually wait for a full journal commit.
-        self.journal.write_many_with_custom_signal(writes).await;
-      };
-    }
-  }
+// We must lock these together instead of individually. Inside a transaction, it will make mutation calls to these subsystems, and transactions get committed in the order they started. However, it's possible during the transaction that the earliest transaction does not reach all subsystems first, which would mean that the changes for some subsystems may get written out of order. For example, consider that request 1 may update incomplete slots before request 0, even though request 0 came first, created an earlier transaction, and returned from its call to the free list before request 1, purely because of unfortunate luck with lock acquisition or the Tokio or Linux thread scheduler. Request 0's transaction is always committed before request 1's (enforced by WriteJournal), but request 0 contains changes to incomplete slots that depend on request 1's changes, so writing request 1 will clobber request 0's changes and corrupt the state.
+pub(crate) struct State {
+  pub free_list: FreeList,
+  pub incomplete_slots: IncompleteSlots,
+  pub object_id_serial: ObjectIdSerial,
+  pub stream: Stream,
 }
 
 pub(crate) struct Ctx {
   pub buckets: Buckets,
   pub device: SeekableAsyncFile,
-  pub free_list: Mutex<FreeListWithChangeTracker>,
-  pub incomplete_slots: IncompleteSlots,
-  pub journal: SequentialisedJournal,
-  pub object_id_serial: ObjectIdSerial,
-  pub stream: RwLock<Stream>,
+  pub journal: WriteJournal,
+  // We can safely use non-async lock as we shouldn't be holding this lock across await.
+  pub state: parking_lot::RwLock<State>,
 }
