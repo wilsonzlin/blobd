@@ -181,8 +181,8 @@ impl Allocator {
     // - The last data lpage (last lpage) needs to have a `next` of zero.
     // - All other lpages are also free, but can simply link to their phsyical previous and next lpages instead of repeatedly inserting into the free list. This way, only the first free data lpage needs to be inserted into the free list.
     for (left, lpage_dev_offset, right) in (block_dev_offset..=new_frontier)
-      .skip(1)
       .step_by(usz!(lpage_size))
+      .skip(1)
       .tuple_windows()
     {
       self
