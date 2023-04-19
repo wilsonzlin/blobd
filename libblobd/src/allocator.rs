@@ -14,7 +14,6 @@ use write_journal::Transaction;
 use write_journal::WriteJournal;
 
 const ALLOCSTATE_OFFSETOF_FRONTIER: u64 = 0;
-#[allow(non_snake_case)]
 const fn ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(page_size_pow2: u8) -> u64 {
   ALLOCSTATE_OFFSETOF_FRONTIER + 8 * u64::from(page_size_pow2 - MIN_PAGE_SIZE_POW2)
 }

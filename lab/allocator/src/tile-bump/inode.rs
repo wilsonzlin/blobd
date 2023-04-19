@@ -30,15 +30,12 @@ pub(crate) const INO_OFFSETOF_OBJ_ID: u64 = INO_OFFSETOF_SIZE + 5;
 pub(crate) const INO_OFFSETOF_KEY_LEN: u64 = INO_OFFSETOF_OBJ_ID + 8;
 pub(crate) const INO_OFFSETOF_NEXT_INODE_DEV_OFFSET: u64 = INO_OFFSETOF_KEY_LEN + 2;
 pub(crate) const INO_OFFSETOF_KEY: u64 = INO_OFFSETOF_NEXT_INODE_DEV_OFFSET + 6;
-#[allow(non_snake_case)]
 pub(crate) fn INO_OFFSETOF_TILE_IDX(key_len: u16, tile_idx: u16) -> u64 {
   INO_OFFSETOF_KEY + u64::from(key_len) + 3 * u64::from(tile_idx)
 }
-#[allow(non_snake_case)]
 pub(crate) fn INO_OFFSETOF_TILES(key_len: u16) -> u64 {
   INO_OFFSETOF_TILE_IDX(key_len, 0)
 }
-#[allow(non_snake_case)]
 pub(crate) fn INO_SIZE(key_len: u16, tile_count: u16) -> u32 {
   INO_OFFSETOF_TILE_IDX(key_len, tile_count)
     .try_into()

@@ -1,5 +1,5 @@
-use crate::tile::TILE_SIZE;
-use crate::tile::TILE_SIZE_U64;
+use std::cmp::max;
+use std::fmt::Debug;
 
 /**
 
@@ -18,44 +18,250 @@ u40 size
 u64 obj_id
 u16 key_len
 u8[] key
-u40[] segment_dev_offsets
+u24[] lpage_segments
+u8 tail_segment_count
+{
+  u8 page_size_pow2
+  u40 page_dev_offset
+}[] tail_segments
+u16 custom_metadata_byte_count
+u16 custom_metadata_entry_count
+{
+  u16 name_len
+  u16 value_len
+  u8[] name
+  u8[] value
+}[] custom_metadata
 
 **/
 
-pub(crate) const INO_OFFSETOF_SIZE: u64 = 0;
-pub(crate) const INO_OFFSETOF_OBJ_ID: u64 = INO_OFFSETOF_SIZE + 5;
-pub(crate) const INO_OFFSETOF_KEY_LEN: u64 = INO_OFFSETOF_OBJ_ID + 8;
-pub(crate) const INO_OFFSETOF_KEY: u64 = INO_OFFSETOF_KEY_LEN + 2;
-#[allow(non_snake_case)]
-pub(crate) fn INO_OFFSETOF_SEGMENT(key_len: u16, segment_idx: u16) -> u64 {
-  INO_OFFSETOF_KEY + u64::from(key_len) + 3 * u64::from(segment_idx)
+#[derive(Clone, Copy)]
+pub(crate) struct InodeOffset;
+impl InodeOffset {
+  pub fn size() -> u64 {
+    0
+  }
+
+  pub fn object_id() -> u64 {
+    Self::size() + 5
+  }
+
+  pub fn key_len() -> u64 {
+    Self::object_id() + 8
+  }
+
+  pub fn key(key_len: u16) -> InodeOffsetFromKey {
+    InodeOffsetFromKey {
+      base: Self::key_len() + 2,
+      key_len,
+    }
+  }
 }
-#[allow(non_snake_case)]
-pub(crate) fn INO_OFFSETOF_SEGMENTS(key_len: u16) -> u64 {
-  INO_OFFSETOF_SEGMENT(key_len, 0)
+
+#[derive(Clone, Copy)]
+pub(crate) struct InodeOffsetFromKey {
+  base: u64,
+  key_len: u16,
 }
-#[allow(non_snake_case)]
-pub(crate) fn INO_SIZE(key_len: u16, segment_count: u16) -> u32 {
-  INO_OFFSETOF_SEGMENT(key_len, segment_count)
-    .try_into()
-    .unwrap()
+impl InodeOffsetFromKey {
+  pub fn lpage_segments(self, lpage_segment_count: u64) -> InodeOffsetFromLpageSegments {
+    InodeOffsetFromLpageSegments {
+      base: self.base + u64::from(self.key_len),
+      lpage_segment_count,
+    }
+  }
+}
+impl From<InodeOffsetFromKey> for u64 {
+  fn from(value: InodeOffsetFromKey) -> Self {
+    value.base
+  }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct InodeOffsetFromLpageSegments {
+  base: u64,
+  lpage_segment_count: u64,
+}
+impl InodeOffsetFromLpageSegments {
+  pub fn get(self, idx: u64) -> u64 {
+    self.base + 3 * idx
+  }
+
+  pub fn tail_segment_count(self) -> u64 {
+    self.get(self.lpage_segment_count)
+  }
+
+  pub fn tail_segments(self, tail_segment_count: u8) -> InodeOffsetFromTailSegments {
+    InodeOffsetFromTailSegments {
+      base: self.tail_segment_count() + 1,
+      tail_segment_count,
+    }
+  }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct InodeOffsetFromTailSegments {
+  base: u64,
+  tail_segment_count: u8,
+}
+impl InodeOffsetFromTailSegments {
+  pub fn get(self, idx: u8) -> u64 {
+    self.base + 6 * u64::from(idx)
+  }
+
+  pub fn custom_metadata_byte_count(self) -> u64 {
+    self.get(self.tail_segment_count)
+  }
+
+  pub fn custom_metadata_entry_count(self) -> u64 {
+    self.custom_metadata_byte_count() + 2
+  }
+
+  pub fn custom_metadata(self, custom_metadata_byte_count: u16) -> InodeOffsetFromCustomMetadata {
+    InodeOffsetFromCustomMetadata {
+      base: self.custom_metadata_entry_count() + 2,
+      custom_metadata_byte_count,
+    }
+  }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct InodeOffsetFromCustomMetadata {
+  base: u64,
+  custom_metadata_byte_count: u16,
+}
+impl InodeOffsetFromCustomMetadata {
+  pub fn _total_inode_size(self) -> u64 {
+    self.base + self.custom_metadata_byte_count
+  }
+}
+impl From<InodeOffsetFromCustomMetadata> for u64 {
+  fn from(value: InodeOffsetFromCustomMetadata) -> Self {
+    value.base
+  }
 }
 
 // This makes it so that a read of the inode up to and including the key is at most exactly 512 bytes, which is a well-aligned well-sized no-waste read from most SSDs. In case you're worried that it's not long enough, this is 497 bytes: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.
 pub const INO_KEY_LEN_MAX: u16 = 497;
 
-pub(crate) fn get_object_segment_index(object_size: u64, offset: u64) -> u64 {
-  // We only allow up to 65,536 solid tiles for a single object.
-  let mut segment_count: u16 = (object_size / TILE_SIZE_U64).try_into().unwrap();
-  let mut tail_len: u32 = (object_size % TILE_SIZE_U64).try_into().unwrap();
-  // TODO Analyse this hyperparameter: is this mechanism useful? What are the impacts of higher/lower values?
-  if tail_len >= TILE_SIZE - 128 {
-    // The tail is too close to a full tile, so just allocate and use an extra tile instead.
-    segment_count += 1;
-    tail_len = 0;
-  };
-  ObjectAllocCfg {
-    segment_count,
-    tail_len,
+fn assert_is_strictly_descending<T: Debug + Ord>(vals: &[T]) {
+  for i in 1..vals.len() {
+    assert!(
+      vals[i - 1] > vals[i],
+      "element at index {i} is not strictly less than its previous element; list: {:?}",
+      vals
+    );
+  }
+}
+
+pub fn calculate_object_tail_segments(
+  spage_size: u64,
+  lpage_size: u64,
+  object_size: u64,
+  max_segments: usize,
+  fitness_factor: u64,
+) -> Vec<u64> {
+  // Initial invariant checks.
+  assert!(max_segments >= 1);
+
+  // Output.
+  let mut segments = Vec::new();
+
+  // Tail length.
+  let mut rem = object_size % lpage_size;
+
+  let max_frag = object_size / fitness_factor;
+  loop {
+    let mut page_size = max(spage_size, rem.next_power_of_two());
+    // If we've reached the spage size, or we've run out of segments, or we've reached an acceptable internal fragmentation amount (even if we could reduce it more by using more unused segments), we can stop.
+    if segments.len() == max_segments - 1 || page_size == spage_size || page_size - rem <= max_frag
+    {
+      segments.push(page_size);
+      break;
+    };
+    page_size /= 2;
+    segments.push(page_size);
+    rem -= page_size;
+  }
+
+  // If we've reached the spage size, it's possible to push two spages, which is pointless and should be folded into one larger page. This may cause two of those page sizes, so keep folding until the last two page sizes aren't identical.
+  while segments.len() >= 2 && segments.get(segments.len() - 1) == segments.get(segments.len() - 2)
+  {
+    let sz = segments.pop().unwrap();
+    segments.pop().unwrap();
+    segments.push(sz * 2);
+  }
+
+  // Extra final logic sanity checks.
+  assert_is_strictly_descending(&segments);
+  assert!(segments.len() <= max_segments);
+
+  // Return output.
+  segments
+}
+
+#[cfg(test)]
+mod tests {
+  use super::calculate_object_tail_segments;
+
+  const SPAGE_SIZE: u64 = 512;
+  const LPAGE_SIZE: u64 = 16777216;
+
+  #[test]
+  fn test_ff_100_mlu_10() {
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 0, 10, 100),
+      vec![512],
+    );
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 31, 10, 100),
+      vec![512],
+    );
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 511, 10, 100),
+      vec![512],
+    );
+    // For 1000 bytes, MIF is 1000 / 100 = 10 bytes, using 1024 byte page would lead to 24 bytes waste, but 512 page is minimum.
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 1000, 10, 100),
+      vec![1024],
+    );
+    // For 1014 bytes, MIF is 1014 / 100 = 10 bytes, using 1024 byte page would lead to 10 bytes waste.
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 1014, 10, 100),
+      vec![1024],
+    );
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 1535, 10, 100),
+      vec![1024, 512],
+    );
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 1537, 10, 100),
+      vec![2048],
+    );
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 65535, 10, 100),
+      vec![65536],
+    );
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 65537, 10, 100),
+      vec![65536, 512],
+    );
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 131071, 10, 100),
+      vec![131072],
+    );
+  }
+
+  #[test]
+  fn test_ff_max_mlu_max() {
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 130560, usize::MAX, u64::MAX),
+      vec![65536, 32768, 16384, 8192, 4096, 2048, 1024, 512],
+    );
+    assert_eq!(
+      calculate_object_tail_segments(SPAGE_SIZE, LPAGE_SIZE, 130561, usize::MAX, u64::MAX),
+      vec![131072],
+    );
   }
 }

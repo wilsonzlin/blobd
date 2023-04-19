@@ -40,7 +40,6 @@ pub(crate) const STREVT_SIZE: u64 = STREVT_OFFSETOF_OBJECT_ID + 8;
 
 pub(crate) const STREAM_OFFSETOF_VIRTUAL_HEAD: u64 = 0;
 pub(crate) const STREAM_OFFSETOF_EVENTS: u64 = STREAM_OFFSETOF_VIRTUAL_HEAD + 8;
-#[allow(non_snake_case)]
 pub(crate) fn STREAM_OFFSETOF_EVENT(event_id: u64) -> u64 {
   STREAM_OFFSETOF_EVENTS + (STREVT_SIZE * (event_id % STREAM_EVENT_CAP))
 }

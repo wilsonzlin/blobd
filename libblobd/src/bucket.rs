@@ -1,8 +1,8 @@
 use crate::inode::INO_KEY_LEN_MAX;
 use crate::inode::INO_OFFSETOF_KEY;
 use crate::inode::INO_OFFSETOF_KEY_LEN;
+use crate::inode::INO_OFFSETOF_LPAGE_SEGMENTS;
 use crate::inode::INO_OFFSETOF_OBJ_ID;
-use crate::inode::INO_OFFSETOF_SEGMENTS;
 use crate::inode::INO_OFFSETOF_SIZE;
 use crate::page::ActiveInodePageHeader;
 use crate::page::Pages;
@@ -42,12 +42,10 @@ u40[] dev_offset_rshifted_by_8_or_zero
 
 pub(crate) const BUCKETS_OFFSETOF_COUNT_LOG2: u64 = 0;
 
-#[allow(non_snake_case)]
 pub(crate) fn BUCKETS_OFFSETOF_BUCKET(bkt_id: u64) -> u64 {
   BUCKETS_OFFSETOF_COUNT_LOG2 + (bkt_id * 5)
 }
 
-#[allow(non_snake_case)]
 pub(crate) fn BUCKETS_SIZE(bkt_cnt: u64) -> u64 {
   BUCKETS_OFFSETOF_BUCKET(bkt_cnt)
 }
@@ -139,7 +137,7 @@ impl Buckets {
     while dev_offset > 0 {
       let (hdr, raw) = join! {
         self.pages.read_page_header::<ActiveInodePageHeader>(dev_offset),
-        self.dev.read_at(dev_offset, INO_OFFSETOF_SEGMENTS(INO_KEY_LEN_MAX)),
+        self.dev.read_at(dev_offset, INO_OFFSETOF_LPAGE_SEGMENTS(INO_KEY_LEN_MAX)),
       };
       let next_dev_offset = hdr.next;
       let object_id = raw.read_u64_be_at(INO_OFFSETOF_OBJ_ID);

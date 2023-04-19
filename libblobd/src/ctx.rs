@@ -2,8 +2,10 @@ use crate::bucket::Buckets;
 use crate::incomplete_slots::IncompleteSlots;
 use crate::object_id::ObjectIdSerial;
 use crate::page::Pages;
+use crate::page::PagesMut;
 use crate::stream::Stream;
 use seekable_async_file::SeekableAsyncFile;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use write_journal::WriteJournal;
 
@@ -11,7 +13,7 @@ use write_journal::WriteJournal;
 pub(crate) struct State {
   pub incomplete_slots: IncompleteSlots,
   pub object_id_serial: ObjectIdSerial,
-  pub pages: Pages,
+  pub pages: PagesMut,
   pub stream: Stream,
 }
 
@@ -19,5 +21,6 @@ pub(crate) struct Ctx {
   pub buckets: Buckets,
   pub device: SeekableAsyncFile,
   pub journal: WriteJournal,
+  pub pages: Arc<Pages>,
   pub state: RwLock<State>,
 }

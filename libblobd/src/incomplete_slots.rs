@@ -55,7 +55,6 @@ pub(crate) const INCOMPLETE_SLOT_OFFSETOF_CREATED_HOUR_TS: u64 =
 pub(crate) const INCOMPLETE_SLOT_SIZE: u64 = INCOMPLETE_SLOT_OFFSETOF_CREATED_HOUR_TS + 4;
 
 pub(crate) const INCOMPLETE_SLOTS_CAP: u64 = 8_000_000;
-#[allow(non_snake_case)]
 pub(crate) const fn INCOMPLETE_SLOTS_OFFSETOF_SLOT(slot_id: u64) -> u64 {
   INCOMPLETE_SLOT_SIZE * slot_id
 }

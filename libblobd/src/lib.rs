@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use crate::bucket::Buckets;
 use crate::free_list::FreeList;
 use crate::free_list::FREELIST_TILE_CAP;
