@@ -50,9 +50,13 @@ impl InodeOffset {
     Self::object_id() + 8
   }
 
-  pub fn key(key_len: u16) -> InodeOffsetFromKey {
+  pub fn key() -> u64 {
+    Self::key_len() + 2
+  }
+
+  pub fn with_key_len(key_len: u16) -> InodeOffsetFromKey {
     InodeOffsetFromKey {
-      base: Self::key_len() + 2,
+      base: Self::key(),
       key_len,
     }
   }
@@ -64,16 +68,15 @@ pub(crate) struct InodeOffsetFromKey {
   key_len: u16,
 }
 impl InodeOffsetFromKey {
-  pub fn lpage_segments(self, lpage_segment_count: u64) -> InodeOffsetFromLpageSegments {
+  pub fn lpage_segments(self) -> u64 {
+    self.base + u64::from(self.key_len)
+  }
+
+  pub fn with_lpage_segments(self, lpage_segment_count: u64) -> InodeOffsetFromLpageSegments {
     InodeOffsetFromLpageSegments {
-      base: self.base + u64::from(self.key_len),
+      base: self.lpage_segments(),
       lpage_segment_count,
     }
-  }
-}
-impl From<InodeOffsetFromKey> for u64 {
-  fn from(value: InodeOffsetFromKey) -> Self {
-    value.base
   }
 }
 
@@ -83,17 +86,21 @@ pub(crate) struct InodeOffsetFromLpageSegments {
   lpage_segment_count: u64,
 }
 impl InodeOffsetFromLpageSegments {
-  pub fn get(self, idx: u64) -> u64 {
+  pub fn lpage_segment(self, idx: u64) -> u64 {
     self.base + 3 * idx
   }
 
   pub fn tail_segment_count(self) -> u64 {
-    self.get(self.lpage_segment_count)
+    self.lpage_segment(self.lpage_segment_count)
   }
 
-  pub fn tail_segments(self, tail_segment_count: u8) -> InodeOffsetFromTailSegments {
+  pub fn tail_segments(self) -> u64 {
+    self.tail_segment_count() + 1
+  }
+
+  pub fn with_tail_segments(self, tail_segment_count: u8) -> InodeOffsetFromTailSegments {
     InodeOffsetFromTailSegments {
-      base: self.tail_segment_count() + 1,
+      base: self.tail_segments(),
       tail_segment_count,
     }
   }
@@ -105,21 +112,28 @@ pub(crate) struct InodeOffsetFromTailSegments {
   tail_segment_count: u8,
 }
 impl InodeOffsetFromTailSegments {
-  pub fn get(self, idx: u8) -> u64 {
+  pub fn tail_segment(self, idx: u8) -> u64 {
     self.base + 6 * u64::from(idx)
   }
 
   pub fn custom_metadata_byte_count(self) -> u64 {
-    self.get(self.tail_segment_count)
+    self.tail_segment(self.tail_segment_count)
   }
 
   pub fn custom_metadata_entry_count(self) -> u64 {
     self.custom_metadata_byte_count() + 2
   }
 
-  pub fn custom_metadata(self, custom_metadata_byte_count: u16) -> InodeOffsetFromCustomMetadata {
+  pub fn custom_metadata(self) -> u64 {
+    self.custom_metadata_entry_count() + 2
+  }
+
+  pub fn with_custom_metadata(
+    self,
+    custom_metadata_byte_count: u16,
+  ) -> InodeOffsetFromCustomMetadata {
     InodeOffsetFromCustomMetadata {
-      base: self.custom_metadata_entry_count() + 2,
+      base: self.custom_metadata(),
       custom_metadata_byte_count,
     }
   }
@@ -132,12 +146,7 @@ pub(crate) struct InodeOffsetFromCustomMetadata {
 }
 impl InodeOffsetFromCustomMetadata {
   pub fn _total_inode_size(self) -> u64 {
-    self.base + self.custom_metadata_byte_count
-  }
-}
-impl From<InodeOffsetFromCustomMetadata> for u64 {
-  fn from(value: InodeOffsetFromCustomMetadata) -> Self {
-    value.base
+    self.base + u64::from(self.custom_metadata_byte_count)
   }
 }
 

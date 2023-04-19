@@ -1,5 +1,6 @@
 use crate::page::FreePagePageHeader;
 use crate::page::Pages;
+use crate::page::PagesMut;
 use crate::page::MAX_PAGE_SIZE_POW2;
 use crate::page::MIN_PAGE_SIZE_POW2;
 use async_recursion::async_recursion;
@@ -92,7 +93,7 @@ impl Allocator {
   async fn detach_page_from_free_list(
     &mut self,
     txn: &mut Transaction,
-    pages: &mut Pages,
+    pages: &mut PagesMut,
     page_dev_offset: u64,
     page_size_pow2: u8,
   ) {
@@ -120,7 +121,7 @@ impl Allocator {
   async fn try_consume_page_at_free_list_head(
     &mut self,
     txn: &mut Transaction,
-    pages: &mut Pages,
+    pages: &mut PagesMut,
     page_size_pow2: u8,
   ) -> Option<u64> {
     let page_dev_offset = self.get_free_list_head(pages, page_size_pow2);
@@ -142,7 +143,7 @@ impl Allocator {
   fn insert_page_into_free_list(
     &mut self,
     txn: &mut Transaction,
-    pages: &mut Pages,
+    pages: &mut PagesMut,
     page_dev_offset: u64,
     page_size_pow2: u8,
   ) {
@@ -158,7 +159,7 @@ impl Allocator {
   fn allocate_new_block_and_then_allocate_lpage(
     &mut self,
     txn: &mut Transaction,
-    pages: &mut Pages,
+    pages: &mut PagesMut,
   ) -> u64 {
     let lpage_size = 1 << pages.lpage_size_pow2;
     let block_dev_offset = self.frontier_dev_offset;
@@ -202,7 +203,7 @@ impl Allocator {
   async fn allocate_page(
     &mut self,
     txn: &mut Transaction,
-    pages: &mut Pages,
+    pages: &mut PagesMut,
     page_size_pow2: u8,
   ) -> u64 {
     assert!(page_size_pow2 >= pages.spage_size_pow2 && page_size_pow2 <= pages.lpage_size_pow2);
@@ -226,7 +227,7 @@ impl Allocator {
     }
   }
 
-  pub async fn allocate(&mut self, txn: &mut Transaction, pages: &mut Pages, size: u64) -> u64 {
+  pub async fn allocate(&mut self, txn: &mut Transaction, pages: &mut PagesMut, size: u64) -> u64 {
     let pow2 = max(
       pages.spage_size_pow2,
       size.next_power_of_two().ilog2().try_into().unwrap(),
@@ -239,7 +240,7 @@ impl Allocator {
   pub async fn release(
     &mut self,
     txn: &mut Transaction,
-    pages: &mut Pages,
+    pages: &mut PagesMut,
     page_dev_offset: u64,
     page_size_pow2: u8,
   ) {

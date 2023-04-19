@@ -1,9 +1,5 @@
+use crate::inode::InodeOffset;
 use crate::inode::INO_KEY_LEN_MAX;
-use crate::inode::INO_OFFSETOF_KEY;
-use crate::inode::INO_OFFSETOF_KEY_LEN;
-use crate::inode::INO_OFFSETOF_LPAGE_SEGMENTS;
-use crate::inode::INO_OFFSETOF_OBJ_ID;
-use crate::inode::INO_OFFSETOF_SIZE;
 use crate::page::ActiveInodePageHeader;
 use crate::page::Pages;
 use crate::page::MIN_PAGE_SIZE_POW2;
@@ -137,20 +133,20 @@ impl Buckets {
     while dev_offset > 0 {
       let (hdr, raw) = join! {
         self.pages.read_page_header::<ActiveInodePageHeader>(dev_offset),
-        self.dev.read_at(dev_offset, INO_OFFSETOF_LPAGE_SEGMENTS(INO_KEY_LEN_MAX)),
+        self.dev.read_at(dev_offset, InodeOffset::with_key_len(INO_KEY_LEN_MAX).lpage_segments()),
       };
       let next_dev_offset = hdr.next;
-      let object_id = raw.read_u64_be_at(INO_OFFSETOF_OBJ_ID);
+      let object_id = raw.read_u64_be_at(InodeOffset::object_id());
       if (expected_object_id.is_none() || expected_object_id.unwrap() == object_id)
-        && raw.read_u16_be_at(INO_OFFSETOF_KEY_LEN) == key_len
-        && raw.read_slice_at(INO_OFFSETOF_KEY, key_len.into()) == key
+        && raw.read_u16_be_at(InodeOffset::key_len()) == key_len
+        && raw.read_slice_at(InodeOffset::key(), key_len.into()) == key
       {
         return Some(FoundInode {
           dev_offset,
           next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0),
           object_id,
           prev_dev_offset,
-          size: raw.read_u40_be_at(INO_OFFSETOF_SIZE),
+          size: raw.read_u40_be_at(InodeOffset::size()),
         });
       };
       prev_dev_offset = Some(dev_offset);
