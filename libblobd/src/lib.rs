@@ -59,12 +59,13 @@ DEVICE
 Structure
 ---------
 
-journal
 object_id_serial
 stream
-incomplete_slots
-free_list
+incomplete_list_state
+deleted_list_state
+allocator_state
 buckets
+journal
 heap
 
 **/
