@@ -1,5 +1,11 @@
+use crate::allocator::Allocator;
+use crate::page::PagesMut;
+use off64::usz;
+use off64::Off64Int;
+use seekable_async_file::SeekableAsyncFile;
 use std::cmp::max;
 use std::fmt::Debug;
+use write_journal::Transaction;
 
 /**
 
@@ -18,11 +24,11 @@ u40 size
 u64 obj_id
 u16 key_len
 u8[] key
-u24[] lpage_segments
+u48[] lpage_segment_page_dev_offset
 u8 tail_segment_count
 {
   u8 page_size_pow2
-  u40 page_dev_offset
+  u48 page_dev_offset
 }[] tail_segments
 u16 custom_metadata_byte_count
 u16 custom_metadata_entry_count
@@ -87,7 +93,7 @@ pub(crate) struct InodeOffsetFromLpageSegments {
 }
 impl InodeOffsetFromLpageSegments {
   pub fn lpage_segment(self, idx: u64) -> u64 {
-    self.base + 3 * idx
+    self.base + 5 * idx
   }
 
   pub fn tail_segment_count(self) -> u64 {
@@ -152,6 +158,41 @@ impl InodeOffsetFromCustomMetadata {
 
 // This makes it so that a read of the inode up to and including the key is at most exactly 512 bytes, which is a well-aligned well-sized no-waste read from most SSDs. In case you're worried that it's not long enough, this is 497 bytes: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.
 pub const INO_KEY_LEN_MAX: u16 = 497;
+
+/// WARNING: This does not verify the page type, but will clear the page header via `alloc.release`.
+pub async fn free_inode(
+  txn: &mut Transaction,
+  dev: &SeekableAsyncFile,
+  pages: &mut PagesMut,
+  alloc: &mut Allocator,
+  page_dev_offset: u64,
+  page_size_pow2: u8,
+) {
+  let lpage_size_pow2 = pages.lpage_size_pow2;
+  let raw = dev.read_at(page_dev_offset, 1 << page_size_pow2).await;
+  let object_size = raw.read_u40_be_at(InodeOffset::size());
+  let key_len = raw.read_u16_be_at(InodeOffset::key_len());
+  let lpage_segment_count = object_size / (1 << pages.lpage_size_pow2);
+  let off = InodeOffset::with_key_len(key_len).with_lpage_segments(lpage_segment_count);
+  for i in 0..lpage_segment_count {
+    let page_dev_offset = raw.read_u48_be_at(off.lpage_segment(i));
+    alloc
+      .release(txn, pages, page_dev_offset, lpage_size_pow2)
+      .await;
+  }
+  let tail_segment_count = raw[usz!(off.tail_segment_count())];
+  let off = off.with_tail_segments(tail_segment_count);
+  for i in 0..tail_segment_count {
+    let page_size_pow2 = raw[usz!(off.tail_segment(i))];
+    let page_dev_offset = raw.read_u48_be_at(off.tail_segment(i) + 1);
+    alloc
+      .release(txn, pages, page_dev_offset, page_size_pow2)
+      .await;
+  }
+  alloc
+    .release(txn, pages, page_dev_offset, page_size_pow2)
+    .await;
+}
 
 fn assert_is_strictly_descending<T: Debug + Ord>(vals: &[T]) {
   for i in 1..vals.len() {

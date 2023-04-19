@@ -252,6 +252,7 @@ impl Allocator {
         .await
       {
         // Buddy is also free.
+        // TODO Call pages.clear_page_header out of abundance of caution.
         self
           .release(
             txn,

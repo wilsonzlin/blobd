@@ -44,7 +44,7 @@ use write_journal::WriteJournal;
 pub mod allocator;
 pub mod bucket;
 pub mod ctx;
-pub mod incomplete_slots;
+pub mod incomplete_list;
 pub mod inode;
 pub mod object_id;
 pub mod op;
