@@ -31,12 +31,13 @@ const SIZE: u64 = OFFSETOF_TAIL + 5;
 /// WARNING: All methods on this struct must be called from within a transaction, **including non-mut ones.** If *any* incomplete inode page changes type or merges without this struct knowing about/performing it, including due to very subtle race conditions and/or concurrency, **corruption will occur.**
 /// This is because all methods will read a page's header as a IncompleteInodePageHeader, even if it's a different type or the page has been merged/split and doesn't exist at the time.
 /// This also means that the background incomplete reaper loop must also lock the entire state and perform everything in a transaction every iteration.
+/// WARNING: Writers must not begin or continue writing if within one hour of an incomplete object's reap time. Otherwise, the reaper may reap the object from under them, and the writer will be writing to released pages. If streaming, check in regularly. Stop before one hour to prevent race conditions and clock drift issues. Commits are safe because they acquire the state lock.
 pub struct IncompleteList {
   dev: SeekableAsyncFile,
   dev_offset: u64,
   head: u64,
   tail: u64,
-  evict_after_hours: u32,
+  reap_after_hours: u32,
 }
 
 fn get_now_hour() -> u32 {
@@ -45,7 +46,7 @@ fn get_now_hour() -> u32 {
 }
 
 impl IncompleteList {
-  pub fn load_from_device(dev: SeekableAsyncFile, dev_offset: u64, evict_after_hours: u32) -> Self {
+  pub fn load_from_device(dev: SeekableAsyncFile, dev_offset: u64, reap_after_hours: u32) -> Self {
     let head = dev
       .read_at_sync(dev_offset + OFFSETOF_HEAD, 6)
       .read_u48_be_at(0);
@@ -57,7 +58,7 @@ impl IncompleteList {
       dev_offset,
       head,
       tail,
-      evict_after_hours,
+      reap_after_hours,
     }
   }
 
@@ -82,6 +83,7 @@ impl IncompleteList {
     self.tail = page_dev_offset;
   }
 
+  /// WARNING: This will overwrite the page header.
   pub async fn attach(
     &mut self,
     txn: &mut Transaction,
@@ -99,6 +101,9 @@ impl IncompleteList {
         next: 0,
       },
     );
+    if self.head == 0 {
+      self.update_head(txn, page_dev_offset);
+    };
     if self.tail != 0 {
       pages
         .update_page_header::<IncompleteInodePageHeader>(txn, self.tail, |i| {
@@ -106,6 +111,7 @@ impl IncompleteList {
         })
         .await;
     };
+    self.update_tail(txn, page_dev_offset);
   }
 
   /// WARNING: This does not update, overwrite, or clear the page header.
@@ -140,7 +146,6 @@ impl IncompleteList {
     pages: &mut PagesMut,
     alloc: &mut Allocator,
   ) -> bool {
-    let now_hour = get_now_hour();
     let page_dev_offset = self.head;
     if page_dev_offset == 0 {
       return false;
@@ -148,7 +153,7 @@ impl IncompleteList {
     let (_, page_size_pow2, hdr) = pages
       .read_page_header_with_size_and_type::<IncompleteInodePageHeader>(page_dev_offset)
       .await;
-    if now_hour - hdr.created_hour < self.evict_after_hours {
+    if get_now_hour() - hdr.created_hour < self.reap_after_hours {
       return false;
     };
     // `alloc.release` will clear page header.
