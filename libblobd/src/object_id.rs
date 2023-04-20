@@ -4,6 +4,7 @@ use seekable_async_file::SeekableAsyncFile;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use tracing::debug;
+use write_journal::Transaction;
 
 pub(crate) struct ObjectIdSerial {
   dev_offset: u64,
@@ -24,9 +25,9 @@ impl ObjectIdSerial {
     dev.write_at(dev_offset, create_u64_be(0).to_vec()).await;
   }
 
-  pub fn next(&self, mutation_writes: &mut Vec<(u64, Vec<u8>)>) -> u64 {
+  pub fn next(&self, txn: &mut Transaction) -> u64 {
     let id = self.next.fetch_add(1, Ordering::Relaxed);
-    mutation_writes.push((self.dev_offset, create_u64_be(id + 1).to_vec()));
+    txn.write(self.dev_offset, create_u64_be(id + 1).to_vec());
     id
   }
 }

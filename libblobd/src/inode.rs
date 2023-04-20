@@ -1,7 +1,9 @@
 use crate::allocator::Allocator;
-use crate::page::PagesMut;
+use crate::page::Pages;
+use off64::int::Off64ReadInt;
+use off64::u8;
 use off64::usz;
-use off64::Off64Int;
+use off64::Off64AsyncRead;
 use seekable_async_file::SeekableAsyncFile;
 use std::cmp::max;
 use std::fmt::Debug;
@@ -30,70 +32,72 @@ u8 tail_segment_count
   u8 page_size_pow2
   u48 page_dev_offset
 }[] tail_segments
-u16 custom_metadata_byte_count
-u16 custom_metadata_entry_count
+u16 custom_header_byte_count
+u16 custom_header_entry_count
 {
   u16 name_len
   u16 value_len
   u8[] name
   u8[] value
-}[] custom_metadata
+}[] custom_headers
 
 **/
 
-#[derive(Clone, Copy)]
-pub(crate) struct InodeOffset;
-impl InodeOffset {
-  pub fn size() -> u64 {
+#[derive(Clone, Copy, Default)]
+pub(crate) struct InodeOffsets {
+  key_len: u16,
+  lpage_segment_count: u64,
+  tail_segment_count: u8,
+  custom_header_byte_count: u16,
+}
+impl InodeOffsets {
+  pub fn with_key_len(self, key_len: u16) -> Self {
+    Self { key_len, ..self }
+  }
+
+  pub fn with_lpage_segments(self, lpage_segment_count: u64) -> Self {
+    Self {
+      lpage_segment_count,
+      ..self
+    }
+  }
+
+  pub fn with_tail_segments(self, tail_segment_count: u8) -> Self {
+    Self {
+      tail_segment_count,
+      ..self
+    }
+  }
+
+  pub fn with_custom_headers(self, custom_header_byte_count: u16) -> Self {
+    Self {
+      custom_header_byte_count,
+      ..self
+    }
+  }
+
+  pub fn size(self) -> u64 {
     0
   }
 
-  pub fn object_id() -> u64 {
-    Self::size() + 5
+  pub fn object_id(self) -> u64 {
+    self.size() + 5
   }
 
-  pub fn key_len() -> u64 {
-    Self::object_id() + 8
+  pub fn key_len(self) -> u64 {
+    self.object_id() + 8
   }
 
-  pub fn key() -> u64 {
-    Self::key_len() + 2
+  pub fn key(self) -> u64 {
+    self.key_len() + 2
   }
 
-  pub fn with_key_len(key_len: u16) -> InodeOffsetFromKey {
-    InodeOffsetFromKey {
-      base: Self::key(),
-      key_len,
-    }
-  }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct InodeOffsetFromKey {
-  base: u64,
-  key_len: u16,
-}
-impl InodeOffsetFromKey {
   pub fn lpage_segments(self) -> u64 {
-    self.base + u64::from(self.key_len)
+    self.key() + u64::from(self.key_len)
   }
 
-  pub fn with_lpage_segments(self, lpage_segment_count: u64) -> InodeOffsetFromLpageSegments {
-    InodeOffsetFromLpageSegments {
-      base: self.lpage_segments(),
-      lpage_segment_count,
-    }
-  }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct InodeOffsetFromLpageSegments {
-  base: u64,
-  lpage_segment_count: u64,
-}
-impl InodeOffsetFromLpageSegments {
   pub fn lpage_segment(self, idx: u64) -> u64 {
-    self.base + 5 * idx
+    self.lpage_segments() + 6 * idx
   }
 
   pub fn tail_segment_count(self) -> u64 {
@@ -104,57 +108,36 @@ impl InodeOffsetFromLpageSegments {
     self.tail_segment_count() + 1
   }
 
-  pub fn with_tail_segments(self, tail_segment_count: u8) -> InodeOffsetFromTailSegments {
-    InodeOffsetFromTailSegments {
-      base: self.tail_segments(),
-      tail_segment_count,
-    }
-  }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct InodeOffsetFromTailSegments {
-  base: u64,
-  tail_segment_count: u8,
-}
-impl InodeOffsetFromTailSegments {
   pub fn tail_segment(self, idx: u8) -> u64 {
-    self.base + 6 * u64::from(idx)
+    self.tail_segments() + 7 * u64::from(idx)
   }
 
-  pub fn custom_metadata_byte_count(self) -> u64 {
+  pub fn tail_segment_page_size_pow2(self, idx: u8) -> u64 {
+    self.tail_segment(idx) + 0
+  }
+
+  pub fn tail_segment_page_dev_offset(self, idx: u8) -> u64 {
+    self.tail_segment_page_size_pow2(idx) + 1
+  }
+
+  pub fn custom_header_byte_count(self) -> u64 {
     self.tail_segment(self.tail_segment_count)
   }
 
-  pub fn custom_metadata_entry_count(self) -> u64 {
-    self.custom_metadata_byte_count() + 2
+  pub fn custom_header_entry_count(self) -> u64 {
+    self.custom_header_byte_count() + 2
   }
 
-  pub fn custom_metadata(self) -> u64 {
-    self.custom_metadata_entry_count() + 2
+  pub fn custom_headers(self) -> u64 {
+    self.custom_header_entry_count() + 2
   }
 
-  pub fn with_custom_metadata(
-    self,
-    custom_metadata_byte_count: u16,
-  ) -> InodeOffsetFromCustomMetadata {
-    InodeOffsetFromCustomMetadata {
-      base: self.custom_metadata(),
-      custom_metadata_byte_count,
-    }
-  }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct InodeOffsetFromCustomMetadata {
-  base: u64,
-  custom_metadata_byte_count: u16,
-}
-impl InodeOffsetFromCustomMetadata {
   pub fn _total_inode_size(self) -> u64 {
-    self.base + u64::from(self.custom_metadata_byte_count)
+    self.custom_headers() + u64::from(self.custom_header_byte_count)
   }
 }
+
+pub(crate) const INODE_OFF: InodeOffsets = InodeOffsets::default();
 
 // This makes it so that a read of the inode up to and including the key is at most exactly 512 bytes, which is a well-aligned well-sized no-waste read from most SSDs. In case you're worried that it's not long enough, this is 497 bytes:
 // aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -170,17 +153,19 @@ pub const INO_KEY_LEN_MAX: u16 = 497;
 pub async fn release_inode(
   txn: &mut Transaction,
   dev: &SeekableAsyncFile,
-  pages: &mut PagesMut,
+  pages: &Pages,
   alloc: &mut Allocator,
   page_dev_offset: u64,
   page_size_pow2: u8,
 ) {
   let lpage_size_pow2 = pages.lpage_size_pow2;
   let raw = dev.read_at(page_dev_offset, 1 << page_size_pow2).await;
-  let object_size = raw.read_u40_be_at(InodeOffset::size());
-  let key_len = raw.read_u16_be_at(InodeOffset::key_len());
+  let object_size = raw.read_u40_be_at(INODE_OFF.size());
+  let key_len = raw.read_u16_be_at(INODE_OFF.key_len());
   let lpage_segment_count = object_size / (1 << pages.lpage_size_pow2);
-  let off = InodeOffset::with_key_len(key_len).with_lpage_segments(lpage_segment_count);
+  let off = INODE_OFF
+    .with_key_len(key_len)
+    .with_lpage_segments(lpage_segment_count);
   for i in 0..lpage_segment_count {
     let page_dev_offset = raw.read_u48_be_at(off.lpage_segment(i));
     alloc
@@ -215,7 +200,7 @@ pub fn calculate_object_tail_segments(
   spage_size: u64,
   lpage_size: u64,
   object_size: u64,
-  max_segments: usize,
+  max_segments: u8,
   fitness_factor: u64,
 ) -> Vec<u64> {
   // Initial invariant checks.
@@ -231,7 +216,9 @@ pub fn calculate_object_tail_segments(
   loop {
     let mut page_size = max(spage_size, rem.next_power_of_two());
     // If we've reached the spage size, or we've run out of segments, or we've reached an acceptable internal fragmentation amount (even if we could reduce it more by using more unused segments), we can stop.
-    if segments.len() == max_segments - 1 || page_size == spage_size || page_size - rem <= max_frag
+    if u8!(segments.len()) == max_segments - 1
+      || page_size == spage_size
+      || page_size - rem <= max_frag
     {
       segments.push(page_size);
       break;
@@ -251,7 +238,7 @@ pub fn calculate_object_tail_segments(
 
   // Extra final logic sanity checks.
   assert_is_strictly_descending(&segments);
-  assert!(segments.len() <= max_segments);
+  assert!(u8!(segments.len()) <= max_segments);
 
   // Return output.
   segments

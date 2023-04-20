@@ -1,32 +1,27 @@
 use super::OpResult;
 use crate::ctx::Ctx;
-use crate::incomplete_slots::IncompleteSlotId;
-use crate::inode::get_object_alloc_cfg;
-use crate::inode::ObjectAllocCfg;
-use crate::inode::INO_OFFSETOF_KEY;
-use crate::inode::INO_OFFSETOF_KEY_LEN;
-use crate::inode::INO_OFFSETOF_NEXT_INODE_DEV_OFFSET;
-use crate::inode::INO_OFFSETOF_OBJ_ID;
-use crate::inode::INO_OFFSETOF_SIZE;
-use crate::inode::INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET;
-use crate::inode::INO_OFFSETOF_TILE_IDX;
-use crate::inode::INO_SIZE;
+use crate::inode::calculate_object_tail_segments;
+use crate::inode::INODE_OFF;
 use crate::op::key_debug_str;
+use off64::int::create_u16_be;
+use off64::int::Off64WriteMutInt;
+use off64::u16;
+use off64::u8;
 use off64::usz;
-use off64::Off64Int;
-use off64::Off64Slice;
+use off64::Off64AsyncWrite;
+use off64::Off64WriteMut;
 use std::sync::Arc;
 use tracing::trace;
-use write_journal::AtomicWriteGroup;
 
 pub struct OpCreateObjectInput {
   pub key: Vec<u8>,
   pub size: u64,
+  pub custom_headers: Vec<(String, String)>,
 }
 
 pub struct OpCreateObjectOutput {
+  pub inode_dev_offset: u64,
   pub object_id: u64,
-  pub incomplete_slot_id: IncompleteSlotId,
 }
 
 pub(crate) async fn op_create_object(
@@ -34,75 +29,112 @@ pub(crate) async fn op_create_object(
   req: OpCreateObjectInput,
 ) -> OpResult<OpCreateObjectOutput> {
   let key_len: u16 = req.key.len().try_into().unwrap();
-  let ObjectAllocCfg {
-    tile_count,
-    tail_len,
-  } = get_object_alloc_cfg(req.size);
-  let inode_size = INO_SIZE(key_len, tile_count.into());
+  let lpage_segment_count = req.size / ctx.pages.lpage_size();
+  let tail_segments = calculate_object_tail_segments(
+    ctx.pages.spage_size(),
+    ctx.pages.lpage_size(),
+    req.size,
+    ctx.max_tail_segment_count,
+    ctx.fitness_factor,
+  );
+  let tail_segment_count = u8!(tail_segments.len());
+  let custom_header_count = u16!(req.custom_headers.len());
+
+  let mut custom_headers_raw = Vec::new();
+  // TODO Validations?
+  // - Name length.
+  // - Value length.
+  // - Lowercase.
+  // - Duplicates.
+  // - Characters that are not ASCII.
+  // - Characters that are not display characters.
+  // - Invalid characters.
+  // - Whitespace in headers. (Could be malicious.)
+  // - Whitelist of allowed overrides if not `x-`.
+  for (name, value) in req.custom_headers {
+    custom_headers_raw.extend_from_slice(&create_u16_be(name.len().try_into().unwrap()));
+    custom_headers_raw.extend_from_slice(&create_u16_be(value.len().try_into().unwrap()));
+    custom_headers_raw.extend_from_slice(name.as_bytes());
+    custom_headers_raw.extend_from_slice(value.as_bytes());
+  }
+
+  let off = INODE_OFF
+    .with_key_len(key_len)
+    .with_lpage_segments(lpage_segment_count)
+    .with_tail_segments(tail_segment_count)
+    .with_custom_headers(u16!(custom_headers_raw.len()));
+  let inode_size = off._total_inode_size();
+  // TODO
+  if inode_size > ctx.pages.lpage_size() {
+    panic!("inode too large");
+  };
+
   trace!(
     key = key_debug_str(&req.key),
     inode_size,
     size = req.size,
-    solid_tile_count = tile_count,
-    tail_fragment_len = tail_len,
+    lpage_segment_count = lpage_segment_count,
+    tail_segment_count = tail_segment_count,
     "creating object"
   );
 
-  let mut writes = Vec::with_capacity(5 + usz!(tile_count));
+  let mut inode_raw = vec![0u8; usz!(inode_size)];
+  inode_raw.write_u40_be_at(off.size(), req.size);
+  inode_raw.write_u16_be_at(off.key_len(), key_len);
+  inode_raw.write_at(off.key(), &req.key);
+  inode_raw[usz!(off.tail_segment_count())] = tail_segment_count;
+  inode_raw.write_u16_be_at(
+    off.custom_header_byte_count(),
+    u16!(custom_headers_raw.len()),
+  );
+  inode_raw.write_u16_be_at(off.custom_header_entry_count(), custom_header_count);
+  inode_raw.write_at(off.custom_headers(), &custom_headers_raw);
 
-  let (change_serial, inode_dev_offset, tiles, tail_dev_offset) = {
-    let mut free_list = ctx.free_list.lock().await;
-    let inode_dev_offset = free_list.allocate_fragment(&mut writes, inode_size.try_into().unwrap());
-    let tiles = free_list.allocate_tiles(&mut writes, tile_count);
-    let tail_dev_offset = if tail_len == 0 {
-      0
-    } else {
-      free_list.allocate_fragment(&mut writes, tail_len.try_into().unwrap())
-    };
-    (
-      free_list.generate_change_serial(),
-      inode_dev_offset,
-      tiles,
-      tail_dev_offset,
-    )
+  let (txn, inode_dev_offset, object_id) = {
+    let mut state = ctx.state.write().await;
+    let mut txn = ctx.journal.begin_transaction();
+
+    let object_id = state.object_id_serial.next(&mut txn);
+    inode_raw.write_u64_be_at(off.object_id(), object_id);
+
+    // TODO Parallelise all awaits and loops.
+    let inode_dev_offset = state
+      .allocator
+      .allocate(&mut txn, &ctx.pages, inode_size)
+      .await;
+    for i in 0..lpage_segment_count {
+      let lpage_dev_offset = state
+        .allocator
+        .allocate(&mut txn, &ctx.pages, ctx.pages.lpage_size())
+        .await;
+      inode_raw.write_u48_be_at(off.lpage_segment(i), lpage_dev_offset);
+    }
+    for (i, tail_segment_page_size) in tail_segments.into_iter().enumerate() {
+      let i = u8!(i);
+      let page_dev_offset = state
+        .allocator
+        .allocate(&mut txn, &ctx.pages, tail_segment_page_size)
+        .await;
+      inode_raw[usz!(off.tail_segment_page_size_pow2(i))] = u8!(tail_segment_page_size.ilog2());
+      inode_raw.write_u48_be_at(off.tail_segment_page_dev_offset(i), page_dev_offset);
+    }
+
+    (txn, inode_dev_offset, object_id)
   };
-  let object_id = ctx.object_id_serial.next(&mut writes);
-  let incomplete_slot_id = ctx
-    .incomplete_slots
-    .allocate_slot(&mut writes, object_id, inode_dev_offset)
-    .await;
 
   trace!(
     key = key_debug_str(&req.key),
     object_id,
     inode_dev_offset,
-    solid_tiles = format!("{:?}", tiles),
-    tail_fragment_dev_offset = tail_dev_offset,
     "allocated object"
   );
 
-  let mut inode_raw = vec![0u8; usz!(inode_size)];
-  inode_raw.write_u48_be_at(INO_OFFSETOF_NEXT_INODE_DEV_OFFSET, 0);
-  inode_raw.write_u48_be_at(INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, tail_dev_offset);
-  inode_raw.write_u40_be_at(INO_OFFSETOF_SIZE, req.size);
-  inode_raw.write_u64_be_at(INO_OFFSETOF_OBJ_ID, object_id);
-  inode_raw.write_u16_be_at(INO_OFFSETOF_KEY_LEN, key_len);
-  inode_raw.write_slice_at(INO_OFFSETOF_KEY, &req.key);
-  for (tile_idx, &tile_no) in tiles.iter().enumerate() {
-    let tile_idx: u16 = tile_idx.try_into().unwrap();
-    inode_raw.write_u24_be_at(INO_OFFSETOF_TILE_IDX(key_len, tile_idx), tile_no);
-  }
-
   ctx.device.write_at(inode_dev_offset, inode_raw).await;
-
-  ctx
-    .journal
-    .write(change_serial, AtomicWriteGroup(writes))
-    .await;
+  ctx.journal.commit_transaction(txn).await;
   trace!(key = key_debug_str(&req.key), object_id, "object created");
 
   Ok(OpCreateObjectOutput {
+    inode_dev_offset,
     object_id,
-    incomplete_slot_id,
   })
 }

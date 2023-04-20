@@ -66,7 +66,7 @@ incomplete_list_state
 deleted_list_state
 allocator_state
 buckets
-journal
+journal // Placed here to make use of otherwise unused space due to heap alignment.
 heap
 
 **/

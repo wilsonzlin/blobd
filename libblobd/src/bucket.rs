@@ -32,7 +32,7 @@ Structure
 ---------
 
 u8 count_log2_between_12_and_40_inclusive
-u40[] dev_offset_rshifted_by_8_or_zero
+u40[] dev_offset_rshift8_or_zero
 
 **/
 

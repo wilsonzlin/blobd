@@ -1,8 +1,8 @@
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use off64::int::Off64ReadInt;
+use off64::int::Off64WriteMutInt;
 use off64::usz;
-use off64::Off64Int;
-use std::ops::Deref;
 use std::sync::Arc;
 use write_journal::Transaction;
 use write_journal::WriteJournal;
@@ -196,11 +196,7 @@ impl Pages {
   /// `spage_size_pow2` must be at least 8 (256 bytes).
   /// `lpage_size_pow2` must be at least `spage_size_pow2` and at most 64.
   /// WARNING: For all these fast bitwise calculations to be correct, the heap needs to be aligned to `2^lpage_size_pow2` i.e. start at an address that is a multiple of the large page size in bytes.
-  pub fn new(
-    journal: Arc<WriteJournal>,
-    spage_size_pow2: u8,
-    lpage_size_pow2: u8,
-  ) -> (Arc<Pages>, PagesMut) {
+  pub fn new(journal: Arc<WriteJournal>, spage_size_pow2: u8, lpage_size_pow2: u8) -> Pages {
     assert!(spage_size_pow2 >= 8);
     assert!(lpage_size_pow2 >= spage_size_pow2 && lpage_size_pow2 <= 64);
     // `lpage` means a page of the largest size. `spage` means a page of the smallest size. A data lpage contains actual data, while a metadata lpage contains the page headers for all spages in the following N data lpages (see following code for value of N). Both are lpages (i.e. pages of the largest page size). A data lpage can have X spages, where X is how many pages of the smallest size can fit in one page of the largest size.
@@ -216,14 +212,21 @@ impl Pages {
     let block_size_pow2 = data_lpages_max_pow2 + lpage_size_pow2;
     let block_size = 1 << block_size_pow2;
     let block_mask = block_size - 1;
-    let pages = Arc::new(Pages {
+    Pages {
       block_mask,
       block_size,
       journal,
       lpage_size_pow2,
       spage_size_pow2,
-    });
-    (pages.clone(), PagesMut { pages })
+    }
+  }
+
+  pub fn spage_size(&self) -> u64 {
+    1 << self.spage_size_pow2
+  }
+
+  pub fn lpage_size(&self) -> u64 {
+    1 << self.lpage_size_pow2
   }
 
   fn get_page_header_dev_offset(&self, page_dev_offset: u64) -> u64 {
@@ -261,16 +264,9 @@ impl Pages {
       .await;
     hdr
   }
-}
 
-// This is a separate struct to make sure changes are ordered, locked, and inside a transaction, while still allowing concurrent read access. This does not implement Clone, can only be created via `Pages::new` (i.e. no dangling copies), and all methods take `&mut self`.
-pub(crate) struct PagesMut {
-  pages: Arc<Pages>,
-}
-
-impl PagesMut {
   // Technically, this function is unnecessary, assuming 100% correct code: we should never read from a page that is of the wrong type or has been split/merged (and doesn't exist at the time). However, out of an abundance of caution, we use this method for some extra safety.
-  pub fn clear_page_header(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
+  pub fn clear_page_header(&self, txn: &mut Transaction, page_dev_offset: u64) {
     let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
     let mut out = vec![0u8; usz!(PAGE_HEADER_CAP)];
     // WARNING: We must use overlay, even though we're clearing. Otherwise, reads will go through to stale device data.
@@ -278,7 +274,7 @@ impl PagesMut {
   }
 
   pub fn write_page_header<H: PageHeader>(
-    &mut self,
+    &self,
     txn: &mut Transaction,
     page_dev_offset: u64,
     // WARNING: This must be correct, and not deviate from the page's current size.
@@ -293,7 +289,7 @@ impl PagesMut {
   }
 
   pub async fn update_page_header<H: PageHeader>(
-    &mut self,
+    &self,
     txn: &mut Transaction,
     page_dev_offset: u64,
     f: impl FnOnce(&mut H) -> (),
@@ -303,13 +299,5 @@ impl PagesMut {
       .await;
     f(&mut hdr);
     self.write_page_header(txn, page_dev_offset, size, hdr);
-  }
-}
-
-impl Deref for PagesMut {
-  type Target = Pages;
-
-  fn deref(&self) -> &Self::Target {
-    &self.pages
   }
 }
