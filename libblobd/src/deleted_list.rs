@@ -43,12 +43,8 @@ pub struct DeletedList {
 impl DeletedList {
   pub fn load_from_device(dev: SeekableAsyncFile, dev_offset: u64, reap_after_secs: u64) -> Self {
     assert!(reap_after_secs >= DELETE_REAP_DELAY_SEC_MIN);
-    let head = dev
-      .read_at_sync(dev_offset + OFFSETOF_HEAD, 6)
-      .read_u48_be_at(0);
-    let tail = dev
-      .read_at_sync(dev_offset + OFFSETOF_TAIL, 6)
-      .read_u48_be_at(0);
+    let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD);
+    let tail = dev.read_u48_be_at(dev_offset + OFFSETOF_TAIL);
     Self {
       dev,
       dev_offset,

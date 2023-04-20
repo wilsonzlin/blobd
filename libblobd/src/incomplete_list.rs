@@ -1,11 +1,11 @@
 use crate::allocator::Allocator;
 use crate::inode::release_inode;
 use crate::page::IncompleteInodePageHeader;
-use crate::page::PagesMut;
+use crate::page::Pages;
 use chrono::Utc;
-use off64::create_u48_be;
+use off64::int::create_u48_be;
+use off64::int::Off64AsyncReadInt;
 use off64::usz;
-use off64::Off64Int;
 use seekable_async_file::SeekableAsyncFile;
 use write_journal::Transaction;
 
@@ -46,13 +46,13 @@ fn get_now_hour() -> u32 {
 }
 
 impl IncompleteList {
-  pub fn load_from_device(dev: SeekableAsyncFile, dev_offset: u64, reap_after_hours: u32) -> Self {
-    let head = dev
-      .read_at_sync(dev_offset + OFFSETOF_HEAD, 6)
-      .read_u48_be_at(0);
-    let tail = dev
-      .read_at_sync(dev_offset + OFFSETOF_TAIL, 6)
-      .read_u48_be_at(0);
+  pub async fn load_from_device(
+    dev: SeekableAsyncFile,
+    dev_offset: u64,
+    reap_after_hours: u32,
+  ) -> Self {
+    let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD).await;
+    let tail = dev.read_u48_be_at(dev_offset + OFFSETOF_TAIL).await;
     Self {
       dev,
       dev_offset,
@@ -87,7 +87,7 @@ impl IncompleteList {
   pub async fn attach(
     &mut self,
     txn: &mut Transaction,
-    pages: &mut PagesMut,
+    pages: &Pages,
     page_dev_offset: u64,
     page_size_pow2: u8,
   ) {
@@ -115,12 +115,7 @@ impl IncompleteList {
   }
 
   /// WARNING: This does not update, overwrite, or clear the page header.
-  pub async fn detach(
-    &mut self,
-    txn: &mut Transaction,
-    pages: &mut PagesMut,
-    page_dev_offset: u64,
-  ) {
+  pub async fn detach(&mut self, txn: &mut Transaction, pages: &Pages, page_dev_offset: u64) {
     let hdr = pages
       .read_page_header::<IncompleteInodePageHeader>(page_dev_offset)
       .await;
@@ -143,7 +138,7 @@ impl IncompleteList {
   pub async fn maybe_reap_next(
     &mut self,
     txn: &mut Transaction,
-    pages: &mut PagesMut,
+    pages: &Pages,
     alloc: &mut Allocator,
   ) -> bool {
     let page_dev_offset = self.head;

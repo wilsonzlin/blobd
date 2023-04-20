@@ -40,16 +40,10 @@ impl Allocator {
   ) -> Self {
     // Getting the buddy of a page using only XOR requires that the heap starts at an address aligned to the lpage size.
     assert_eq!(heap_dev_offset % (1 << pages.lpage_size_pow2), 0);
-    let frontier_dev_offset = dev
-      .read_at_sync(ALLOCSTATE_OFFSETOF_FRONTIER, 8)
-      .read_u64_be_at(0);
+    let frontier_dev_offset = dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_FRONTIER);
     let page_sizes = pages.lpage_size_pow2 - pages.spage_size_pow2;
     let free_list_head = (0..page_sizes)
-      .map(|i| {
-        dev
-          .read_at_sync(ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(i), 8)
-          .read_u64_be_at(0)
-      })
+      .map(|i| dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(i)))
       .collect_vec();
     Self {
       state_dev_offset,
@@ -225,13 +219,23 @@ impl Allocator {
     }
   }
 
-  pub async fn allocate(&mut self, txn: &mut Transaction, pages: &Pages, size: u64) -> u64 {
+  pub async fn allocate_with_page_size(
+    &mut self,
+    txn: &mut Transaction,
+    pages: &Pages,
+    size: u64,
+  ) -> (u64, u8) {
     let pow2 = max(
       pages.spage_size_pow2,
       size.next_power_of_two().ilog2().try_into().unwrap(),
     );
     assert!(pow2 <= pages.lpage_size_pow2);
-    self.allocate_page(txn, pages, pow2).await
+    (self.allocate_page(txn, pages, pow2).await, pow2)
+  }
+
+  pub async fn allocate(&mut self, txn: &mut Transaction, pages: &Pages, size: u64) -> u64 {
+    let (page_dev_offset, _) = self.allocate_with_page_size(txn, pages, size).await;
+    page_dev_offset
   }
 
   #[async_recursion]

@@ -8,7 +8,6 @@ use off64::int::Off64WriteMutInt;
 use off64::u16;
 use off64::u8;
 use off64::usz;
-use off64::Off64AsyncWrite;
 use off64::Off64WriteMut;
 use std::sync::Arc;
 use tracing::trace;
@@ -98,9 +97,9 @@ pub(crate) async fn op_create_object(
     inode_raw.write_u64_be_at(off.object_id(), object_id);
 
     // TODO Parallelise all awaits and loops.
-    let inode_dev_offset = state
+    let (inode_dev_offset, inode_page_size_pow2) = state
       .allocator
-      .allocate(&mut txn, &ctx.pages, inode_size)
+      .allocate_with_page_size(&mut txn, &ctx.pages, inode_size)
       .await;
     for i in 0..lpage_segment_count {
       let lpage_dev_offset = state
@@ -118,6 +117,11 @@ pub(crate) async fn op_create_object(
       inode_raw[usz!(off.tail_segment_page_size_pow2(i))] = u8!(tail_segment_page_size.ilog2());
       inode_raw.write_u48_be_at(off.tail_segment_page_dev_offset(i), page_dev_offset);
     }
+
+    state
+      .incomplete_list
+      .attach(&mut txn, &ctx.pages, inode_dev_offset, inode_page_size_pow2)
+      .await;
 
     (txn, inode_dev_offset, object_id)
   };

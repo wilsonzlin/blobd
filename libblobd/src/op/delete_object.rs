@@ -48,13 +48,11 @@ pub(crate) async fn delete_object_in_locked_bucket_if_exists(
   // mmap memory should already be in page cache.
   let object_size = ctx
     .device
-    .read_at_sync(inode_dev_offset + INO_OFFSETOF_SIZE, 5)
-    .read_u40_be_at(0);
+    .read_u40_be_at(inode_dev_offset + INO_OFFSETOF_SIZE);
   let alloc_cfg = get_object_alloc_cfg(object_size);
   let tail_dev_offset = ctx
     .device
-    .read_at_sync(inode_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6)
-    .read_u48_be_at(0);
+    .read_u48_be_at(inode_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET);
   let tiles = ctx
     .device
     .read_at_sync(

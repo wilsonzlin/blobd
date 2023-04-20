@@ -13,7 +13,7 @@ pub(crate) struct ObjectIdSerial {
 
 impl ObjectIdSerial {
   pub fn load_from_device(dev: &SeekableAsyncFile, dev_offset: u64) -> Self {
-    let next = dev.read_at_sync(dev_offset, 8).read_u64_be_at(0);
+    let next = dev.read_u64_be_at(dev_offset);
     debug!(next_id = next, "object ID serial loaded");
     Self {
       dev_offset,

@@ -82,18 +82,15 @@ fn create_read_object_stream(
         u64::from(
           ctx
             .device
-            .read_at_sync(
+            .read_u24_be_at(
               inode_dev_offset + INO_OFFSETOF_TILE_IDX(key_len, tile_idx),
-              3,
-            )
-            .read_u24_be_at(0),
+            ),
         ) * TILE_SIZE_U64
       } else {
         // mmap memory should already be in page cache.
         ctx
           .device
-          .read_at_sync(inode_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET, 6)
-          .read_u48_be_at(0)
+          .read_u48_be_at(inode_dev_offset + INO_OFFSETOF_TAIL_FRAG_DEV_OFFSET)
       };
       assert!(data_dev_offset > 0);
 
@@ -156,8 +153,7 @@ pub(crate) async fn op_read_object(
   // mmap memory should already be in page cache.
   let object_size = ctx
     .device
-    .read_at_sync(inode_dev_offset + INO_OFFSETOF_SIZE, 5)
-    .read_u40_be_at(0);
+    .read_u40_be_at(inode_dev_offset + INO_OFFSETOF_SIZE);
   let start = req.start;
   // Exclusive.
   let end = req.end.unwrap_or(object_size);

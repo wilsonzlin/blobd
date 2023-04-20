@@ -35,8 +35,7 @@ pub(crate) async fn op_inspect_object(
   // mmap memory should already be in page cache.
   let object_size = ctx
     .device
-    .read_at_sync(inode_dev_offset + INO_OFFSETOF_SIZE, 5)
-    .read_u40_be_at(0);
+    .read_u40_be_at(inode_dev_offset + INO_OFFSETOF_SIZE);
 
   Ok(OpInspectObjectOutput {
     object_id,
