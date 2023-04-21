@@ -1,13 +1,13 @@
-use crate::inode::InodeOffset;
+use crate::inode::INODE_OFF;
 use crate::inode::INO_KEY_LEN_MAX;
 use crate::page::ActiveInodePageHeader;
 use crate::page::Pages;
 use crate::page::MIN_PAGE_SIZE_POW2;
 use itertools::Itertools;
-use off64::create_u40_be;
+use off64::int::create_u40_be;
+use off64::int::Off64ReadInt;
 use off64::usz;
-use off64::Off64Int;
-use off64::Off64Slice;
+use off64::Off64Read;
 use seekable_async_file::SeekableAsyncFile;
 use std::sync::Arc;
 use tokio::join;
@@ -55,34 +55,39 @@ pub(crate) struct FoundInode {
 }
 
 pub(crate) struct Buckets {
-  buckets: Vec<RwLock<()>>,
+  bucket_count_pow2: u8,
+  bucket_lock_count_pow2: u8,
+  bucket_locks: Vec<RwLock<()>>,
   dev_offset: u64,
   dev: SeekableAsyncFile,
   journal: WriteJournal,
-  key_mask: u64,
   pages: Arc<Pages>,
 }
 
 impl Buckets {
-  pub fn load_from_device(
+  pub async fn load_from_device(
     dev: SeekableAsyncFile,
     journal: WriteJournal,
     pages: Arc<Pages>,
     dev_offset: u64,
-    bucket_lock_count: u64,
+    bucket_lock_count_pow2: u8,
   ) -> Buckets {
-    let count = 1u64 << dev.read_at_sync(dev_offset, 1)[0];
-    let key_mask = count - 1;
-    let buckets = (0..bucket_lock_count)
+    let bucket_count_pow2 = dev.read_at(dev_offset, 1).await[0];
+    let bucket_locks = (0..1 << bucket_lock_count_pow2)
       .map(|_| RwLock::new(()))
       .collect_vec();
-    debug!(bucket_count = count, "buckets loaded");
+    debug!(
+      bucket_count = 1 << bucket_count_pow2,
+      bucket_lock_count = 1 << bucket_lock_count_pow2,
+      "buckets loaded"
+    );
     Buckets {
-      buckets,
+      bucket_count_pow2,
+      bucket_lock_count_pow2,
+      bucket_locks,
       dev_offset,
       dev,
       journal,
-      key_mask,
       pages,
     }
   }
@@ -94,11 +99,11 @@ impl Buckets {
   }
 
   pub fn bucket_id_for_key(&self, key: &[u8]) -> u64 {
-    hash64(key) & self.key_mask
+    hash64(key) >> (64 - self.bucket_count_pow2)
   }
 
   pub fn get_bucket_lock(&self, id: u64) -> &RwLock<()> {
-    &self.buckets[usz!(id)]
+    &self.bucket_locks[usz!(id >> (self.bucket_count_pow2 - self.bucket_lock_count_pow2))]
   }
 
   pub async fn get_bucket_head(&self, id: u64) -> u64 {
@@ -117,6 +122,7 @@ impl Buckets {
     );
   }
 
+  /// WARNING: Call this only when a lock (read or write) has been acquired on the bucket.
   pub async fn find_inode_in_bucket(
     &self,
     bucket_id: u64,
@@ -133,20 +139,20 @@ impl Buckets {
     while dev_offset > 0 {
       let (hdr, raw) = join! {
         self.pages.read_page_header::<ActiveInodePageHeader>(dev_offset),
-        self.dev.read_at(dev_offset, InodeOffset::with_key_len(INO_KEY_LEN_MAX).lpage_segments()),
+        self.dev.read_at(dev_offset, INODE_OFF.with_key_len(INO_KEY_LEN_MAX).lpage_segments()),
       };
       let next_dev_offset = hdr.next;
-      let object_id = raw.read_u64_be_at(InodeOffset::object_id());
+      let object_id = raw.read_u64_be_at(INODE_OFF.object_id());
       if (expected_object_id.is_none() || expected_object_id.unwrap() == object_id)
-        && raw.read_u16_be_at(InodeOffset::key_len()) == key_len
-        && raw.read_slice_at(InodeOffset::key(), key_len.into()) == key
+        && raw.read_u16_be_at(INODE_OFF.key_len()) == key_len
+        && raw.read_at(INODE_OFF.key(), key_len.into()) == key
       {
         return Some(FoundInode {
           dev_offset,
           next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0),
           object_id,
           prev_dev_offset,
-          size: raw.read_u40_be_at(InodeOffset::size()),
+          size: raw.read_u40_be_at(INODE_OFF.size()),
         });
       };
       prev_dev_offset = Some(dev_offset);
