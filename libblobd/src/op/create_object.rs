@@ -30,9 +30,8 @@ pub(crate) async fn op_create_object(
   let key_len: u16 = req.key.len().try_into().unwrap();
   let InodeLayout {
     lpage_segment_count,
-    tail_segment_pages_pow2,
+    tail_segment_page_sizes_pow2,
   } = calc_inode_layout(&ctx.pages, req.size);
-  let tail_segment_count = u8!(tail_segment_pages_pow2.len());
   let custom_header_count = u16!(req.custom_headers.len());
 
   let mut custom_headers_raw = Vec::new();
@@ -56,7 +55,7 @@ pub(crate) async fn op_create_object(
   let off = INODE_OFF
     .with_key_len(key_len)
     .with_lpage_segments(lpage_segment_count)
-    .with_tail_segments(tail_segment_count)
+    .with_tail_segments(tail_segment_page_sizes_pow2.len())
     .with_custom_headers(u16!(custom_headers_raw.len()));
   let inode_size = off._total_inode_size();
   // TODO
@@ -68,8 +67,8 @@ pub(crate) async fn op_create_object(
     key = key_debug_str(&req.key),
     inode_size,
     size = req.size,
-    lpage_segment_count = lpage_segment_count,
-    tail_segment_count = tail_segment_count,
+    lpage_segment_count,
+    tail_segment_count = tail_segment_page_sizes_pow2.len(),
     "creating object"
   );
 
@@ -103,11 +102,10 @@ pub(crate) async fn op_create_object(
         .await;
       inode_raw.write_u48_be_at(off.lpage_segment(i), lpage_dev_offset);
     }
-    for (i, tail_segment_page_size_pow2) in tail_segments.into_iter().enumerate() {
-      let i = u8!(i);
+    for (i, tail_segment_page_size_pow2) in tail_segment_page_sizes_pow2 {
       let page_dev_offset = state
         .allocator
-        .allocate(&mut txn, &ctx.pages, tail_segment_page_size_pow2)
+        .allocate(&mut txn, &ctx.pages, 1 << tail_segment_page_size_pow2)
         .await;
       inode_raw.write_u48_be_at(off.tail_segment(i), page_dev_offset);
     }

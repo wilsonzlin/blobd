@@ -8,7 +8,7 @@ use write_journal::Transaction;
 use write_journal::WriteJournal;
 
 pub(crate) const MIN_PAGE_SIZE_POW2: u8 = 8;
-pub(crate) const MAX_PAGE_SIZE_POW2: u8 = 64;
+pub(crate) const MAX_PAGE_SIZE_POW2: u8 = 32;
 
 /// WARNING: Do not change the order of entries, as values are significant.
 /// WARNING: Do not use zero, so we can detect cleared page headers.

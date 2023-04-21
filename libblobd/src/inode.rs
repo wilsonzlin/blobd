@@ -4,10 +4,9 @@ use crate::util::ceil_pow2;
 use crate::util::div_mod_pow2;
 use off64::int::Off64ReadInt;
 use off64::u8;
-use off64::usz;
 use seekable_async_file::SeekableAsyncFile;
-use std::cmp::max;
 use std::fmt::Debug;
+use std::ops::Index;
 use write_journal::Transaction;
 
 /**
@@ -134,27 +133,125 @@ pub(crate) const INODE_OFF: InodeOffsets = InodeOffsets::default();
 // aaaaaaaaaaaaaaaaa
 pub const INO_KEY_LEN_MAX: u16 = 497;
 
+// Two benefits of this over Vec<u8>:
+// - Length type is u8, which is the type for `tail_segment_count`.
+// - No heap allocations; small enough to copy.
+// How it works:
+// - Page sizes can only be from `2^8` to `2^32` (see `{MIN,MAX}_PAGE_SIZE_POW2`).
+// - There are only `32 - 8 = 24` page sizes.
+// - It takes 5 bits to represent 24 distinct values.
+// - There can be up to 24 entries, each taking 5 bits. It will take 5 bits to represent the length.
+// - We can't fit 125 bits neatly, so we split up into two shards (64-bit ints), and use 4 bits in each int to represent the length of up to 12 entries covered by its int, using exactly `4 + 12 * 5 = 64` bits.
+#[derive(Clone, Copy)]
+pub struct TailSegmentPageSizes(u64, u64);
+
+impl TailSegmentPageSizes {
+  pub fn new() -> Self {
+    Self(0, 0)
+  }
+
+  fn shard_get_len(shard: u64) -> u8 {
+    u8!((shard & (0b1111 << 60)) >> 60)
+  }
+
+  fn shard_set_len(shard: &mut u64, len: u8) {
+    assert!(len <= 12);
+    *shard &= !(0b1111 << 60);
+    *shard |= u64::from(len) << 60;
+  }
+
+  fn shard_get(shard: u64, idx: u8) -> u8 {
+    assert!(idx < 12);
+    let shift = idx * 5;
+    u8!((shard & (0b11111 << shift)) >> shift)
+  }
+
+  fn shard_set(shard: &mut u64, idx: u8, val: u8) {
+    assert!(val < (1 << 5));
+    let shift = idx * 5;
+    *shard &= !(0b11111 << shift);
+    *shard |= u64::from(val) << shift;
+  }
+
+  pub fn len(&self) -> u8 {
+    Self::shard_get_len(self.0) + Self::shard_get_len(self.1)
+  }
+
+  pub fn get(&self, idx: u8) -> Option<u8> {
+    if idx >= self.len() {
+      return None;
+    };
+    Some(if idx < 12 {
+      Self::shard_get(self.0, idx)
+    } else {
+      Self::shard_get(self.1, idx - 12)
+    })
+  }
+
+  pub fn push(&mut self, pow2: u8) {
+    let idx = self.len();
+    if idx < 12 {
+      Self::shard_set(&mut self.0, idx, pow2);
+      Self::shard_set_len(&mut self.0, idx + 1);
+    } else {
+      Self::shard_set(&mut self.1, idx - 12, pow2);
+      Self::shard_set_len(&mut self.1, idx - 12 + 1);
+    };
+  }
+}
+
+impl Index<u8> for TailSegmentPageSizes {
+  type Output = u8;
+
+  fn index(&self, index: u8) -> &Self::Output {
+    &self.get(index).unwrap()
+  }
+}
+
+impl IntoIterator for TailSegmentPageSizes {
+  type IntoIter = TailSegmentPageSizesIterator;
+  type Item = (u8, u8);
+
+  fn into_iter(self) -> Self::IntoIter {
+    TailSegmentPageSizesIterator(self, 0)
+  }
+}
+
+// Convenient iterator that provides `u8` indices instead of `.enumerate()` and `u8!(idx)`.
+pub struct TailSegmentPageSizesIterator(TailSegmentPageSizes, u8);
+
+impl Iterator for TailSegmentPageSizesIterator {
+  type Item = (u8, u8);
+
+  fn next(&mut self) -> Option<Self::Item> {
+    let idx = self.1;
+    let entry = self.0.get(idx)?;
+    self.1 += 1;
+    Some((idx, entry))
+  }
+}
+
 pub(crate) struct InodeLayout {
   pub lpage_segment_count: u64,
-  pub tail_segment_pages_pow2: Vec<u8>,
+  pub tail_segment_page_sizes_pow2: TailSegmentPageSizes,
 }
 
 pub(crate) fn calc_inode_layout(pages: &Pages, object_size: u64) -> InodeLayout {
   let (lpage_segment_count, tail_size) = div_mod_pow2(object_size, pages.lpage_size_pow2);
   let mut rem = ceil_pow2(tail_size, pages.spage_size_pow2);
-  let mut tail_segment_pages_pow2 = vec![];
+  let mut tail_segment_page_sizes_pow2 = TailSegmentPageSizes::new();
   loop {
     let pos = rem.leading_zeros();
     if pos == 64 {
       break;
     };
     let pow2 = u8!(63 - pos);
-    tail_segment_pages_pow2.push(pow2);
+    tail_segment_page_sizes_pow2.push(pow2);
     rem &= !(1 << pow2);
   }
   InodeLayout {
     lpage_segment_count,
-    tail_segment_pages_pow2,
+    tail_segment_page_sizes_pow2,
   }
 }
 
@@ -172,21 +269,20 @@ pub(crate) async fn release_inode(
   let key_len = raw.read_u16_be_at(INODE_OFF.key_len());
   let InodeLayout {
     lpage_segment_count,
-    tail_segment_pages_pow2,
+    tail_segment_page_sizes_pow2,
   } = calc_inode_layout(pages, object_size);
 
   let off = INODE_OFF
     .with_key_len(key_len)
     .with_lpage_segments(lpage_segment_count)
-    .with_tail_segments(u8!(tail_segment_pages_pow2.len()));
+    .with_tail_segments(tail_segment_page_sizes_pow2.len());
   for i in 0..lpage_segment_count {
     let page_dev_offset = raw.read_u48_be_at(off.lpage_segment(i));
     alloc
       .release(txn, pages, page_dev_offset, pages.lpage_size_pow2)
       .await;
   }
-  let tail_segment_count = raw[usz!(off.tail_segment_count())];
-  for (i, page_size_pow2) in tail_segment_pages_pow2.into_iter().enumerate() {
+  for (i, page_size_pow2) in tail_segment_page_sizes_pow2 {
     let page_dev_offset = raw.read_u48_be_at(off.tail_segment(i));
     alloc
       .release(txn, pages, page_dev_offset, page_size_pow2)

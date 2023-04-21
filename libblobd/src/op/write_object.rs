@@ -16,7 +16,6 @@ use off64::int::Off64AsyncReadInt;
 use off64::int::Off64ReadInt;
 use off64::u32;
 use off64::u64;
-use off64::u8;
 use off64::usz;
 use std::cmp::min;
 use std::error::Error;
@@ -108,12 +107,12 @@ pub(crate) async fn op_write_object<
 
   let InodeLayout {
     lpage_segment_count,
-    tail_segment_pages_pow2,
+    tail_segment_page_sizes_pow2,
   } = calc_inode_layout(&ctx.pages, size);
   let off = INODE_OFF
     .with_key_len(key_len)
     .with_lpage_segments(lpage_segment_count)
-    .with_tail_segments(u8!(tail_segment_pages_pow2.len()));
+    .with_tail_segments(tail_segment_page_sizes_pow2.len());
   // Vec of (page_size, page_dev_offset).
   let write_dev_offsets = {
     let idx = div_pow2(req.offset, ctx.pages.lpage_size_pow2);
@@ -125,11 +124,13 @@ pub(crate) async fn op_write_object<
     } else {
       let raw = ctx
         .device
-        .read_at(off.tail_segments(), 6 * u64!(tail_segment_pages_pow2.len()))
+        .read_at(
+          off.tail_segments(),
+          6 * u64!(tail_segment_page_sizes_pow2.len()),
+        )
         .await;
-      tail_segment_pages_pow2
+      tail_segment_page_sizes_pow2
         .into_iter()
-        .enumerate()
         .map(|(i, sz)| (1 << sz, raw.read_u48_be_at(u64!(i) * 6)))
         .collect_vec()
     }
