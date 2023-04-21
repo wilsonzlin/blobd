@@ -12,6 +12,7 @@ use off64::int::Off64WriteMutInt;
 use off64::usz;
 use seekable_async_file::SeekableAsyncFile;
 use std::cmp::max;
+use std::cmp::min;
 use std::sync::Arc;
 use write_journal::Transaction;
 use write_journal::WriteJournal;
@@ -250,7 +251,15 @@ impl Allocator {
   }
 
   #[async_recursion]
-  pub async fn release(&mut self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
+  pub async fn release(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
+    let (typ, page_size_pow2) = self
+      .pages
+      .read_page_header_type_and_size(page_dev_offset)
+      .await;
+    // Our current system design/logic only allows releasing deleted inodes by reaper, or from merging released buddies (this function), so let's be strict.
+    assert!(
+      typ == PageType::DeletedInode || typ == PageType::ObjectSegmentData || typ == PageType::Void
+    );
     // Check if buddy is also free so we can recompact. This doesn't apply to lpages as they don't have buddies (they aren't split).
     if page_size_pow2 < self.pages.lpage_size_pow2 {
       let buddy_page_dev_offset = page_dev_offset ^ (1 << page_size_pow2);
@@ -261,13 +270,22 @@ impl Allocator {
         == (PageType::FreePage, page_size_pow2)
       {
         // Buddy is also free. We must clear both page headers before merging them to avoid stale reads of their headers.
-        self.pages.clear_page_header(txn, page_dev_offset);
-        self.pages.clear_page_header(txn, buddy_page_dev_offset);
+        // For the left page, since we'll recursively call `release` on it, it needs to have correct size in its header for the recursive call (which will read the size) to work correctly.
+        let (left_page, right_page) = (
+          min(page_dev_offset, buddy_page_dev_offset),
+          max(page_dev_offset, buddy_page_dev_offset),
+        );
+        self
+          .pages
+          .initialise_new_page(txn, left_page, page_size_pow2 + 1)
+          .await;
+        self
+          .pages
+          .initialise_new_page(txn, right_page, page_size_pow2)
+          .await;
         // Merge by freeing parent larger page.
         let parent_page_dev_offset = page_dev_offset & !((1 << (page_size_pow2 + 1)) - 1);
-        self
-          .release(txn, parent_page_dev_offset, page_size_pow2 + 1)
-          .await;
+        self.release(txn, parent_page_dev_offset).await;
         return;
       };
     };

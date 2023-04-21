@@ -283,13 +283,6 @@ impl Pages {
       .map(|(_, hdr)| hdr)
   }
 
-  pub fn clear_page_header(&self, txn: &mut Transaction, page_dev_offset: u64) {
-    let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
-    let mut out = vec![0u8; usz!(PAGE_HEADER_CAP)];
-    // WARNING: We must use overlay, even though we're clearing. Otherwise, reads will go through to stale device data.
-    txn.write_with_overlay(hdr_dev_offset, out);
-  }
-
   // This is only to be used internally, as it's dangerous to write the size directly because page headers overlap with pages of other sizes at the same offset.
   async fn write_page_header_with_size<H: PageHeader>(
     &self,
