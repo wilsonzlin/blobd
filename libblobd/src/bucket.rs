@@ -3,15 +3,18 @@ use crate::inode::INO_KEY_LEN_MAX;
 use crate::page::ActiveInodePageHeader;
 use crate::page::Pages;
 use crate::page::MIN_PAGE_SIZE_POW2;
-use itertools::Itertools;
+use crate::stream::Stream;
 use off64::int::create_u40_be;
 use off64::int::Off64ReadInt;
 use off64::usz;
 use off64::Off64Read;
 use seekable_async_file::SeekableAsyncFile;
+use std::ops::Deref;
 use std::sync::Arc;
 use tokio::join;
 use tokio::sync::RwLock;
+use tokio::sync::RwLockReadGuard;
+use tokio::sync::RwLockWriteGuard;
 use tracing::debug;
 use twox_hash::xxh3::hash64;
 use write_journal::Transaction;
@@ -54,10 +57,148 @@ pub(crate) struct FoundInode {
   pub object_id: u64,
 }
 
+// This type exists to make sure methods are called only when holding appropriate lock.
+pub(crate) struct ReadableLockedBucket<'b, 'k> {
+  bucket_id: u64,
+  buckets: &'b Buckets,
+  key_len: u16,
+  key: &'k [u8],
+}
+
+impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
+  pub fn bucket_id(&self) -> u64 {
+    self.bucket_id
+  }
+
+  pub async fn find_inode(&self, expected_object_id: Option<u64>) -> Option<FoundInode> {
+    let buckets = self.buckets;
+    let mut dev_offset = buckets
+      .journal
+      .read_with_overlay(
+        buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id),
+        5,
+      )
+      .await
+      .read_u48_be_at(0);
+    let mut prev_dev_offset = None;
+    while dev_offset > 0 {
+      let (hdr, raw) = join! {
+        buckets.pages.read_page_header::<ActiveInodePageHeader>(dev_offset),
+        buckets.dev.read_at(dev_offset, INODE_OFF.with_key_len(INO_KEY_LEN_MAX).lpage_segments()),
+      };
+      // It's impossible for this to be any other type, as we hold write lock when changing a bucket's linked list.
+      let hdr = hdr.unwrap();
+      let next_dev_offset = hdr.next;
+      let object_id = raw.read_u64_be_at(INODE_OFF.object_id());
+      if (expected_object_id.is_none() || expected_object_id.unwrap() == object_id)
+        && raw.read_u16_be_at(INODE_OFF.key_len()) == self.key_len
+        && raw.read_at(INODE_OFF.key(), self.key_len.into()) == self.key
+      {
+        return Some(FoundInode {
+          dev_offset,
+          next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0),
+          object_id,
+          prev_dev_offset,
+          size: raw.read_u40_be_at(INODE_OFF.size()),
+        });
+      };
+      prev_dev_offset = Some(dev_offset);
+      dev_offset = next_dev_offset;
+    }
+    None
+  }
+
+  pub async fn get_head(&self) -> u64 {
+    self
+      .buckets
+      .journal
+      .read_with_overlay(
+        self.buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id),
+        5,
+      )
+      .await
+      .read_u40_be_at(0)
+      << MIN_PAGE_SIZE_POW2
+  }
+}
+
+pub(crate) struct BucketReadLocked<'b, 'k, 'l> {
+  state: ReadableLockedBucket<'b, 'k>,
+  lock: RwLockReadGuard<'l, ()>,
+}
+
+impl<'b, 'k, 'l> Deref for BucketReadLocked<'b, 'k, 'l> {
+  type Target = ReadableLockedBucket<'b, 'k>;
+
+  fn deref(&self) -> &Self::Target {
+    &self.state
+  }
+}
+
+// This struct's methods take `&mut self` to ensure write lock, even though it's not necessary.
+pub(crate) struct BucketWriteLocked<'b, 'k, 'l> {
+  state: ReadableLockedBucket<'b, 'k>,
+  lock: RwLockWriteGuard<'l, ()>,
+}
+
+impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
+  pub async fn move_object_to_deleted_list_if_exists(
+    &mut self,
+    txn: &mut Transaction,
+    stream: &mut Stream,
+  ) -> Option<()> {
+    let buckets = self.state.buckets;
+    let bkt_id = self.state.bucket_id;
+    let key = self.state.key;
+    let key_len = self.state.key_len;
+    let Some(FoundInode {
+      prev_dev_offset: prev_inode,
+      next_dev_offset: next_inode,
+      dev_offset: inode_dev_offset,
+      object_id,
+    }) = self.find_inode(None).await else {
+      return None;
+    };
+
+    match prev_inode {
+      Some(prev_inode_dev_offset) => {
+        // Update next pointer of previous inode.
+        self
+          .buckets
+          .pages
+          .update_page_header::<ActiveInodePageHeader>(txn, prev_inode_dev_offset, |p| {
+            p.next = next_inode.unwrap_or(0)
+          })
+          .await;
+      }
+      None => {
+        // Update bucket head.
+        self.mutate_head(txn, next_inode.unwrap_or(0));
+      }
+    };
+    Some(())
+  }
+
+  pub fn mutate_head(&mut self, txn: &mut Transaction, dev_offset: u64) {
+    txn.write_with_overlay(
+      self.buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id),
+      create_u40_be(dev_offset >> MIN_PAGE_SIZE_POW2).to_vec(),
+    );
+  }
+}
+
+impl<'b, 'k, 'l> Deref for BucketWriteLocked<'b, 'k, 'l> {
+  type Target = ReadableLockedBucket<'b, 'k>;
+
+  fn deref(&self) -> &Self::Target {
+    &self.state
+  }
+}
+
 pub(crate) struct Buckets {
   bucket_count_pow2: u8,
   bucket_lock_count_pow2: u8,
-  bucket_locks: Vec<RwLock<()>>,
+  bucket_locks: Vec<RwLock<Bucket>>,
   dev_offset: u64,
   dev: SeekableAsyncFile,
   journal: WriteJournal,
@@ -74,7 +215,7 @@ impl Buckets {
   ) -> Buckets {
     let bucket_count_pow2 = dev.read_at(dev_offset, 1).await[0];
     let bucket_locks = (0..1 << bucket_lock_count_pow2)
-      .map(|_| RwLock::new(()))
+      .map(|_| RwLock::new(Bucket {}))
       .collect_vec();
     debug!(
       bucket_count = 1 << bucket_count_pow2,
@@ -98,66 +239,37 @@ impl Buckets {
     dev.write_at(dev_offset, raw).await;
   }
 
-  pub fn bucket_id_for_key(&self, key: &[u8]) -> u64 {
+  fn bucket_id_for_key(&self, key: &[u8]) -> u64 {
     hash64(key) >> (64 - self.bucket_count_pow2)
   }
 
-  pub fn get_bucket_lock(&self, id: u64) -> &RwLock<()> {
-    &self.bucket_locks[usz!(id >> (self.bucket_count_pow2 - self.bucket_lock_count_pow2))]
+  fn bucket_lock_id_for_bucket_id(&self, bkt_id: u64) -> usize {
+    usz!(bkt_id >> (self.bucket_count_pow2 - self.bucket_lock_count_pow2))
   }
 
-  pub async fn get_bucket_head(&self, id: u64) -> u64 {
-    self
-      .journal
-      .read_with_overlay(self.dev_offset + BUCKETS_OFFSETOF_BUCKET(id), 5)
-      .await
-      .read_u40_be_at(0)
-      << MIN_PAGE_SIZE_POW2
-  }
-
-  pub fn mutate_bucket_head(&self, txn: &mut Transaction, bucket_id: u64, dev_offset: u64) {
-    txn.write_with_overlay(
-      self.dev_offset + BUCKETS_OFFSETOF_BUCKET(bucket_id),
-      create_u40_be(dev_offset >> MIN_PAGE_SIZE_POW2).to_vec(),
-    );
-  }
-
-  /// WARNING: Call this only when a lock (read or write) has been acquired on the bucket.
-  pub async fn find_inode_in_bucket(
-    &self,
-    bucket_id: u64,
-    key: &[u8],
-    key_len: u16,
-    expected_object_id: Option<u64>,
-  ) -> Option<FoundInode> {
-    let mut dev_offset = self
-      .journal
-      .read_with_overlay(self.dev_offset + BUCKETS_OFFSETOF_BUCKET(bucket_id), 5)
-      .await
-      .read_u48_be_at(0);
-    let mut prev_dev_offset = None;
-    while dev_offset > 0 {
-      let (hdr, raw) = join! {
-        self.pages.read_page_header::<ActiveInodePageHeader>(dev_offset),
-        self.dev.read_at(dev_offset, INODE_OFF.with_key_len(INO_KEY_LEN_MAX).lpage_segments()),
-      };
-      let next_dev_offset = hdr.next;
-      let object_id = raw.read_u64_be_at(INODE_OFF.object_id());
-      if (expected_object_id.is_none() || expected_object_id.unwrap() == object_id)
-        && raw.read_u16_be_at(INODE_OFF.key_len()) == key_len
-        && raw.read_at(INODE_OFF.key(), key_len.into()) == key
-      {
-        return Some(FoundInode {
-          dev_offset,
-          next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0),
-          object_id,
-          prev_dev_offset,
-          size: raw.read_u40_be_at(INODE_OFF.size()),
-        });
-      };
-      prev_dev_offset = Some(dev_offset);
-      dev_offset = next_dev_offset;
+  fn build_readable_locked_bucket(&self, key: &[u8]) -> ReadableLockedBucket<'_, '_> {
+    let bucket_id = self.bucket_id_for_key(key);
+    ReadableLockedBucket {
+      bucket_id,
+      buckets: self,
+      key,
+      key_len: u16!(key.len()),
     }
-    None
+  }
+
+  pub async fn get_bucket_for_key(&self, key: &[u8]) -> BucketReadLocked<'_, '_, '_> {
+    let state = self.build_readable_locked_bucket(key);
+    let lock = self.bucket_locks[self.bucket_lock_id_for_bucket_id(state.bucket_id)]
+      .read()
+      .await;
+    BucketReadLocked { state, lock }
+  }
+
+  pub async fn get_bucket_mut_for_key(&self, key: &[u8]) -> BucketWriteLocked<'_, '_, '_> {
+    let state = self.build_readable_locked_bucket(key);
+    let lock = self.bucket_locks[self.bucket_lock_id_for_bucket_id(state.bucket_id)]
+      .write()
+      .await;
+    BucketWriteLocked { state, lock }
   }
 }

@@ -1,7 +1,9 @@
+use chrono::Utc;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
+use off64::u32;
 use off64::usz;
 use std::sync::Arc;
 use write_journal::Transaction;
@@ -11,10 +13,9 @@ pub(crate) const MIN_PAGE_SIZE_POW2: u8 = 8;
 pub(crate) const MAX_PAGE_SIZE_POW2: u8 = 32;
 
 /// WARNING: Do not change the order of entries, as values are significant.
-/// WARNING: Do not use zero, so we can detect cleared page headers.
 #[derive(Clone, Copy, PartialEq, Eq, FromPrimitive, Debug)]
 pub(crate) enum PageType {
-  __UNREACHABLE,
+  Void = 0, // This must be zero to avoid needing to write header to every newly-minted page.
   FreePage,
   ObjectSegmentData,
   ActiveInode,
@@ -28,9 +29,6 @@ const PAGE_HEADER_CAP: u64 = 1 << PAGE_HEADER_CAP_POW2;
 
 const FREE_PAGE_OFFSETOF_PREV: u64 = 0;
 const FREE_PAGE_OFFSETOF_NEXT: u64 = FREE_PAGE_OFFSETOF_PREV + 5;
-
-const OBJECT_SEGMENT_DATA_OFFSETOF_BUCKET_ID: u64 = 0;
-const OBJECT_SEGMENT_DATA_OFFSETOF_OBJECT_ID: u64 = OBJECT_SEGMENT_DATA_OFFSETOF_BUCKET_ID + 5;
 
 const ACTIVE_INODE_OFFSETOF_NEXT: u64 = 0;
 
@@ -71,26 +69,17 @@ impl PageHeader for FreePagePageHeader {
   }
 }
 
-pub(crate) struct ObjectSegmentDataPageHeader {
-  pub bucket_id: u64,
-  pub object_id: u64,
-}
+pub(crate) struct ObjectSegmentDataPageHeader {}
 
 impl PageHeader for ObjectSegmentDataPageHeader {
   fn typ() -> PageType {
     PageType::ObjectSegmentData
   }
 
-  fn serialize(&self, out: &mut [u8]) {
-    out.write_u40_be_at(OBJECT_SEGMENT_DATA_OFFSETOF_BUCKET_ID, self.bucket_id);
-    out.write_u64_be_at(OBJECT_SEGMENT_DATA_OFFSETOF_OBJECT_ID, self.object_id);
-  }
+  fn serialize(&self, _out: &mut [u8]) {}
 
-  fn deserialize(raw: &[u8]) -> Self {
-    Self {
-      bucket_id: raw.read_u40_be_at(OBJECT_SEGMENT_DATA_OFFSETOF_BUCKET_ID),
-      object_id: raw.read_u40_be_at(OBJECT_SEGMENT_DATA_OFFSETOF_OBJECT_ID),
-    }
+  fn deserialize(_raw: &[u8]) -> Self {
+    Self {}
   }
 }
 
@@ -121,6 +110,13 @@ pub(crate) struct IncompleteInodePageHeader {
   pub next: u64,
   // Timestamp in hours since epoch.
   pub created_hour: u32,
+}
+
+impl IncompleteInodePageHeader {
+  pub fn has_expired(&self, incomplete_objects_expire_after_hours: u32) -> bool {
+    let now_hour = u32!(Utc::now().timestamp() / 60 / 60);
+    now_hour - self.created_hour >= incomplete_objects_expire_after_hours
+  }
 }
 
 impl PageHeader for IncompleteInodePageHeader {
@@ -247,28 +243,30 @@ impl Pages {
     Self::parse_header_size_and_type(&raw)
   }
 
-  pub async fn read_page_header_with_size_and_type<H: PageHeader>(
+  pub async fn read_page_header_and_size<H: PageHeader>(
     &self,
     page_dev_offset: u64,
-  ) -> (PageType, u8, H) {
+  ) -> Option<(u8, H)> {
     let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
     let raw = self
       .journal
       .read_with_overlay(hdr_dev_offset, PAGE_HEADER_CAP)
       .await;
     let (typ, size) = Self::parse_header_size_and_type(&raw);
-    assert_eq!(H::typ(), typ);
-    (typ, size, H::deserialize(&raw[1..]))
+    if H::typ() == typ {
+      Some((size, H::deserialize(&raw[1..])))
+    } else {
+      None
+    }
   }
 
-  pub async fn read_page_header<H: PageHeader>(&self, page_dev_offset: u64) -> H {
-    let (_, _, hdr) = self
-      .read_page_header_with_size_and_type(page_dev_offset)
-      .await;
-    hdr
+  pub async fn read_page_header<H: PageHeader>(&self, page_dev_offset: u64) -> Option<H> {
+    self
+      .read_page_header_and_size(page_dev_offset)
+      .await
+      .map(|(_, hdr)| hdr)
   }
 
-  // Technically, this function is unnecessary, assuming 100% correct code: we should never read from a page that is of the wrong type or has been split/merged (and doesn't exist at the time). However, out of an abundance of caution, we use this method for some extra safety.
   pub fn clear_page_header(&self, txn: &mut Transaction, page_dev_offset: u64) {
     let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
     let mut out = vec![0u8; usz!(PAGE_HEADER_CAP)];
@@ -297,9 +295,10 @@ impl Pages {
     page_dev_offset: u64,
     f: impl FnOnce(&mut H) -> (),
   ) {
-    let (_, size, mut hdr) = self
-      .read_page_header_with_size_and_type(page_dev_offset)
-      .await;
+    let (size, mut hdr) = self
+      .read_page_header_and_size(page_dev_offset)
+      .await
+      .unwrap();
     f(&mut hdr);
     self.write_page_header(txn, page_dev_offset, size, hdr);
   }

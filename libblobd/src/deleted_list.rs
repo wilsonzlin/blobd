@@ -4,6 +4,7 @@ use crate::page::DeletedInodePageHeader;
 use crate::page::PagesMut;
 use chrono::Utc;
 use off64::create_u48_be;
+use off64::int::Off64AsyncReadInt;
 use off64::usz;
 use off64::Off64Int;
 use seekable_async_file::SeekableAsyncFile;
@@ -41,10 +42,14 @@ pub struct DeletedList {
 }
 
 impl DeletedList {
-  pub fn load_from_device(dev: SeekableAsyncFile, dev_offset: u64, reap_after_secs: u64) -> Self {
+  pub async fn load_from_device(
+    dev: SeekableAsyncFile,
+    dev_offset: u64,
+    reap_after_secs: u64,
+  ) -> Self {
     assert!(reap_after_secs >= DELETE_REAP_DELAY_SEC_MIN);
-    let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD);
-    let tail = dev.read_u48_be_at(dev_offset + OFFSETOF_TAIL);
+    let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD).await;
+    let tail = dev.read_u48_be_at(dev_offset + OFFSETOF_TAIL).await;
     Self {
       dev,
       dev_offset,

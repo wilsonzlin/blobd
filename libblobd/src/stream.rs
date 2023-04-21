@@ -1,12 +1,14 @@
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-use off64::create_u64_be;
+use off64::int::create_u64_be;
+use off64::int::Off64ReadInt;
+use off64::int::Off64WriteMutInt;
 use off64::usz;
-use off64::Off64Int;
-use off64::Off64Slice;
+use off64::Off64Read;
 use seekable_async_file::SeekableAsyncFile;
 use std::collections::BTreeMap;
 use tracing::debug;
+use write_journal::Transaction;
 
 /**
 
@@ -70,13 +72,13 @@ pub(crate) struct Stream {
 }
 
 impl Stream {
-  pub fn load_from_device(dev: &SeekableAsyncFile, dev_offset: u64) -> Stream {
-    let raw_all = dev.read_at_sync(dev_offset, STREAM_SIZE);
+  pub async fn load_from_device(dev: &SeekableAsyncFile, dev_offset: u64) -> Stream {
+    let raw_all = dev.read_at(dev_offset, STREAM_SIZE).await;
     let virtual_head = raw_all.read_u64_be_at(STREAM_OFFSETOF_VIRTUAL_HEAD);
     let mut events = BTreeMap::new();
     for i in 0..STREAM_EVENT_CAP {
       let event_id = virtual_head + i;
-      let raw = raw_all.read_slice_at(STREAM_OFFSETOF_EVENT(event_id), STREVT_SIZE);
+      let raw = raw_all.read_at(STREAM_OFFSETOF_EVENT(event_id), STREVT_SIZE);
       let typ = StreamEventType::from_u8(raw[usz!(STREVT_OFFSETOF_TYPE)]).unwrap();
       if typ == StreamEventType::EndOfEvents {
         break;
@@ -101,21 +103,21 @@ impl Stream {
     dev.write_at(dev_offset, vec![0u8; usz!(STREAM_SIZE)]).await;
   }
 
-  pub fn create_event(&mut self, mutation_writes: &mut Vec<(u64, Vec<u8>)>, e: StreamEvent) {
+  pub fn create_event(&mut self, txn: &mut Transaction, e: StreamEvent) {
     let event_id = self.virtual_head;
     self.virtual_head += 1;
 
     // New head.
-    mutation_writes.push((
+    txn.write(
       self.dev_offset + STREAM_OFFSETOF_VIRTUAL_HEAD,
       create_u64_be(self.virtual_head).to_vec(),
-    ));
+    );
     // New event.
     let mut raw = vec![0u8; usz!(STREVT_SIZE)];
     raw[usz!(STREVT_OFFSETOF_TYPE)] = e.typ as u8;
     raw.write_u48_be_at(STREVT_OFFSETOF_BUCKET_ID, e.bucket_id);
     raw.write_u64_be_at(STREVT_OFFSETOF_OBJECT_ID, e.object_id);
-    mutation_writes.push((STREAM_OFFSETOF_EVENT(event_id), raw));
+    txn.write(self.dev_offset + STREAM_OFFSETOF_EVENT(event_id), raw);
 
     self.events.insert(event_id, e);
     if self.events.len() > usz!(STREAM_EVENT_CAP) {

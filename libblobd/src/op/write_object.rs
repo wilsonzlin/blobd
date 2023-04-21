@@ -6,6 +6,7 @@ use crate::inode::InodeLayout;
 use crate::inode::INODE_OFF;
 use crate::op::key_debug_str;
 use crate::page::IncompleteInodePageHeader;
+use crate::page::PageType;
 use crate::util::div_pow2;
 use crate::util::is_multiple_of_pow2;
 use chrono::Utc;
@@ -54,17 +55,17 @@ pub(crate) async fn op_write_object<
     "writing object"
   );
 
-  let hdr = ctx
-    .pages
-    .read_page_header::<IncompleteInodePageHeader>(inode_dev_offset)
-    .await;
-
-  let incomplete_object_has_expired = || {
-    let now_hour = u32!(Utc::now().timestamp() / 60 / 60);
-    now_hour - hdr.created_hour <= ctx.incomplete_objects_expire_after_hours
+  let incomplete_object_is_still_valid = || async {
+    // Our incomplete reaper simply deletes incomplete objects instead of reaping directly, which avoids some clock drift issues, so we only need to check the type, and should not check if it's expired based on its creation time. This is always correct, as if the page still exists, it's definitely still the same object, as we check well before any deleted object would be reaped.
+    let (hdr_type, _) = ctx
+      .pages
+      .read_page_header_size_and_type(inode_dev_offset)
+      .await;
+    // TODO It's a user bug if they've committed before they've finished all writes (including ones that haven't started yet), but should we assert that it's not PageType::ActiveInode or PageType::DeletedInode just to be safe?
+    hdr_type == PageType::IncompleteInode
   };
 
-  if incomplete_object_has_expired() {
+  if incomplete_object_is_still_valid().await {
     return Err(OpError::ObjectNotFound);
   };
 
@@ -141,7 +142,7 @@ pub(crate) async fn op_write_object<
   let mut buf = Vec::new();
   loop {
     // Incomplete object may have expired while we were writing. This is important to check regularly as we must not write after an object has been released, which would otherwise cause corruption.
-    if incomplete_object_has_expired() {
+    if incomplete_object_is_still_valid().await {
       return Err(OpError::ObjectNotFound);
     };
     let Ok(maybe_chunk) = timeout(Duration::from_secs(60), req.data_stream.next()).await else {

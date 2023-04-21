@@ -96,7 +96,8 @@ impl Allocator {
   ) {
     let hdr = pages
       .read_page_header::<FreePagePageHeader>(page_dev_offset)
-      .await;
+      .await
+      .unwrap();
     if hdr.prev == 0 {
       // Update head.
       self.update_free_list_head(txn, pages, page_size_pow2, hdr.next);
@@ -128,6 +129,7 @@ impl Allocator {
     let new_free_page = pages
       .read_page_header::<FreePagePageHeader>(page_dev_offset)
       .await
+      .unwrap()
       .next;
     self.update_free_list_head(txn, pages, page_size_pow2, new_free_page);
     pages
@@ -136,7 +138,7 @@ impl Allocator {
     Some(page_dev_offset)
   }
 
-  // Updates the page's prev and next pointers, and marks the page as free. Updates the free list's head.
+  /// Updates the page's prev and next pointers in its header. Updates the free list's head.
   fn insert_page_into_free_list(
     &mut self,
     txn: &mut Transaction,
@@ -262,19 +264,18 @@ impl Allocator {
         .await
         == (PageType::FreePage, page_size_pow2)
       {
-        // Buddy is also free.
-        // TODO Call pages.clear_page_header out of abundance of caution.
+        // Buddy is also free. We must clear both page headers before merging them to avoid stale reads of their headers.
+        pages.clear_page_header(txn, page_dev_offset);
+        pages.clear_page_header(txn, buddy_page_dev_offset);
+        // Merge by freeing parent larger page.
+        let parent_page_dev_offset = page_dev_offset & !((1 << (page_size_pow2 + 1)) - 1);
         self
-          .release(
-            txn,
-            pages,
-            page_dev_offset & !((1 << (page_size_pow2 + 1)) - 1),
-            page_size_pow2 + 1,
-          )
+          .release(txn, pages, parent_page_dev_offset, page_size_pow2 + 1)
           .await;
         return;
       };
     };
+    // This will overwrite the page's header.
     self.insert_page_into_free_list(txn, pages, page_dev_offset, page_size_pow2);
   }
 }
