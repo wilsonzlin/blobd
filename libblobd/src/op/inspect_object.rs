@@ -2,8 +2,8 @@ use super::OpError;
 use super::OpResult;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
-use crate::inode::INO_OFFSETOF_SIZE;
-use off64::Off64Int;
+use crate::inode::INODE_OFF;
+use off64::int::Off64AsyncReadInt;
 use std::sync::Arc;
 
 pub struct OpInspectObjectInput {
@@ -19,23 +19,14 @@ pub(crate) async fn op_inspect_object(
   ctx: Arc<Ctx>,
   req: OpInspectObjectInput,
 ) -> OpResult<OpInspectObjectOutput> {
-  let key_len: u16 = req.key.len().try_into().unwrap();
-
-  let bucket_id = ctx.buckets.bucket_id_for_key(&req.key);
-  let bkt = ctx.buckets.get_bucket(bucket_id).read().await;
-  let Some(FoundInode { dev_offset: inode_dev_offset, object_id, .. }) = bkt.find_inode(
-    &ctx.buckets,
-    bucket_id,
-    &req.key,
-    key_len,
-    None,
-  ).await else {
+  let bkt = ctx.buckets.get_bucket_for_key(&req.key).await;
+  let Some(FoundInode { dev_offset: inode_dev_offset, object_id, .. }) = bkt.find_inode(None).await else {
     return Err(OpError::ObjectNotFound);
   };
-  // mmap memory should already be in page cache.
   let object_size = ctx
     .device
-    .read_u40_be_at(inode_dev_offset + INO_OFFSETOF_SIZE);
+    .read_u40_be_at(inode_dev_offset + INODE_OFF.size())
+    .await;
 
   Ok(OpInspectObjectOutput {
     object_id,

@@ -4,8 +4,10 @@ use crate::page::ActiveInodePageHeader;
 use crate::page::Pages;
 use crate::page::MIN_PAGE_SIZE_POW2;
 use crate::stream::Stream;
+use itertools::Itertools;
 use off64::int::create_u40_be;
 use off64::int::Off64ReadInt;
+use off64::u16;
 use off64::usz;
 use off64::Off64Read;
 use seekable_async_file::SeekableAsyncFile;
@@ -156,6 +158,7 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
       next_dev_offset: next_inode,
       dev_offset: inode_dev_offset,
       object_id,
+      ..
     }) = self.find_inode(None).await else {
       return None;
     };
@@ -198,7 +201,7 @@ impl<'b, 'k, 'l> Deref for BucketWriteLocked<'b, 'k, 'l> {
 pub(crate) struct Buckets {
   bucket_count_pow2: u8,
   bucket_lock_count_pow2: u8,
-  bucket_locks: Vec<RwLock<Bucket>>,
+  bucket_locks: Vec<RwLock<()>>,
   dev_offset: u64,
   dev: SeekableAsyncFile,
   journal: WriteJournal,
@@ -215,7 +218,7 @@ impl Buckets {
   ) -> Buckets {
     let bucket_count_pow2 = dev.read_at(dev_offset, 1).await[0];
     let bucket_locks = (0..1 << bucket_lock_count_pow2)
-      .map(|_| RwLock::new(Bucket {}))
+      .map(|_| RwLock::new(()))
       .collect_vec();
     debug!(
       bucket_count = 1 << bucket_count_pow2,
