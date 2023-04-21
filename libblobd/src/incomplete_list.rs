@@ -33,7 +33,7 @@ pub(crate) const INCOMPLETE_LIST_STATE_SIZE: u64 = OFFSETOF_TAIL + 5;
 /// This is because all methods will read a page's header as a IncompleteInodePageHeader, even if it's a different type or the page has been merged/split and doesn't exist at the time.
 /// This also means that the background incomplete reaper loop must also lock the entire state and perform everything in a transaction every iteration.
 /// WARNING: Writers must not begin or continue writing if within one hour of an incomplete object's reap time. Otherwise, the reaper may reap the object from under them, and the writer will be writing to released pages. If streaming, check in regularly. Stop before one hour to prevent race conditions and clock drift issues. Commits are safe because they acquire the state lock.
-pub struct IncompleteList {
+pub(crate) struct IncompleteList {
   dev: SeekableAsyncFile,
   dev_offset: u64,
   head: u64,

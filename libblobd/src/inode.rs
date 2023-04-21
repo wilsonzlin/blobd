@@ -5,8 +5,6 @@ use crate::util::div_mod_pow2;
 use off64::int::Off64ReadInt;
 use off64::u8;
 use seekable_async_file::SeekableAsyncFile;
-use std::fmt::Debug;
-use std::ops::Index;
 use write_journal::Transaction;
 
 /**
@@ -39,7 +37,7 @@ u16 custom_header_entry_count
 
 **/
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub(crate) struct InodeOffsets {
   key_len: u16,
   lpage_segment_count: u64,
@@ -122,7 +120,13 @@ impl InodeOffsets {
   }
 }
 
-pub(crate) const INODE_OFF: InodeOffsets = InodeOffsets::default();
+/// WARNING: This is only safe to use for getting offset of fields up to and including `key`. Call `with_*` methods to get offsets of other fields.
+pub(crate) const INODE_OFF: InodeOffsets = InodeOffsets {
+  custom_header_byte_count: 0,
+  key_len: 0,
+  lpage_segment_count: 0,
+  tail_segment_count: 0,
+};
 
 // This makes it so that a read of the inode up to and including the key is at most exactly 512 bytes, which is a well-aligned well-sized no-waste read from most SSDs. In case you're worried that it's not long enough, this is 497 bytes:
 // aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -201,14 +205,6 @@ impl TailSegmentPageSizes {
   }
 }
 
-impl Index<u8> for TailSegmentPageSizes {
-  type Output = u8;
-
-  fn index(&self, index: u8) -> &Self::Output {
-    &self.get(index).unwrap()
-  }
-}
-
 impl IntoIterator for TailSegmentPageSizes {
   type IntoIter = TailSegmentPageSizesIterator;
   type Item = (u8, u8);
@@ -281,19 +277,9 @@ pub(crate) async fn release_inode(
     let page_dev_offset = raw.read_u48_be_at(off.lpage_segment(i));
     alloc.release(txn, page_dev_offset).await;
   }
-  for (i, page_size_pow2) in tail_segment_page_sizes_pow2 {
+  for i in 0..tail_segment_page_sizes_pow2.len() {
     let page_dev_offset = raw.read_u48_be_at(off.tail_segment(i));
     alloc.release(txn, page_dev_offset).await;
   }
   alloc.release(txn, page_dev_offset).await;
-}
-
-fn assert_is_strictly_descending<T: Debug + Ord>(vals: &[T]) {
-  for i in 1..vals.len() {
-    assert!(
-      vals[i - 1] > vals[i],
-      "element at index {i} is not strictly less than its previous element; list: {:?}",
-      vals
-    );
-  }
 }

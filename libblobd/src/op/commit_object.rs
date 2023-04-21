@@ -6,7 +6,6 @@ use crate::page::ActiveInodePageHeader;
 use crate::page::IncompleteInodePageHeader;
 use crate::stream::StreamEvent;
 use crate::stream::StreamEventType;
-use off64::u16;
 use std::sync::Arc;
 use tracing::trace;
 
@@ -24,9 +23,6 @@ pub(crate) async fn op_commit_object(
   ctx: Arc<Ctx>,
   req: OpCommitObjectInput,
 ) -> OpResult<OpCommitObjectOutput> {
-  let key_len = u16!(req.key.len());
-  let inode_dev_offset = req.inode_dev_offset;
-
   let Some(hdr) = ctx.pages.read_page_header::<IncompleteInodePageHeader>(req.inode_dev_offset).await else {
     return Err(OpError::ObjectNotFound);
   };
@@ -43,7 +39,7 @@ pub(crate) async fn op_commit_object(
     trace!(
       key = key_debug_str(&req.key),
       object_id = req.object_id,
-      inode_dev_offset,
+      inode_dev_offset = req.inode_dev_offset,
       "committing object"
     );
 
@@ -56,14 +52,15 @@ pub(crate) async fn op_commit_object(
     let cur_bkt_head = bkt_lock.get_head().await;
 
     // Update bucket head to point to this new inode.
-    bkt_lock.mutate_head(&mut txn, inode_dev_offset);
+    bkt_lock.mutate_head(&mut txn, req.inode_dev_offset);
 
     // Update inode next pointer.
     ctx
       .pages
-      .write_page_header(&mut txn, inode_dev_offset, ActiveInodePageHeader {
+      .write_page_header(&mut txn, req.inode_dev_offset, ActiveInodePageHeader {
         next: cur_bkt_head,
-      });
+      })
+      .await;
 
     // Create stream event.
     state.stream.create_event(&mut txn, StreamEvent {
@@ -80,7 +77,7 @@ pub(crate) async fn op_commit_object(
   trace!(
     key = key_debug_str(&req.key),
     object_id = req.object_id,
-    inode_dev_offset,
+    inode_dev_offset = req.inode_dev_offset,
     "committed object"
   );
 

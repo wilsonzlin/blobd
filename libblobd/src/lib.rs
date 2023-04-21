@@ -37,11 +37,11 @@ use op::OpResult;
 use page::Pages;
 use seekable_async_file::SeekableAsyncFile;
 use std::error::Error;
-use std::sync::atomic::AtomicU16;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tracing::info;
 use write_journal::WriteJournal;
 
 pub mod allocator;
@@ -74,10 +74,6 @@ journal // Placed here to make use of otherwise unused space due to heap alignme
 heap
 
 **/
-
-fn div_ceil(n: u64, d: u64) -> u64 {
-  (n / d) + ((n % d != 0) as u64)
-}
 
 pub struct BlobdLoader {
   device: SeekableAsyncFile,
@@ -134,13 +130,15 @@ impl BlobdLoader {
     let min_reserved_space = journal_dev_offset + JOURNAL_SIZE_MIN;
 
     let heap_dev_offset = ceil_pow2(min_reserved_space, lpage_size_pow2);
-    let sizeof_journal = heap_dev_offset - journal_dev_offset;
-    let reserved_space = journal_dev_offset + sizeof_journal;
+    let journal_size = heap_dev_offset - journal_dev_offset;
+    let reserved_space = journal_dev_offset + journal_size;
+
+    info!(buckets_size, journal_size, reserved_space, "init");
 
     let journal = Arc::new(WriteJournal::new(
       device.clone(),
       journal_dev_offset,
-      sizeof_journal,
+      journal_size,
       Duration::from_micros(200),
     ));
 

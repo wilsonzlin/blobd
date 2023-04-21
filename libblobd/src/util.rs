@@ -1,3 +1,7 @@
+pub(crate) fn div_ceil(n: u64, d: u64) -> u64 {
+  (n / d) + ((n % d != 0) as u64)
+}
+
 pub(crate) fn div_mod_pow2(val: u64, pow2: u8) -> (u64, u64) {
   let mask = (1 << pow2) - 1;
   (val & !mask, val & mask)

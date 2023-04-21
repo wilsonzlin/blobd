@@ -294,7 +294,7 @@ impl Pages {
     let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
     let mut out = vec![0u8; usz!(PAGE_HEADER_CAP)];
     out[0] = (page_size_pow2 << 3) | H::typ() as u8;
-    let raw = h.serialize(&mut out[1..]);
+    h.serialize(&mut out[1..]);
     txn.write_with_overlay(hdr_dev_offset, out);
   }
 
@@ -316,7 +316,6 @@ impl Pages {
     page_dev_offset: u64,
     h: H,
   ) {
-    let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
     // To avoid an async read, we could just ask for the page size in this function's parameters, but that adds a lot of extra burden on callers, and we need to perform a read anyway, since any I/O system needs to read the device block into a buffer, apply the write to the buffer, then write the buffer, whether we're using mmap, direct I/O, pwrite, or our own userspace I/O library.
     let (_, page_size_pow2) = self.read_page_header_type_and_size(page_dev_offset).await;
     self
@@ -335,6 +334,6 @@ impl Pages {
       .await
       .unwrap();
     f(&mut hdr);
-    self.write_page_header(txn, page_dev_offset, hdr);
+    self.write_page_header(txn, page_dev_offset, hdr).await;
   }
 }

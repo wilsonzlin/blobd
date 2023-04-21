@@ -57,7 +57,6 @@ pub(crate) struct FoundInode {
   pub prev_dev_offset: Option<u64>,
   pub next_dev_offset: Option<u64>,
   pub dev_offset: u64,
-  pub size: u64,
   pub object_id: u64,
 }
 
@@ -103,7 +102,6 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
           next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0),
           object_id,
           prev_dev_offset,
-          size: raw.read_u40_be_at(INODE_OFF.size()),
         });
       };
       prev_dev_offset = Some(dev_offset);
@@ -152,9 +150,6 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
     // TODO This is a workaround for the borrow checker, as it won't let us borrow both `deleted_list` and `stream` in `State` mutably.
     state: &mut State,
   ) -> Option<()> {
-    let buckets = self.state.buckets;
-    let key = self.state.key;
-    let key_len = self.state.key_len;
     let Some(FoundInode {
       prev_dev_offset: prev_inode,
       next_dev_offset: next_inode,
@@ -261,7 +256,7 @@ impl Buckets {
     usz!(bkt_id >> (self.bucket_count_pow2 - self.bucket_lock_count_pow2))
   }
 
-  fn build_readable_locked_bucket(&self, key: &[u8]) -> ReadableLockedBucket<'_, '_> {
+  fn build_readable_locked_bucket<'b, 'k>(&'b self, key: &'k [u8]) -> ReadableLockedBucket<'b, 'k> {
     let bucket_id = self.bucket_id_for_key(key);
     ReadableLockedBucket {
       bucket_id,
@@ -271,7 +266,7 @@ impl Buckets {
     }
   }
 
-  pub async fn get_bucket_for_key(&self, key: &[u8]) -> BucketReadLocked<'_, '_, '_> {
+  pub async fn get_bucket_for_key<'b, 'k>(&'b self, key: &'k [u8]) -> BucketReadLocked<'b, 'k, '_> {
     let state = self.build_readable_locked_bucket(key);
     let lock = self.bucket_locks[self.bucket_lock_id_for_bucket_id(state.bucket_id)]
       .read()
@@ -279,7 +274,10 @@ impl Buckets {
     BucketReadLocked { state, lock }
   }
 
-  pub async fn get_bucket_mut_for_key(&self, key: &[u8]) -> BucketWriteLocked<'_, '_, '_> {
+  pub async fn get_bucket_mut_for_key<'b, 'k>(
+    &'b self,
+    key: &'k [u8],
+  ) -> BucketWriteLocked<'b, 'k, '_> {
     let state = self.build_readable_locked_bucket(key);
     let lock = self.bucket_locks[self.bucket_lock_id_for_bucket_id(state.bucket_id)]
       .write()

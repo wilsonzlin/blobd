@@ -20,17 +20,16 @@ use write_journal::Transaction;
 
 const ALLOCSTATE_OFFSETOF_FRONTIER: u64 = 0;
 const fn ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(page_size_pow2: u8) -> u64 {
-  ALLOCSTATE_OFFSETOF_FRONTIER + 8 * u64::from(page_size_pow2 - MIN_PAGE_SIZE_POW2)
+  ALLOCSTATE_OFFSETOF_FRONTIER + 8 * ((page_size_pow2 - MIN_PAGE_SIZE_POW2) as u64)
 }
 pub(crate) const ALLOCSTATE_SIZE: u64 =
   ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(MAX_PAGE_SIZE_POW2 + 1);
 
-pub struct Allocator {
+pub(crate) struct Allocator {
   state_dev_offset: u64,
   pages: Arc<Pages>,
   // To avoid needing to write to the entire device at format time to set up linked list of free lpages, we simply record where the next block would be if there's no free lpage available.
   frontier_dev_offset: u64,
-  heap_dev_offset: u64,
   device_size: Arc<AtomicU64>, // This could change during online resizing.
   // One device offset (or zero) for each page size.
   free_list_head: Vec<u64>,
@@ -56,7 +55,6 @@ impl Allocator {
       device_size,
       free_list_head,
       frontier_dev_offset,
-      heap_dev_offset,
       pages,
       state_dev_offset,
     }
