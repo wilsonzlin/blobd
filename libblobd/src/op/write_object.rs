@@ -59,7 +59,7 @@ pub(crate) async fn op_write_object<
     // Our incomplete reaper simply deletes incomplete objects instead of reaping directly, which avoids some clock drift issues, so we only need to check the type, and should not check if it's expired based on its creation time. This is always correct, as if the page still exists, it's definitely still the same object, as we check well before any deleted object would be reaped.
     let (hdr_type, _) = ctx
       .pages
-      .read_page_header_size_and_type(inode_dev_offset)
+      .read_page_header_type_and_size(inode_dev_offset)
       .await;
     // TODO It's a user bug if they've committed before they've finished all writes (including ones that haven't started yet), but should we assert that it's not PageType::ActiveInode or PageType::DeletedInode just to be safe?
     hdr_type == PageType::IncompleteInode

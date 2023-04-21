@@ -39,7 +39,7 @@ pub(crate) async fn op_commit_object(
     let mut state = ctx.state.write().await;
     let mut txn = ctx.journal.begin_transaction();
 
-    let bkt_lock = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
+    let mut bkt_lock = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
     trace!(
       key = key_debug_str(&req.key),
       object_id = req.object_id,
@@ -61,7 +61,7 @@ pub(crate) async fn op_commit_object(
     // Update inode next pointer.
     ctx
       .pages
-      .write_page_header(&mut txn, inode_dev_offset, TODO, ActiveInodePageHeader {
+      .write_page_header(&mut txn, inode_dev_offset, ActiveInodePageHeader {
         next: cur_bkt_head,
       });
 

@@ -15,7 +15,7 @@ pub(crate) const MAX_PAGE_SIZE_POW2: u8 = 32;
 /// WARNING: Do not change the order of entries, as values are significant.
 #[derive(Clone, Copy, PartialEq, Eq, FromPrimitive, Debug)]
 pub(crate) enum PageType {
-  Void = 0, // This must be zero to avoid needing to write header to every newly-minted page.
+  Void, // A void page is one that is not of any other type. All pages must have a valid page header, including type and size, which is why this type exists.
   FreePage,
   ObjectSegmentData,
   ActiveInode,
@@ -44,6 +44,20 @@ pub(crate) trait PageHeader {
   /// Many device offsets can be reduced by 1 byte by right shifting by MIN_PAGE_SIZE_POW2 because it can't refer to anything more granular than a page. Remember to left shift when deserialising.
   fn serialize(&self, out: &mut [u8]);
   fn deserialize(raw: &[u8]) -> Self;
+}
+
+pub(crate) struct VoidPageHeader {}
+
+impl PageHeader for VoidPageHeader {
+  fn typ() -> PageType {
+    PageType::Void
+  }
+
+  fn serialize(&self, _out: &mut [u8]) {}
+
+  fn deserialize(_raw: &[u8]) -> Self {
+    Self {}
+  }
 }
 
 pub(crate) struct FreePagePageHeader {
@@ -228,19 +242,21 @@ impl Pages {
     metadata_lpage | offset_within_metadata_lpage
   }
 
-  fn parse_header_size_and_type(raw: &[u8]) -> (PageType, u8) {
+  fn parse_header_size_and_type(&self, raw: &[u8]) -> (PageType, u8) {
     let typ = PageType::from_u8(raw[0] & 0b111).unwrap();
     let size = raw[0] >> 3;
+    // Detect when we have forgotten to initialise a page.
+    assert!(size >= self.spage_size_pow2 && size <= self.lpage_size_pow2);
     (typ, size)
   }
 
-  pub async fn read_page_header_size_and_type(&self, page_dev_offset: u64) -> (PageType, u8) {
+  pub async fn read_page_header_type_and_size(&self, page_dev_offset: u64) -> (PageType, u8) {
     let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
     let raw = self
       .journal
       .read_with_overlay(hdr_dev_offset, PAGE_HEADER_CAP)
       .await;
-    Self::parse_header_size_and_type(&raw)
+    self.parse_header_size_and_type(&raw)
   }
 
   pub async fn read_page_header_and_size<H: PageHeader>(
@@ -252,7 +268,7 @@ impl Pages {
       .journal
       .read_with_overlay(hdr_dev_offset, PAGE_HEADER_CAP)
       .await;
-    let (typ, size) = Self::parse_header_size_and_type(&raw);
+    let (typ, size) = self.parse_header_size_and_type(&raw);
     if H::typ() == typ {
       Some((size, H::deserialize(&raw[1..])))
     } else {
@@ -274,11 +290,11 @@ impl Pages {
     txn.write_with_overlay(hdr_dev_offset, out);
   }
 
-  pub fn write_page_header<H: PageHeader>(
+  // This is only to be used internally, as it's dangerous to write the size directly because page headers overlap with pages of other sizes at the same offset.
+  async fn write_page_header_with_size<H: PageHeader>(
     &self,
     txn: &mut Transaction,
     page_dev_offset: u64,
-    // WARNING: This must be correct, and not deviate from the page's current size.
     page_size_pow2: u8,
     h: H,
   ) {
@@ -289,17 +305,43 @@ impl Pages {
     txn.write_with_overlay(hdr_dev_offset, out);
   }
 
+  // This is almost the same as `write_page_header`, except it writes the page size directly instead of reading, which is important because in order for `write_page_header` someone has to be the first to set the page size.
+  pub async fn initialise_new_page(
+    &self,
+    txn: &mut Transaction,
+    page_dev_offset: u64,
+    page_size_pow2: u8,
+  ) {
+    self
+      .write_page_header_with_size(txn, page_dev_offset, page_size_pow2, VoidPageHeader {})
+      .await;
+  }
+
+  pub async fn write_page_header<H: PageHeader>(
+    &self,
+    txn: &mut Transaction,
+    page_dev_offset: u64,
+    h: H,
+  ) {
+    let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
+    // To avoid an async read, we could just ask for the page size in this function's parameters, but that adds a lot of extra burden on callers, and we need to perform a read anyway, since any I/O system needs to read the device block into a buffer, apply the write to the buffer, then write the buffer, whether we're using mmap, direct I/O, pwrite, or our own userspace I/O library.
+    let (_, page_size_pow2) = self.read_page_header_type_and_size(page_dev_offset).await;
+    self
+      .write_page_header_with_size(txn, page_dev_offset, page_size_pow2, h)
+      .await;
+  }
+
   pub async fn update_page_header<H: PageHeader>(
     &self,
     txn: &mut Transaction,
     page_dev_offset: u64,
     f: impl FnOnce(&mut H) -> (),
   ) {
-    let (size, mut hdr) = self
+    let (_, mut hdr) = self
       .read_page_header_and_size(page_dev_offset)
       .await
       .unwrap();
     f(&mut hdr);
-    self.write_page_header(txn, page_dev_offset, size, hdr);
+    self.write_page_header(txn, page_dev_offset, hdr);
   }
 }

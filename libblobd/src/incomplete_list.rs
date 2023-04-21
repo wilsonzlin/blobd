@@ -84,23 +84,14 @@ impl IncompleteList {
   }
 
   /// WARNING: This will overwrite the page header.
-  pub async fn attach(
-    &mut self,
-    txn: &mut Transaction,
-    pages: &Pages,
-    page_dev_offset: u64,
-    page_size_pow2: u8,
-  ) {
-    pages.write_page_header(
-      txn,
-      page_dev_offset,
-      page_size_pow2,
-      IncompleteInodePageHeader {
+  pub async fn attach(&mut self, txn: &mut Transaction, pages: &Pages, page_dev_offset: u64) {
+    pages
+      .write_page_header(txn, page_dev_offset, IncompleteInodePageHeader {
         created_hour: get_now_hour(),
         prev: self.tail,
         next: 0,
-      },
-    );
+      })
+      .await;
     if self.head == 0 {
       self.update_head(txn, page_dev_offset);
     };

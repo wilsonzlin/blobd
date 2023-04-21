@@ -91,9 +91,9 @@ pub(crate) async fn op_create_object(
     inode_raw.write_u64_be_at(off.object_id(), object_id);
 
     // TODO Parallelise all awaits and loops.
-    let (inode_dev_offset, inode_page_size_pow2) = state
+    let inode_dev_offset = state
       .allocator
-      .allocate_with_page_size(&mut txn, &ctx.pages, inode_size)
+      .allocate(&mut txn, &ctx.pages, inode_size)
       .await;
     for i in 0..lpage_segment_count {
       let lpage_dev_offset = state
@@ -112,7 +112,7 @@ pub(crate) async fn op_create_object(
 
     state
       .incomplete_list
-      .attach(&mut txn, &ctx.pages, inode_dev_offset, inode_page_size_pow2)
+      .attach(&mut txn, &ctx.pages, inode_dev_offset)
       .await;
 
     (txn, inode_dev_offset, object_id)

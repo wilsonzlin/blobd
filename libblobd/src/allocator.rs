@@ -139,7 +139,7 @@ impl Allocator {
   }
 
   /// Updates the page's prev and next pointers in its header. Updates the free list's head.
-  fn insert_page_into_free_list(
+  async fn insert_page_into_free_list(
     &mut self,
     txn: &mut Transaction,
     pages: &Pages,
@@ -148,13 +148,19 @@ impl Allocator {
   ) {
     let cur_head = self.get_free_list_head(pages, page_size_pow2);
     self.update_free_list_head(txn, pages, page_size_pow2, page_dev_offset);
-    pages.write_page_header(txn, page_dev_offset, page_size_pow2, FreePagePageHeader {
-      prev: 0,
-      next: cur_head,
+    assert!({
+      let cur = pages.read_page_header_type_and_size(page_dev_offset).await;
+      cur.0 != PageType::FreePage && cur.1 == page_size_pow2
     });
+    pages
+      .write_page_header(txn, page_dev_offset, FreePagePageHeader {
+        prev: 0,
+        next: cur_head,
+      })
+      .await;
   }
 
-  fn allocate_new_block_and_then_allocate_lpage(
+  async fn allocate_new_block_and_then_allocate_lpage(
     &mut self,
     txn: &mut Transaction,
     pages: &Pages,
@@ -182,15 +188,12 @@ impl Allocator {
       .skip(1)
       .tuple_windows()
     {
-      pages.write_page_header(
-        txn,
-        lpage_dev_offset,
-        pages.lpage_size_pow2,
-        FreePagePageHeader {
+      pages
+        .write_page_header(txn, lpage_dev_offset, FreePagePageHeader {
           prev: if left == block_dev_offset { 0 } else { left },
           next: if right == new_frontier { 0 } else { right },
-        },
-      );
+        })
+        .await;
     }
     self.insert_page_into_free_list(
       txn,
@@ -201,6 +204,7 @@ impl Allocator {
     block_dev_offset + lpage_size
   }
 
+  /// This function will write the FreePagePageHeader to all split pages that aren't returned for the requested allocation, and VoidPageHeader to the returned allocated page, so all page headers will remain in a consistent state.
   #[async_recursion]
   async fn allocate_page(
     &mut self,
@@ -209,14 +213,16 @@ impl Allocator {
     page_size_pow2: u8,
   ) -> u64 {
     assert!(page_size_pow2 >= pages.spage_size_pow2 && page_size_pow2 <= pages.lpage_size_pow2);
-    match self
+    let page_dev_offset = match self
       .try_consume_page_at_free_list_head(txn, pages, page_size_pow2)
       .await
     {
       Some(page_dev_offset) => page_dev_offset,
       None if page_size_pow2 == pages.lpage_size_pow2 => {
         // There is no lpage to break, so create new block at frontier.
-        self.allocate_new_block_and_then_allocate_lpage(txn, pages)
+        self
+          .allocate_new_block_and_then_allocate_lpage(txn, pages)
+          .await
       }
       None => {
         // Find or create a larger page.
@@ -226,26 +232,21 @@ impl Allocator {
         self.insert_page_into_free_list(txn, pages, right_page_dev_offset, page_size_pow2);
         larger_page_dev_offset
       }
-    }
+    };
+    // If we don't initialise it, its page header won't have a size, and `write_page_header` won't work.
+    pages
+      .initialise_new_page(txn, page_dev_offset, page_size_pow2)
+      .await;
+    page_dev_offset
   }
 
-  pub async fn allocate_with_page_size(
-    &mut self,
-    txn: &mut Transaction,
-    pages: &Pages,
-    size: u64,
-  ) -> (u64, u8) {
+  pub async fn allocate(&mut self, txn: &mut Transaction, pages: &Pages, size: u64) -> u64 {
     let pow2 = max(
       pages.spage_size_pow2,
       size.next_power_of_two().ilog2().try_into().unwrap(),
     );
     assert!(pow2 <= pages.lpage_size_pow2);
-    (self.allocate_page(txn, pages, pow2).await, pow2)
-  }
-
-  pub async fn allocate(&mut self, txn: &mut Transaction, pages: &Pages, size: u64) -> u64 {
-    let (page_dev_offset, _) = self.allocate_with_page_size(txn, pages, size).await;
-    page_dev_offset
+    self.allocate_page(txn, pages, pow2).await
   }
 
   #[async_recursion]
@@ -260,7 +261,7 @@ impl Allocator {
     if page_size_pow2 < pages.lpage_size_pow2 {
       let buddy_page_dev_offset = page_dev_offset ^ (1 << page_size_pow2);
       if pages
-        .read_page_header_size_and_type(buddy_page_dev_offset)
+        .read_page_header_type_and_size(buddy_page_dev_offset)
         .await
         == (PageType::FreePage, page_size_pow2)
       {
