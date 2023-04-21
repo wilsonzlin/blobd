@@ -7,6 +7,7 @@ use off64::int::create_u48_be;
 use off64::int::Off64AsyncReadInt;
 use off64::usz;
 use seekable_async_file::SeekableAsyncFile;
+use std::sync::Arc;
 use write_journal::Transaction;
 
 /*
@@ -36,6 +37,7 @@ pub struct IncompleteList {
   dev: SeekableAsyncFile,
   dev_offset: u64,
   head: u64,
+  pages: Arc<Pages>,
   tail: u64,
   reap_after_hours: u32,
 }
@@ -49,16 +51,18 @@ impl IncompleteList {
   pub async fn load_from_device(
     dev: SeekableAsyncFile,
     dev_offset: u64,
+    pages: Arc<Pages>,
     reap_after_hours: u32,
   ) -> Self {
     let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD).await;
     let tail = dev.read_u48_be_at(dev_offset + OFFSETOF_TAIL).await;
     Self {
-      dev,
       dev_offset,
+      dev,
       head,
-      tail,
+      pages,
       reap_after_hours,
+      tail,
     }
   }
 
@@ -84,8 +88,9 @@ impl IncompleteList {
   }
 
   /// WARNING: This will overwrite the page header.
-  pub async fn attach(&mut self, txn: &mut Transaction, pages: &Pages, page_dev_offset: u64) {
-    pages
+  pub async fn attach(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
+    self
+      .pages
       .write_page_header(txn, page_dev_offset, IncompleteInodePageHeader {
         created_hour: get_now_hour(),
         prev: self.tail,
@@ -96,7 +101,8 @@ impl IncompleteList {
       self.update_head(txn, page_dev_offset);
     };
     if self.tail != 0 {
-      pages
+      self
+        .pages
         .update_page_header::<IncompleteInodePageHeader>(txn, self.tail, |i| {
           i.next = page_dev_offset
         })
@@ -106,39 +112,40 @@ impl IncompleteList {
   }
 
   /// WARNING: This does not update, overwrite, or clear the page header.
-  pub async fn detach(&mut self, txn: &mut Transaction, pages: &Pages, page_dev_offset: u64) {
-    let hdr = pages
+  pub async fn detach(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
+    let hdr = self
+      .pages
       .read_page_header::<IncompleteInodePageHeader>(page_dev_offset)
-      .await;
+      .await
+      .unwrap();
     if hdr.prev == 0 {
       self.update_head(txn, hdr.next);
     } else {
-      pages
+      self
+        .pages
         .update_page_header::<IncompleteInodePageHeader>(txn, hdr.prev, |i| i.next = hdr.next)
         .await;
     };
     if hdr.next == 0 {
       self.update_tail(txn, hdr.prev);
     } else {
-      pages
+      self
+        .pages
         .update_page_header::<IncompleteInodePageHeader>(txn, hdr.next, |i| i.prev = hdr.prev)
         .await;
     };
   }
 
-  pub async fn maybe_reap_next(
-    &mut self,
-    txn: &mut Transaction,
-    pages: &Pages,
-    alloc: &mut Allocator,
-  ) -> bool {
+  pub async fn maybe_reap_next(&mut self, txn: &mut Transaction, alloc: &mut Allocator) -> bool {
     let page_dev_offset = self.head;
     if page_dev_offset == 0 {
       return false;
     };
-    let (_, page_size_pow2, hdr) = pages
-      .read_page_header_with_size_and_type::<IncompleteInodePageHeader>(page_dev_offset)
-      .await;
+    let (page_size_pow2, hdr) = self
+      .pages
+      .read_page_header_and_size::<IncompleteInodePageHeader>(page_dev_offset)
+      .await
+      .unwrap();
     if get_now_hour() - hdr.created_hour < self.reap_after_hours {
       return false;
     };
@@ -146,13 +153,13 @@ impl IncompleteList {
     release_inode(
       txn,
       &self.dev,
-      pages,
+      &self.pages,
       alloc,
       page_dev_offset,
       page_size_pow2,
     )
     .await;
-    self.detach(txn, pages, page_dev_offset).await;
+    self.detach(txn, page_dev_offset).await;
     true
   }
 }
