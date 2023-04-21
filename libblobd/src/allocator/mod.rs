@@ -1,9 +1,12 @@
+#[cfg(test)] pub mod tests;
+
 use crate::page::FreePagePageHeader;
 use crate::page::PageType;
 use crate::page::Pages;
 use crate::page::VoidPageHeader;
 use crate::page::MAX_PAGE_SIZE_POW2;
 use crate::page::MIN_PAGE_SIZE_POW2;
+use crate::util::mod_pow2;
 use async_recursion::async_recursion;
 use futures::future::join_all;
 use itertools::Itertools;
@@ -34,7 +37,8 @@ pub(crate) struct Allocator {
   pages: Arc<Pages>,
   // To avoid needing to write to the entire device at format time to set up linked list of free lpages, we simply record where the next block would be if there's no free lpage available.
   frontier_dev_offset: u64,
-  device_size: Arc<AtomicU64>, // This could change during online resizing.
+  // This could change during online resizing.
+  device_size: Arc<AtomicU64>,
   // One device offset (or zero) for each page size.
   free_list_head: Vec<u64>,
 }
@@ -48,7 +52,7 @@ impl Allocator {
     heap_dev_offset: u64,
   ) -> Self {
     // Getting the buddy of a page using only XOR requires that the heap starts at an address aligned to the lpage size.
-    assert_eq!(heap_dev_offset % (1 << pages.lpage_size_pow2), 0);
+    assert_eq!(mod_pow2(heap_dev_offset, pages.lpage_size_pow2), 0);
     let frontier_dev_offset = dev
       .read_u64_be_at(state_dev_offset + ALLOCSTATE_OFFSETOF_FRONTIER)
       .await;
