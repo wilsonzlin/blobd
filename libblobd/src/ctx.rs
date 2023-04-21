@@ -26,6 +26,4 @@ pub(crate) struct Ctx {
   pub pages: Pages,
   /// WARNING: Begin transaction AFTER acquiring lock, as otherwise state change data will be written out of order. The journal will always write transactions in order (even if committed out of order), which means transactions must be started in the order that state is changed, and that's not guaranteed if lock hasn't been acquired yet.
   pub state: RwLock<State>,
-  pub max_tail_segment_count: u8,
-  pub fitness_factor: u64,
 }

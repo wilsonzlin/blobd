@@ -1,10 +1,14 @@
 use crate::page::FreePagePageHeader;
+use crate::page::PageType;
 use crate::page::Pages;
-use crate::page::PagesMut;
 use crate::page::MAX_PAGE_SIZE_POW2;
 use crate::page::MIN_PAGE_SIZE_POW2;
 use async_recursion::async_recursion;
+use futures::future::join_all;
 use itertools::Itertools;
+use off64::int::create_u64_be;
+use off64::int::Off64AsyncReadInt;
+use off64::int::Off64WriteMutInt;
 use off64::usz;
 use seekable_async_file::SeekableAsyncFile;
 use std::cmp::max;
@@ -30,7 +34,7 @@ pub struct Allocator {
 }
 
 impl Allocator {
-  pub fn load_from_device(
+  pub async fn load_from_device(
     dev: &SeekableAsyncFile,
     state_dev_offset: u64,
     pages: &Pages,
@@ -40,11 +44,12 @@ impl Allocator {
   ) -> Self {
     // Getting the buddy of a page using only XOR requires that the heap starts at an address aligned to the lpage size.
     assert_eq!(heap_dev_offset % (1 << pages.lpage_size_pow2), 0);
-    let frontier_dev_offset = dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_FRONTIER);
+    let frontier_dev_offset = dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_FRONTIER).await;
     let page_sizes = pages.lpage_size_pow2 - pages.spage_size_pow2;
-    let free_list_head = (0..page_sizes)
-      .map(|i| dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(i)))
-      .collect_vec();
+    let free_list_head = join_all(
+      (0..page_sizes).map(|i| dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(i))),
+    )
+    .await;
     Self {
       state_dev_offset,
       journal,
@@ -141,8 +146,7 @@ impl Allocator {
   ) {
     let cur_head = self.get_free_list_head(pages, page_size_pow2);
     self.update_free_list_head(txn, pages, page_size_pow2, page_dev_offset);
-    pages.write_page_header(txn, page_dev_offset, FreePagePageHeader {
-      size_pow2: page_size_pow2,
+    pages.write_page_header(txn, page_dev_offset, page_size_pow2, FreePagePageHeader {
       prev: 0,
       next: cur_head,
     });
@@ -176,11 +180,15 @@ impl Allocator {
       .skip(1)
       .tuple_windows()
     {
-      pages.write_page_header(txn, lpage_dev_offset, FreePagePageHeader {
-        size_pow2: pages.lpage_size_pow2,
-        prev: if left == block_dev_offset { 0 } else { left },
-        next: if right == new_frontier { 0 } else { right },
-      });
+      pages.write_page_header(
+        txn,
+        lpage_dev_offset,
+        pages.lpage_size_pow2,
+        FreePagePageHeader {
+          prev: if left == block_dev_offset { 0 } else { left },
+          next: if right == new_frontier { 0 } else { right },
+        },
+      );
     }
     self.insert_page_into_free_list(
       txn,
@@ -250,8 +258,9 @@ impl Allocator {
     if page_size_pow2 < pages.lpage_size_pow2 {
       let buddy_page_dev_offset = page_dev_offset ^ (1 << page_size_pow2);
       if pages
-        .check_if_page_is_free_page_of_size(buddy_page_dev_offset, page_size_pow2)
+        .read_page_header_size_and_type(buddy_page_dev_offset)
         .await
+        == (PageType::FreePage, page_size_pow2)
       {
         // Buddy is also free.
         // TODO Call pages.clear_page_header out of abundance of caution.

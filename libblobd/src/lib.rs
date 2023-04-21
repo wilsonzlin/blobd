@@ -51,6 +51,7 @@ pub mod object_id;
 pub mod op;
 pub mod page;
 pub mod stream;
+pub mod util;
 
 /**
 

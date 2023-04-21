@@ -13,7 +13,7 @@ pub(crate) const MAX_PAGE_SIZE_POW2: u8 = 64;
 /// WARNING: Do not change the order of entries, as values are significant.
 /// WARNING: Do not use zero, so we can detect cleared page headers.
 #[derive(Clone, Copy, PartialEq, Eq, FromPrimitive, Debug)]
-enum PageType {
+pub(crate) enum PageType {
   __UNREACHABLE,
   FreePage,
   ObjectSegmentData,
@@ -49,7 +49,6 @@ pub(crate) trait PageHeader {
 }
 
 pub(crate) struct FreePagePageHeader {
-  pub size_pow2: u8,
   pub prev: u64,
   pub next: u64,
 }
@@ -60,17 +59,12 @@ impl PageHeader for FreePagePageHeader {
   }
 
   fn serialize(&self, out: &mut [u8]) {
-    assert!(self.size_pow2 >= MIN_PAGE_SIZE_POW2 && self.size_pow2 <= MAX_PAGE_SIZE_POW2);
-    out[0] = self.size_pow2;
     out.write_u40_be_at(FREE_PAGE_OFFSETOF_PREV, self.prev >> MIN_PAGE_SIZE_POW2);
     out.write_u40_be_at(FREE_PAGE_OFFSETOF_NEXT, self.next >> MIN_PAGE_SIZE_POW2);
   }
 
   fn deserialize(raw: &[u8]) -> Self {
-    let size_pow2 = raw[0];
-    assert!(size_pow2 >= MIN_PAGE_SIZE_POW2 && size_pow2 <= MAX_PAGE_SIZE_POW2);
     Self {
-      size_pow2,
       prev: raw.read_u40_be_at(FREE_PAGE_OFFSETOF_PREV) << MIN_PAGE_SIZE_POW2,
       next: raw.read_u40_be_at(FREE_PAGE_OFFSETOF_NEXT) << MIN_PAGE_SIZE_POW2,
     }
@@ -242,6 +236,15 @@ impl Pages {
     let typ = PageType::from_u8(raw[0] & 0b111).unwrap();
     let size = raw[0] >> 3;
     (typ, size)
+  }
+
+  pub async fn read_page_header_size_and_type(&self, page_dev_offset: u64) -> (PageType, u8) {
+    let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
+    let raw = self
+      .journal
+      .read_with_overlay(hdr_dev_offset, PAGE_HEADER_CAP)
+      .await;
+    Self::parse_header_size_and_type(&raw)
   }
 
   pub async fn read_page_header_with_size_and_type<H: PageHeader>(

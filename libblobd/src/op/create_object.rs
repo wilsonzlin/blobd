@@ -1,12 +1,12 @@
 use super::OpResult;
 use crate::ctx::Ctx;
-use crate::inode::calculate_object_tail_segments;
+use crate::inode::calc_inode_layout;
+use crate::inode::InodeLayout;
 use crate::inode::INODE_OFF;
 use crate::op::key_debug_str;
 use off64::int::create_u16_be;
 use off64::int::Off64WriteMutInt;
 use off64::u16;
-use off64::u8;
 use off64::usz;
 use off64::Off64WriteMut;
 use std::sync::Arc;
@@ -28,15 +28,11 @@ pub(crate) async fn op_create_object(
   req: OpCreateObjectInput,
 ) -> OpResult<OpCreateObjectOutput> {
   let key_len: u16 = req.key.len().try_into().unwrap();
-  let lpage_segment_count = req.size / ctx.pages.lpage_size();
-  let tail_segments = calculate_object_tail_segments(
-    ctx.pages.spage_size(),
-    ctx.pages.lpage_size(),
-    req.size,
-    ctx.max_tail_segment_count,
-    ctx.fitness_factor,
-  );
-  let tail_segment_count = u8!(tail_segments.len());
+  let InodeLayout {
+    lpage_segment_count,
+    tail_segment_pages_pow2,
+  } = calc_inode_layout(&ctx.pages, req.size);
+  let tail_segment_count = u8!(tail_segment_pages_pow2.len());
   let custom_header_count = u16!(req.custom_headers.len());
 
   let mut custom_headers_raw = Vec::new();
@@ -81,7 +77,6 @@ pub(crate) async fn op_create_object(
   inode_raw.write_u40_be_at(off.size(), req.size);
   inode_raw.write_u16_be_at(off.key_len(), key_len);
   inode_raw.write_at(off.key(), &req.key);
-  inode_raw[usz!(off.tail_segment_count())] = tail_segment_count;
   inode_raw.write_u16_be_at(
     off.custom_header_byte_count(),
     u16!(custom_headers_raw.len()),
@@ -108,14 +103,13 @@ pub(crate) async fn op_create_object(
         .await;
       inode_raw.write_u48_be_at(off.lpage_segment(i), lpage_dev_offset);
     }
-    for (i, tail_segment_page_size) in tail_segments.into_iter().enumerate() {
+    for (i, tail_segment_page_size_pow2) in tail_segments.into_iter().enumerate() {
       let i = u8!(i);
       let page_dev_offset = state
         .allocator
-        .allocate(&mut txn, &ctx.pages, tail_segment_page_size)
+        .allocate(&mut txn, &ctx.pages, tail_segment_page_size_pow2)
         .await;
-      inode_raw[usz!(off.tail_segment_page_size_pow2(i))] = u8!(tail_segment_page_size.ilog2());
-      inode_raw.write_u48_be_at(off.tail_segment_page_dev_offset(i), page_dev_offset);
+      inode_raw.write_u48_be_at(off.tail_segment(i), page_dev_offset);
     }
 
     state
