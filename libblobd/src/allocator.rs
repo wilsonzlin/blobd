@@ -46,9 +46,9 @@ impl Allocator {
     // Getting the buddy of a page using only XOR requires that the heap starts at an address aligned to the lpage size.
     assert_eq!(heap_dev_offset % (1 << pages.lpage_size_pow2), 0);
     let frontier_dev_offset = dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_FRONTIER).await;
-    let page_sizes = pages.lpage_size_pow2 - pages.spage_size_pow2;
     let free_list_head = join_all(
-      (0..page_sizes).map(|i| dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(i))),
+      (pages.spage_size_pow2..=pages.lpage_size_pow2)
+        .map(|i| dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(i))),
     )
     .await;
     Self {
