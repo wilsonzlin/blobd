@@ -1,6 +1,7 @@
 use clap::Parser;
 use futures::stream::once;
 use futures::StreamExt;
+use libblobd::inode::INO_KEY_LEN_MAX;
 use libblobd::op::commit_object::OpCommitObjectInput;
 use libblobd::op::create_object::OpCreateObjectInput;
 use libblobd::op::delete_object::OpDeleteObjectInput;
@@ -228,7 +229,8 @@ async fn main() {
       );
       let mut total_data_bytes = 0;
       for i in 0..cli.objects {
-        let key_len = (hash64_with_seed(&i.to_be_bytes(), key_len_seed) % 65535) + 1;
+        let key_len =
+          (hash64_with_seed(&i.to_be_bytes(), key_len_seed) % u64::from(INO_KEY_LEN_MAX - 1)) + 1;
         let key_offset =
           hash64_with_seed(&i.to_be_bytes(), key_offset_seed) % (cli.pool_size - key_len);
         let data_len =

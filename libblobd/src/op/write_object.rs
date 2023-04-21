@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 use tracing::trace;
+use tracing::warn;
 
 pub struct OpWriteObjectInput<
   S: Unpin + Stream<Item = Result<Vec<u8>, Box<dyn Error + Send + Sync>>>,
@@ -61,7 +62,7 @@ pub(crate) async fn op_write_object<
     hdr_type == PageType::IncompleteInode
   };
 
-  if incomplete_object_is_still_valid().await {
+  if !incomplete_object_is_still_valid().await {
     return Err(OpError::ObjectNotFound);
   };
 
@@ -125,10 +126,18 @@ pub(crate) async fn op_write_object<
           6 * u64!(tail_segment_page_sizes_pow2.len()),
         )
         .await;
-      tail_segment_page_sizes_pow2
+      let mut offsets = tail_segment_page_sizes_pow2
         .into_iter()
         .map(|(i, sz)| (1 << sz, raw.read_u48_be_at(u64!(i) * 6)))
-        .collect_vec()
+        .collect_vec();
+      // For the very last tail page, we don't write a full page amount of bytes, unless the object just happens to be a multiple of that page's size. Use `.map` as there may not even be any tail segments at all.
+      offsets.last_mut().map(|(page_size, _page_dev_offset)| {
+        let mod_ = size % *page_size;
+        if mod_ != 0 {
+          *page_size = mod_;
+        };
+      });
+      offsets
     }
   };
 
@@ -137,11 +146,11 @@ pub(crate) async fn op_write_object<
   let mut buf = Vec::new();
   loop {
     // Incomplete object may have expired while we were writing. This is important to check regularly as we must not write after an object has been released, which would otherwise cause corruption.
-    if incomplete_object_is_still_valid().await {
+    if !incomplete_object_is_still_valid().await {
       return Err(OpError::ObjectNotFound);
     };
     let Ok(maybe_chunk) = timeout(Duration::from_secs(60), req.data_stream.next()).await else {
-      // We timed out.
+      // We timed out, and need to check if the object is still valid.
       continue;
     };
     let Some(chunk) = maybe_chunk else {
@@ -151,25 +160,41 @@ pub(crate) async fn op_write_object<
     buf.append(&mut chunk.map_err(|err| OpError::DataStreamError(Box::from(err)))?);
     let buf_len = u64!(buf.len());
     if written + buf_len > len {
+      warn!(
+        received = written + buf_len,
+        declared = len,
+        "stream provided more data than declared"
+      );
       return Err(OpError::DataStreamLengthMismatch);
     };
-    let (tgt_page_size, tgt_page_dev_offset) = write_dev_offsets[write_page_idx];
-    if buf_len < tgt_page_size {
+    // TODO We could write more frequently instead of buffering an entire page if the page is larger than one SSD page/block write. However, if it's smaller, the I/O system (e.g. mmap) would be doing buffering and repeated writes anyway.
+    let (amount_to_write, page_dev_offset) = write_dev_offsets[write_page_idx];
+    if buf_len < amount_to_write {
       continue;
     };
     // Optimisation: fdatasync at end of all writes instead of here.
     ctx
       .device
       .write_at(
-        tgt_page_dev_offset,
-        buf.drain(..usz!(tgt_page_size)).collect_vec(),
+        page_dev_offset,
+        buf.drain(..usz!(amount_to_write)).collect_vec(),
       )
       .await;
-    trace!(object_id, written, buf_len, "wrote chunk");
-    written += buf_len;
+    trace!(
+      object_id,
+      previously_written = written,
+      page_write_amount = amount_to_write,
+      "wrote page"
+    );
+    written += amount_to_write;
     write_page_idx += 1;
   }
   if written != len {
+    warn!(
+      received = written,
+      declared = len,
+      "stream provided fewer data than declared"
+    );
     return Err(OpError::DataStreamLengthMismatch);
   };
 

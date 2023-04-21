@@ -210,7 +210,7 @@ impl Pages {
   ) -> Pages {
     assert!(spage_size_pow2 >= MIN_PAGE_SIZE_POW2);
     assert!(lpage_size_pow2 >= spage_size_pow2 && lpage_size_pow2 <= MAX_PAGE_SIZE_POW2);
-    /// For fast bitwise calculations to be correct, the heap needs to be aligned to `2^lpage_size_pow2` i.e. start at an address that is a multiple of the largest page size in bytes.
+    // For fast bitwise calculations to be correct, the heap needs to be aligned to `2^lpage_size_pow2` i.e. start at an address that is a multiple of the largest page size in bytes.
     assert_eq!(mod_pow2(heap_dev_offset, lpage_size_pow2), 0);
     // `lpage` means a page of the largest size. `spage` means a page of the smallest size. A data lpage contains actual data, while a metadata lpage contains the page headers for all spages in the following N data lpages (see following code for value of N). Both are lpages (i.e. pages of the largest page size). A data lpage can have X spages, where X is how many pages of the smallest size can fit in one page of the largest size.
     // A metadata lpage and the data lpage it covers constitute a block.

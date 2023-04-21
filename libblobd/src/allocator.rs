@@ -91,6 +91,11 @@ impl Allocator {
       create_u64_be(new_head_page_dev_offset).to_vec(),
     );
     self.free_list_head[pow2_idx] = new_head_page_dev_offset;
+    trace!(
+      new_head_page_dev_offset,
+      page_size_pow2,
+      "updated free list head"
+    );
   }
 
   async fn detach_page_from_free_list(
@@ -121,6 +126,11 @@ impl Allocator {
         .update_page_header::<FreePagePageHeader>(txn, hdr.next, |h| h.prev = hdr.prev)
         .await;
     };
+    trace!(
+      page_dev_offset,
+      page_size_pow2,
+      "detached page from free list"
+    );
   }
 
   // Returns the dev offset of the page pointed to at the head of the free list for the page size. If it's not zero, it will be detached from the list (updating the head). The page will be marked as used. The new head page's prev pointer will be updated.
@@ -133,6 +143,7 @@ impl Allocator {
     if page_dev_offset == 0 {
       return None;
     };
+    trace!(page_size_pow2, page_dev_offset, "found free page");
     let new_free_page = self
       .pages
       .read_page_header::<FreePagePageHeader>(page_dev_offset)
@@ -140,10 +151,12 @@ impl Allocator {
       .unwrap()
       .next;
     self.update_free_list_head(txn, page_size_pow2, new_free_page);
-    self
-      .pages
-      .update_page_header::<FreePagePageHeader>(txn, new_free_page, |h| h.prev = 0)
-      .await;
+    if new_free_page != 0 {
+      self
+        .pages
+        .update_page_header::<FreePagePageHeader>(txn, new_free_page, |h| h.prev = 0)
+        .await;
+    };
     Some(page_dev_offset)
   }
 
@@ -156,13 +169,25 @@ impl Allocator {
   ) {
     // Don't assert that current page type is not FreePage, as we use this function for inserting pages from a freshly-minted block, where the pages are already linked.
     let cur_head = self.get_free_list_head(page_size_pow2);
-    self.update_free_list_head(txn, page_size_pow2, page_dev_offset);
     self
       .pages
       .initialise_page_header(txn, page_dev_offset, page_size_pow2, FreePagePageHeader {
         prev: 0,
         next: cur_head,
       });
+    if cur_head != 0 {
+      self
+        .pages
+        .update_page_header::<FreePagePageHeader>(txn, cur_head, |f| f.prev = page_dev_offset)
+        .await;
+    };
+    self.update_free_list_head(txn, page_size_pow2, page_dev_offset);
+    trace!(
+      page_size_pow2,
+      page_dev_offset,
+      cur_head,
+      "inserted page into free list"
+    );
   }
 
   async fn allocate_new_block_and_then_allocate_lpage(&mut self, txn: &mut Transaction) -> u64 {
@@ -222,14 +247,14 @@ impl Allocator {
     {
       Some(page_dev_offset) => page_dev_offset,
       None if page_size_pow2 == self.pages.lpage_size_pow2 => {
-        trace!(page_size_pow2, "ran out of lpages, allocating new block");
+        trace!(page_size_pow2, "ran out of lpages, will allocate new block");
         // There is no lpage to break, so create new block at frontier.
         self.allocate_new_block_and_then_allocate_lpage(txn).await
       }
       None => {
         trace!(
           page_size_pow2,
-          "ran out of pages, allocating page of the next bigger size"
+          "ran out of pages, will allocate page of the next bigger size"
         );
         // Find or create a larger page.
         let larger_page_dev_offset = self.allocate_page(txn, page_size_pow2 + 1).await;
@@ -245,7 +270,7 @@ impl Allocator {
     self
       .pages
       .initialise_page_header(txn, page_dev_offset, page_size_pow2, VoidPageHeader {});
-    trace!(page_size_pow2, "allocated page");
+    trace!(page_size_pow2, page_dev_offset, "allocated page");
     page_dev_offset
   }
 

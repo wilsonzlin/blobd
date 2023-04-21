@@ -74,20 +74,12 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
   }
 
   pub async fn find_inode(&self, expected_object_id: Option<u64>) -> Option<FoundInode> {
-    let buckets = self.buckets;
-    let mut dev_offset = buckets
-      .journal
-      .read_with_overlay(
-        buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id),
-        5,
-      )
-      .await
-      .read_u48_be_at(0);
+    let mut dev_offset = self.get_head().await;
     let mut prev_dev_offset = None;
     while dev_offset > 0 {
       let (hdr, raw) = join! {
-        buckets.pages.read_page_header::<ActiveInodePageHeader>(dev_offset),
-        buckets.dev.read_at(dev_offset, INODE_OFF.with_key_len(INO_KEY_LEN_MAX).lpage_segments()),
+        self.buckets.pages.read_page_header::<ActiveInodePageHeader>(dev_offset),
+        self.buckets.dev.read_at(dev_offset, INODE_OFF.with_key_len(INO_KEY_LEN_MAX).lpage_segments()),
       };
       // It's impossible for this to be any other type, as we hold write lock when changing a bucket's linked list.
       let hdr = hdr.unwrap();
