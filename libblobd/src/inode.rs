@@ -279,19 +279,13 @@ pub(crate) async fn release_inode(
     .with_tail_segments(tail_segment_page_sizes_pow2.len());
   for i in 0..lpage_segment_count {
     let page_dev_offset = raw.read_u48_be_at(off.lpage_segment(i));
-    alloc
-      .release(txn, pages, page_dev_offset, pages.lpage_size_pow2)
-      .await;
+    alloc.release(txn, page_dev_offset).await;
   }
   for (i, page_size_pow2) in tail_segment_page_sizes_pow2 {
     let page_dev_offset = raw.read_u48_be_at(off.tail_segment(i));
-    alloc
-      .release(txn, pages, page_dev_offset, page_size_pow2)
-      .await;
+    alloc.release(txn, page_dev_offset).await;
   }
-  alloc
-    .release(txn, pages, page_dev_offset, page_size_pow2)
-    .await;
+  alloc.release(txn, page_dev_offset).await;
 }
 
 fn assert_is_strictly_descending<T: Debug + Ord>(vals: &[T]) {

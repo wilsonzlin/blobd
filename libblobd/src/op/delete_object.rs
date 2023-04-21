@@ -21,7 +21,7 @@ pub(crate) async fn op_delete_object(
     let mut bkt = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
     // We must always commit the transaction (otherwise our journal will wait forever), so we cannot return directly here.
     let deleted = bkt
-      .move_object_to_deleted_list_if_exists(&mut txn, &mut state.stream)
+      .move_object_to_deleted_list_if_exists(&mut txn, &mut state)
       .await;
 
     (txn, deleted)

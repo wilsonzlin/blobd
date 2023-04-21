@@ -49,7 +49,7 @@ pub(crate) async fn op_commit_object(
 
     // This will create an event for any deletion, which we want (we don't just want a commit event, as then anyone reading the stream must tracked all seen keys to know when a commit deletes an existing object).
     bkt_lock
-      .move_object_to_deleted_list_if_exists(&mut txn, &mut state.stream)
+      .move_object_to_deleted_list_if_exists(&mut txn, &mut state)
       .await;
 
     // Get the current bucket head. We use the overlay, so we'll see any change made by the previous `move_object_to_deleted_list_if_exists` call.

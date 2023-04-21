@@ -1,9 +1,9 @@
+use crate::ctx::State;
 use crate::inode::INODE_OFF;
 use crate::inode::INO_KEY_LEN_MAX;
 use crate::page::ActiveInodePageHeader;
 use crate::page::Pages;
 use crate::page::MIN_PAGE_SIZE_POW2;
-use crate::stream::Stream;
 use crate::stream::StreamEvent;
 use crate::stream::StreamEventType;
 use itertools::Itertools;
@@ -149,7 +149,8 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
   pub async fn move_object_to_deleted_list_if_exists(
     &mut self,
     txn: &mut Transaction,
-    stream: &mut Stream,
+    // TODO This is a workaround for the borrow checker, as it won't let us borrow both `deleted_list` and `stream` in `State` mutably.
+    state: &mut State,
   ) -> Option<()> {
     let buckets = self.state.buckets;
     let key = self.state.key;
@@ -181,7 +182,9 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
       }
     };
 
-    stream.create_event(txn, StreamEvent {
+    state.deleted_list.attach(txn, inode_dev_offset).await;
+
+    state.stream.create_event(txn, StreamEvent {
       typ: StreamEventType::ObjectDelete,
       bucket_id: self.state.bucket_id,
       object_id,
