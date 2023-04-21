@@ -14,8 +14,9 @@ console-subscriber = { version = "0.1.8", optional = true }
 futures = "0.3.27"
 indicatif = "0.17.3"
 libblobd = { version = "0.1.1", path = "../libblobd" }
+off64 = "0.6.0"
 rand = "0.8.5"
-seekable-async-file = "0.5.3"
+seekable-async-file = "0.8"
 stochastic-queue = "0.1.1"
 strum_macros = "0.24.3"
 tokio = { version = "1.27.0", features = ["full"] }

@@ -4,7 +4,6 @@ use crate::ctx::Ctx;
 use crate::inode::calc_inode_layout;
 use crate::inode::InodeLayout;
 use crate::inode::INODE_OFF;
-use crate::op::key_debug_str;
 use crate::page::PageType;
 use crate::util::div_pow2;
 use crate::util::is_multiple_of_pow2;
@@ -84,7 +83,6 @@ pub(crate) async fn op_write_object<
     object_id = req.object_id,
     inode_dev_offset,
     size,
-    key = key_debug_str(&ctx.device.read_at(INODE_OFF.key(), key_len.into()).await),
     "found object to write to"
   );
 

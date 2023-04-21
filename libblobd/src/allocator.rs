@@ -198,11 +198,13 @@ impl Allocator {
         })
         .await;
     }
-    self.insert_page_into_free_list(
-      txn,
-      block_dev_offset + 2 * lpage_size,
-      self.pages.lpage_size_pow2,
-    );
+    self
+      .insert_page_into_free_list(
+        txn,
+        block_dev_offset + 2 * lpage_size,
+        self.pages.lpage_size_pow2,
+      )
+      .await;
     block_dev_offset + lpage_size
   }
 
@@ -226,7 +228,9 @@ impl Allocator {
         let larger_page_dev_offset = self.allocate_page(txn, page_size_pow2 + 1).await;
         // Split the larger page in two, and release right page (we'll take the left one).
         let right_page_dev_offset = larger_page_dev_offset + (1 << page_size_pow2);
-        self.insert_page_into_free_list(txn, right_page_dev_offset, page_size_pow2);
+        self
+          .insert_page_into_free_list(txn, right_page_dev_offset, page_size_pow2)
+          .await;
         larger_page_dev_offset
       }
     };
@@ -287,6 +291,8 @@ impl Allocator {
       };
     };
     // This will overwrite the page's header.
-    self.insert_page_into_free_list(txn, page_dev_offset, page_size_pow2);
+    self
+      .insert_page_into_free_list(txn, page_dev_offset, page_size_pow2)
+      .await;
   }
 }

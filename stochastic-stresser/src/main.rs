@@ -7,8 +7,11 @@ use libblobd::op::delete_object::OpDeleteObjectInput;
 use libblobd::op::inspect_object::OpInspectObjectInput;
 use libblobd::op::read_object::OpReadObjectInput;
 use libblobd::op::write_object::OpWriteObjectInput;
-use libblobd::tile::TILE_SIZE_U64;
+use libblobd::BlobdInit;
 use libblobd::BlobdLoader;
+use off64::u64;
+use off64::u8;
+use off64::usz;
 use rand::thread_rng;
 use rand::Rng;
 use rand::RngCore;
@@ -73,6 +76,14 @@ struct Cli {
   /// Size of random bytes pool. Defaults to 1 GiB.
   #[arg(long, default_value_t = 1024 * 1024 * 1024)]
   pool_size: u64,
+
+  /// Lpage size. Defaults to 16 MiB.
+  #[arg(long, default_value_t = 1024 * 1024 * 16)]
+  lpage_size: u64,
+
+  /// Spage size. Defaults to 512 bytes.
+  #[arg(long, default_value_t = 512)]
+  spage_size: u64,
 }
 
 #[derive(Clone)]
@@ -90,8 +101,8 @@ impl Pool {
   }
 
   fn get(&self, offset: u64, len: u64) -> Vec<u8> {
-    let start: usize = offset.try_into().unwrap();
-    let end: usize = (offset + len).try_into().unwrap();
+    let start = usz!(offset);
+    let end = usz!(offset + len);
     self.data[start..end].to_vec()
   }
 }
@@ -110,7 +121,7 @@ enum Task {
     data_len: u64,
     data_offset: u64,
     object_id: u64,
-    incomplete_slot_id: u64,
+    inode_dev_offset: u64,
     chunk_offset: u64,
   },
   Commit {
@@ -119,7 +130,7 @@ enum Task {
     data_len: u64,
     data_offset: u64,
     object_id: u64,
-    incomplete_slot_id: u64,
+    inode_dev_offset: u64,
   },
   Inspect {
     key_len: u64,
@@ -151,7 +162,7 @@ async fn main() {
   let cli = Cli::parse();
 
   assert!(cli.buckets.is_power_of_two());
-  let bkt_cnt_log2: u8 = cli.buckets.ilog2().try_into().unwrap();
+  let bucket_count_log2: u8 = cli.buckets.ilog2().try_into().unwrap();
 
   let device_size = get_file_len_via_seek(&cli.device).await.unwrap();
 
@@ -165,7 +176,14 @@ async fn main() {
   )
   .await;
 
-  let blobd = BlobdLoader::new(device.clone(), device_size, bkt_cnt_log2);
+  let blobd = BlobdLoader::new(BlobdInit {
+    bucket_count_log2,
+    device_size,
+    device: device.clone(),
+    incomplete_objects_expire_after_hours: 24,
+    lpage_size_pow2: u8!(cli.lpage_size.ilog2()),
+    spage_size_pow2: u8!(cli.spage_size.ilog2()),
+  });
   blobd.format().await;
   info!("formatted device");
   let blobd = blobd.load().await;
@@ -278,6 +296,7 @@ async fn main() {
               .create_object(OpCreateObjectInput {
                 key: pool.get(key_offset, key_len),
                 size: data_len,
+                custom_headers: Vec::new(),
               })
               .await
               .unwrap();
@@ -288,7 +307,7 @@ async fn main() {
                 data_len,
                 data_offset,
                 object_id: res.object_id,
-                incomplete_slot_id: res.incomplete_slot_id,
+                inode_dev_offset: res.inode_dev_offset,
                 chunk_offset: 0,
               })
               .unwrap();
@@ -300,11 +319,11 @@ async fn main() {
             data_offset,
             chunk_offset,
             object_id,
-            incomplete_slot_id,
+            inode_dev_offset,
           } => {
-            let next_chunk_offset = chunk_offset + TILE_SIZE_U64;
+            let next_chunk_offset = chunk_offset + cli.lpage_size;
             let chunk_len = if next_chunk_offset <= data_len {
-              TILE_SIZE_U64
+              cli.lpage_size
             } else {
               data_len - chunk_offset
             };
@@ -313,7 +332,7 @@ async fn main() {
                 data_len: chunk_len,
                 data_stream: once(async { Ok(pool.get(data_offset + chunk_offset, chunk_len)) })
                   .boxed(),
-                incomplete_slot_id,
+                inode_dev_offset,
                 object_id,
                 offset: chunk_offset,
               })
@@ -327,7 +346,7 @@ async fn main() {
                   data_len,
                   data_offset,
                   object_id,
-                  incomplete_slot_id,
+                  inode_dev_offset,
                   chunk_offset: next_chunk_offset,
                 }
               } else {
@@ -337,7 +356,7 @@ async fn main() {
                   data_len,
                   data_offset,
                   object_id,
-                  incomplete_slot_id,
+                  inode_dev_offset,
                 }
               })
               .unwrap();
@@ -348,11 +367,11 @@ async fn main() {
             data_len,
             data_offset,
             object_id,
-            incomplete_slot_id,
+            inode_dev_offset,
           } => {
             blobd
               .commit_object(OpCommitObjectInput {
-                incomplete_slot_id,
+                inode_dev_offset,
                 object_id,
                 key: pool.get(key_offset, key_len),
               })
@@ -412,7 +431,8 @@ async fn main() {
               .await
               .unwrap();
             while let Some(chunk) = res.data_stream.next().await {
-              let chunk_len: u64 = chunk.len().try_into().unwrap();
+              let chunk = chunk.unwrap();
+              let chunk_len = u64!(chunk.len());
               // Don't use assert_eq! as it will print a lot of raw bytes.
               assert!(chunk == pool.get(data_offset + chunk_offset, chunk_len));
               chunk_offset += chunk_len;

@@ -85,7 +85,8 @@ impl DeletedList {
       .write_page_header(txn, page_dev_offset, DeletedInodePageHeader {
         deleted_sec: Utc::now().timestamp().try_into().unwrap(),
         next: 0,
-      });
+      })
+      .await;
     if self.head == 0 {
       self.update_head(txn, page_dev_offset);
     };
