@@ -126,6 +126,8 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
 
 pub(crate) struct BucketReadLocked<'b, 'k, 'l> {
   state: ReadableLockedBucket<'b, 'k>,
+  // We just hold this value, we don't use it.
+  #[allow(unused)]
   lock: RwLockReadGuard<'l, ()>,
 }
 
@@ -140,6 +142,8 @@ impl<'b, 'k, 'l> Deref for BucketReadLocked<'b, 'k, 'l> {
 // This struct's methods take `&mut self` to ensure write lock, even though it's not necessary.
 pub(crate) struct BucketWriteLocked<'b, 'k, 'l> {
   state: ReadableLockedBucket<'b, 'k>,
+  // We just hold this value, we don't use it.
+  #[allow(unused)]
   lock: RwLockWriteGuard<'l, ()>,
 }
 

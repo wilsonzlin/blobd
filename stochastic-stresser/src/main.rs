@@ -178,6 +178,7 @@ async fn main() {
 
   let blobd = BlobdLoader::new(BlobdInit {
     bucket_count_log2,
+    bucket_lock_count_log2: bucket_count_log2,
     device_size,
     device: device.clone(),
     incomplete_objects_expire_after_hours: 24,

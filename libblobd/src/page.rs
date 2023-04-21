@@ -283,8 +283,8 @@ impl Pages {
       .map(|(_, hdr)| hdr)
   }
 
-  // This is only to be used internally, as it's dangerous to write the size directly because page headers overlap with pages of other sizes at the same offset.
-  async fn write_page_header_with_size<H: PageHeader>(
+  // This is almost the same as `write_page_header`, except it writes the page size directly instead of reading, which is important because in order for `write_page_header` someone has to be the first to set the page size. This is also useful when merging or splitting pages. However, use this carefully, as it will overwrite the size value without any checking. It's dangerous to write the size directly because page headers overlap with pages of other sizes at the same offset.
+  pub fn initialise_page_header<H: PageHeader>(
     &self,
     txn: &mut Transaction,
     page_dev_offset: u64,
@@ -298,18 +298,6 @@ impl Pages {
     txn.write_with_overlay(hdr_dev_offset, out);
   }
 
-  // This is almost the same as `write_page_header`, except it writes the page size directly instead of reading, which is important because in order for `write_page_header` someone has to be the first to set the page size.
-  pub async fn initialise_new_page(
-    &self,
-    txn: &mut Transaction,
-    page_dev_offset: u64,
-    page_size_pow2: u8,
-  ) {
-    self
-      .write_page_header_with_size(txn, page_dev_offset, page_size_pow2, VoidPageHeader {})
-      .await;
-  }
-
   pub async fn write_page_header<H: PageHeader>(
     &self,
     txn: &mut Transaction,
@@ -318,9 +306,7 @@ impl Pages {
   ) {
     // To avoid an async read, we could just ask for the page size in this function's parameters, but that adds a lot of extra burden on callers, and we need to perform a read anyway, since any I/O system needs to read the device block into a buffer, apply the write to the buffer, then write the buffer, whether we're using mmap, direct I/O, pwrite, or our own userspace I/O library.
     let (_, page_size_pow2) = self.read_page_header_type_and_size(page_dev_offset).await;
-    self
-      .write_page_header_with_size(txn, page_dev_offset, page_size_pow2, h)
-      .await;
+    self.initialise_page_header(txn, page_dev_offset, page_size_pow2, h);
   }
 
   pub async fn update_page_header<H: PageHeader>(

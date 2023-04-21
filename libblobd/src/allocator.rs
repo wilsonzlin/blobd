@@ -1,6 +1,7 @@
 use crate::page::FreePagePageHeader;
 use crate::page::PageType;
 use crate::page::Pages;
+use crate::page::VoidPageHeader;
 use crate::page::MAX_PAGE_SIZE_POW2;
 use crate::page::MIN_PAGE_SIZE_POW2;
 use async_recursion::async_recursion;
@@ -16,6 +17,8 @@ use std::cmp::min;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tracing::debug;
+use tracing::info;
 use write_journal::Transaction;
 
 const ALLOCSTATE_OFFSETOF_FRONTIER: u64 = 0;
@@ -45,12 +48,15 @@ impl Allocator {
   ) -> Self {
     // Getting the buddy of a page using only XOR requires that the heap starts at an address aligned to the lpage size.
     assert_eq!(heap_dev_offset % (1 << pages.lpage_size_pow2), 0);
-    let frontier_dev_offset = dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_FRONTIER).await;
+    let frontier_dev_offset = dev
+      .read_u64_be_at(state_dev_offset + ALLOCSTATE_OFFSETOF_FRONTIER)
+      .await;
     let free_list_head = join_all(
       (pages.spage_size_pow2..=pages.lpage_size_pow2)
         .map(|i| dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(i))),
     )
     .await;
+    debug!(frontier_dev_offset, "allocator loaded");
     Self {
       device_size,
       free_list_head,
@@ -147,23 +153,15 @@ impl Allocator {
     page_dev_offset: u64,
     page_size_pow2: u8,
   ) {
+    // Don't assert that current page type is not FreePage, as we use this function for inserting pages from a freshly-minted block, where the pages are already linked.
     let cur_head = self.get_free_list_head(page_size_pow2);
     self.update_free_list_head(txn, page_size_pow2, page_dev_offset);
-    // Detect double free or incorrect page size.
-    assert!({
-      let cur = self
-        .pages
-        .read_page_header_type_and_size(page_dev_offset)
-        .await;
-      cur.0 != PageType::FreePage && cur.1 == page_size_pow2
-    });
     self
       .pages
-      .write_page_header(txn, page_dev_offset, FreePagePageHeader {
+      .initialise_page_header(txn, page_dev_offset, page_size_pow2, FreePagePageHeader {
         prev: 0,
         next: cur_head,
-      })
-      .await;
+      });
   }
 
   async fn allocate_new_block_and_then_allocate_lpage(&mut self, txn: &mut Transaction) -> u64 {
@@ -190,13 +188,15 @@ impl Allocator {
       .skip(1)
       .tuple_windows()
     {
-      self
-        .pages
-        .write_page_header(txn, lpage_dev_offset, FreePagePageHeader {
+      self.pages.initialise_page_header(
+        txn,
+        lpage_dev_offset,
+        self.pages.lpage_size_pow2,
+        FreePagePageHeader {
           prev: if left == block_dev_offset { 0 } else { left },
           next: if right == new_frontier { 0 } else { right },
-        })
-        .await;
+        },
+      );
     }
     self
       .insert_page_into_free_list(
@@ -205,6 +205,7 @@ impl Allocator {
         self.pages.lpage_size_pow2,
       )
       .await;
+    info!(block_dev_offset, new_frontier, "allocated new block");
     block_dev_offset + lpage_size
   }
 
@@ -237,8 +238,7 @@ impl Allocator {
     // If we don't initialise it, its page header won't have a size, and `write_page_header` won't work.
     self
       .pages
-      .initialise_new_page(txn, page_dev_offset, page_size_pow2)
-      .await;
+      .initialise_page_header(txn, page_dev_offset, page_size_pow2, VoidPageHeader {});
     page_dev_offset
   }
 
@@ -278,12 +278,10 @@ impl Allocator {
         );
         self
           .pages
-          .initialise_new_page(txn, left_page, page_size_pow2 + 1)
-          .await;
+          .initialise_page_header(txn, left_page, page_size_pow2 + 1, VoidPageHeader {});
         self
           .pages
-          .initialise_new_page(txn, right_page, page_size_pow2)
-          .await;
+          .initialise_page_header(txn, right_page, page_size_pow2, VoidPageHeader {});
         // Merge by freeing parent larger page.
         let parent_page_dev_offset = page_dev_offset & !((1 << (page_size_pow2 + 1)) - 1);
         self.release(txn, parent_page_dev_offset).await;

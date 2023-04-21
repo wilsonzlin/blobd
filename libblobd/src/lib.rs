@@ -80,6 +80,7 @@ pub struct BlobdLoader {
   device_size: Arc<AtomicU64>, // To allow online resizing, this must be atomically mutable at any time.
   journal: Arc<WriteJournal>,
   bucket_count_log2: u8,
+  bucket_lock_count_log2: u8,
   lpage_size_pow2: u8,
   spage_size_pow2: u8,
   incomplete_objects_expire_after_hours: u32,
@@ -96,6 +97,7 @@ pub struct BlobdLoader {
 
 pub struct BlobdInit {
   pub bucket_count_log2: u8,
+  pub bucket_lock_count_log2: u8,
   pub device_size: u64,
   pub device: SeekableAsyncFile,
   pub incomplete_objects_expire_after_hours: u32,
@@ -107,6 +109,7 @@ impl BlobdLoader {
   pub fn new(
     BlobdInit {
       bucket_count_log2,
+      bucket_lock_count_log2,
       device_size,
       device,
       incomplete_objects_expire_after_hours,
@@ -133,7 +136,13 @@ impl BlobdLoader {
     let journal_size = heap_dev_offset - journal_dev_offset;
     let reserved_space = journal_dev_offset + journal_size;
 
-    info!(buckets_size, journal_size, reserved_space, "init");
+    info!(
+      buckets_size,
+      journal_size,
+      reserved_space,
+      heap_dev_offset,
+      "init",
+    );
 
     let journal = Arc::new(WriteJournal::new(
       device.clone(),
@@ -145,10 +154,11 @@ impl BlobdLoader {
     Self {
       allocator_dev_offset,
       bucket_count_log2,
+      bucket_lock_count_log2,
       buckets_dev_offset,
       deleted_list_dev_offset,
-      device,
       device_size: Arc::new(AtomicU64::new(device_size)),
+      device,
       heap_dev_offset,
       incomplete_list_dev_offset,
       incomplete_objects_expire_after_hours,
@@ -191,8 +201,8 @@ impl BlobdLoader {
       Stream::load_from_device(dev, self.stream_dev_offset),
       IncompleteList::load_from_device(dev.clone(), self.incomplete_list_dev_offset, pages.clone(), self.incomplete_objects_expire_after_hours),
       DeletedList::load_from_device(dev.clone(), self.deleted_list_dev_offset, pages.clone()),
-      Allocator::load_from_device(dev, self.device_size.clone(), self.allocator_dev_offset, pages.clone(), self.heap_dev_offset, ),
-      Buckets::load_from_device(dev.clone(), self.journal.clone(), pages.clone(), self.buckets_dev_offset, self.bucket_count_log2),
+      Allocator::load_from_device(dev, self.device_size.clone(), self.allocator_dev_offset, pages.clone(), self.heap_dev_offset),
+      Buckets::load_from_device(dev.clone(), self.journal.clone(), pages.clone(), self.buckets_dev_offset, self.bucket_lock_count_log2),
     };
 
     let ctx = Arc::new(Ctx {
