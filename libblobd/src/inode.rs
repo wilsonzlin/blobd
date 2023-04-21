@@ -46,6 +46,7 @@ pub(crate) struct InodeOffsets {
   tail_segment_count: u8,
   custom_header_byte_count: u16,
 }
+
 impl InodeOffsets {
   pub fn with_key_len(self, key_len: u16) -> Self {
     Self { key_len, ..self }

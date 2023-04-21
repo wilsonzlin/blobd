@@ -8,6 +8,11 @@ pub(crate) fn div_pow2(val: u64, pow2: u8) -> u64 {
   div
 }
 
+pub(crate) fn mod_pow2(val: u64, pow2: u8) -> u64 {
+  let (_, mod_) = div_mod_pow2(val, pow2);
+  mod_
+}
+
 // Round up to next `2^pow2`.
 pub(crate) fn ceil_pow2(val: u64, pow2: u8) -> u64 {
   let (mut div, mod_) = div_mod_pow2(val, pow2);
