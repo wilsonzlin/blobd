@@ -21,6 +21,7 @@ pub(crate) struct State {
 pub(crate) struct Ctx {
   pub buckets: Buckets,
   pub device: SeekableAsyncFile,
+  pub incomplete_objects_expire_after_hours: u32,
   pub journal: WriteJournal,
   /// WARNING: Do not call methods that mutate data on the device from outside a transactionand locked `State`. This isn't enforced via `&mut self` methods to save some hassle with the Rust borrow checker.
   pub pages: Pages,

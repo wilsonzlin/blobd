@@ -3,6 +3,11 @@ pub(crate) fn div_mod_pow2(val: u64, pow2: u8) -> (u64, u64) {
   (val & !mask, val & mask)
 }
 
+pub(crate) fn div_pow2(val: u64, pow2: u8) -> u64 {
+  let (div, _) = div_mod_pow2(val, pow2);
+  div
+}
+
 // Round up to next `2^pow2`.
 pub(crate) fn ceil_pow2(val: u64, pow2: u8) -> u64 {
   let (mut div, mod_) = div_mod_pow2(val, pow2);
@@ -10,4 +15,9 @@ pub(crate) fn ceil_pow2(val: u64, pow2: u8) -> u64 {
     div += 1;
   };
   div
+}
+
+pub(crate) fn is_multiple_of_pow2(val: u64, pow2: u8) -> bool {
+  let (_, mod_) = div_mod_pow2(val, pow2);
+  mod_ == 0
 }

@@ -144,7 +144,11 @@ pub(crate) fn calc_inode_layout(pages: &Pages, object_size: u64) -> InodeLayout 
   let mut rem = ceil_pow2(tail_size, pages.spage_size_pow2);
   let mut tail_segment_pages_pow2 = vec![];
   loop {
-    let pow2 = 63 - rem.leading_zeros();
+    let pos = rem.leading_zeros();
+    if pos == 64 {
+      break;
+    };
+    let pow2 = u8!(63 - pos);
     tail_segment_pages_pow2.push(pow2);
     rem &= !(1 << pow2);
   }
