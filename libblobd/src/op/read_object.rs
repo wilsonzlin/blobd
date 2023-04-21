@@ -80,7 +80,7 @@ pub(crate) async fn op_read_object(
     let mut last_checked_valid = Instant::now();
     while next < end {
       let now = Instant::now();
-      if last_checked_valid.duration_since(now).as_secs() >= 60 {
+      if now.duration_since(last_checked_valid).as_secs() >= 60 {
         // Check that object is still valid.
         let (hdr_type, _) = ctx
           .pages

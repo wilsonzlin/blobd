@@ -46,8 +46,8 @@ pub(crate) async fn op_create_object(
   // - Whitespace in headers. (Could be malicious.)
   // - Whitelist of allowed overrides if not `x-`.
   for (name, value) in req.custom_headers {
-    custom_headers_raw.extend_from_slice(&create_u16_be(name.len().try_into().unwrap()));
-    custom_headers_raw.extend_from_slice(&create_u16_be(value.len().try_into().unwrap()));
+    custom_headers_raw.extend_from_slice(&create_u16_be(u16!(name.len())));
+    custom_headers_raw.extend_from_slice(&create_u16_be(u16!(value.len())));
     custom_headers_raw.extend_from_slice(name.as_bytes());
     custom_headers_raw.extend_from_slice(value.as_bytes());
   }
@@ -135,7 +135,7 @@ pub(crate) async fn op_create_object(
 
   ctx.device.write_at(inode_dev_offset, inode_raw).await;
   ctx.journal.commit_transaction(txn).await;
-  trace!(key = key_debug_str(&req.key), object_id, "object created");
+  trace!(key = key_debug_str(&req.key), object_id, "created object");
 
   Ok(OpCreateObjectOutput {
     inode_dev_offset,

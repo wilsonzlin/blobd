@@ -19,6 +19,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
+use tokio::time::Instant;
 use tracing::trace;
 use tracing::warn;
 
@@ -144,10 +145,15 @@ pub(crate) async fn op_write_object<
   let mut written = 0;
   let mut write_page_idx = 0;
   let mut buf = Vec::new();
+  let mut last_checked_valid = Instant::now();
   loop {
     // Incomplete object may have expired while we were writing. This is important to check regularly as we must not write after an object has been released, which would otherwise cause corruption.
-    if !incomplete_object_is_still_valid().await {
-      return Err(OpError::ObjectNotFound);
+    let now = Instant::now();
+    if now.duration_since(last_checked_valid).as_secs() >= 60 {
+      if !incomplete_object_is_still_valid().await {
+        return Err(OpError::ObjectNotFound);
+      };
+      last_checked_valid = now;
     };
     let Ok(maybe_chunk) = timeout(Duration::from_secs(60), req.data_stream.next()).await else {
       // We timed out, and need to check if the object is still valid.
