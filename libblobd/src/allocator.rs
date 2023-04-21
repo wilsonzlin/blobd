@@ -24,6 +24,7 @@ const ALLOCSTATE_SIZE: u64 = ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(MAX_PA
 
 pub struct Allocator {
   state_dev_offset: u64,
+  pages: Arc<Pages>,
   journal: Arc<WriteJournal>,
   // To avoid needing to write to the entire device at format time to set up linked list of free lpages, we simply record where the next block would be if there's no free lpage available.
   frontier_dev_offset: u64,
@@ -37,7 +38,7 @@ impl Allocator {
   pub async fn load_from_device(
     dev: &SeekableAsyncFile,
     state_dev_offset: u64,
-    pages: &Pages,
+    pages: Arc<Pages>,
     journal: Arc<WriteJournal>,
     heap_dev_offset: u64,
     heap_size: u64,
@@ -51,12 +52,13 @@ impl Allocator {
     )
     .await;
     Self {
-      state_dev_offset,
-      journal,
+      free_list_head,
       frontier_dev_offset,
       heap_dev_offset,
       heap_size,
-      free_list_head,
+      journal,
+      pages,
+      state_dev_offset,
     }
   }
 
@@ -66,19 +68,18 @@ impl Allocator {
     dev.write_at(state_dev_offset, raw).await;
   }
 
-  fn get_free_list_head(&mut self, pages: &Pages, page_size_pow2: u8) -> u64 {
-    let pow2_idx = usz!(page_size_pow2 - pages.spage_size_pow2);
+  fn get_free_list_head(&mut self, page_size_pow2: u8) -> u64 {
+    let pow2_idx = usz!(page_size_pow2 - self.pages.spage_size_pow2);
     self.free_list_head[pow2_idx]
   }
 
   fn update_free_list_head(
     &mut self,
     txn: &mut Transaction,
-    pages: &Pages,
     page_size_pow2: u8,
     new_head_page_dev_offset: u64,
   ) {
-    let pow2_idx = usz!(page_size_pow2 - pages.spage_size_pow2);
+    let pow2_idx = usz!(page_size_pow2 - self.pages.spage_size_pow2);
     // We don't need to use overlay as we have our own copy in `self.free_list_head`.
     txn.write(
       self.state_dev_offset + ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(page_size_pow2),
@@ -90,26 +91,28 @@ impl Allocator {
   async fn detach_page_from_free_list(
     &mut self,
     txn: &mut Transaction,
-    pages: &Pages,
     page_dev_offset: u64,
     page_size_pow2: u8,
   ) {
-    let hdr = pages
+    let hdr = self
+      .pages
       .read_page_header::<FreePagePageHeader>(page_dev_offset)
       .await
       .unwrap();
     if hdr.prev == 0 {
       // Update head.
-      self.update_free_list_head(txn, pages, page_size_pow2, hdr.next);
+      self.update_free_list_head(txn, page_size_pow2, hdr.next);
     } else {
       // Update prev page's next.
-      pages
+      self
+        .pages
         .update_page_header::<FreePagePageHeader>(txn, hdr.prev, |h| h.next = hdr.next)
         .await;
     };
     if hdr.next != 0 {
       // Update next page's prev.
-      pages
+      self
+        .pages
         .update_page_header::<FreePagePageHeader>(txn, hdr.next, |h| h.prev = hdr.prev)
         .await;
     };
@@ -119,20 +122,21 @@ impl Allocator {
   async fn try_consume_page_at_free_list_head(
     &mut self,
     txn: &mut Transaction,
-    pages: &Pages,
     page_size_pow2: u8,
   ) -> Option<u64> {
-    let page_dev_offset = self.get_free_list_head(pages, page_size_pow2);
+    let page_dev_offset = self.get_free_list_head(page_size_pow2);
     if page_dev_offset == 0 {
       return None;
     };
-    let new_free_page = pages
+    let new_free_page = self
+      .pages
       .read_page_header::<FreePagePageHeader>(page_dev_offset)
       .await
       .unwrap()
       .next;
-    self.update_free_list_head(txn, pages, page_size_pow2, new_free_page);
-    pages
+    self.update_free_list_head(txn, page_size_pow2, new_free_page);
+    self
+      .pages
       .update_page_header::<FreePagePageHeader>(txn, new_free_page, |h| h.prev = 0)
       .await;
     Some(page_dev_offset)
@@ -142,17 +146,21 @@ impl Allocator {
   async fn insert_page_into_free_list(
     &mut self,
     txn: &mut Transaction,
-    pages: &Pages,
     page_dev_offset: u64,
     page_size_pow2: u8,
   ) {
-    let cur_head = self.get_free_list_head(pages, page_size_pow2);
-    self.update_free_list_head(txn, pages, page_size_pow2, page_dev_offset);
+    let cur_head = self.get_free_list_head(page_size_pow2);
+    self.update_free_list_head(txn, page_size_pow2, page_dev_offset);
+    // Detect double free or incorrect page size.
     assert!({
-      let cur = pages.read_page_header_type_and_size(page_dev_offset).await;
+      let cur = self
+        .pages
+        .read_page_header_type_and_size(page_dev_offset)
+        .await;
       cur.0 != PageType::FreePage && cur.1 == page_size_pow2
     });
-    pages
+    self
+      .pages
       .write_page_header(txn, page_dev_offset, FreePagePageHeader {
         prev: 0,
         next: cur_head,
@@ -160,14 +168,10 @@ impl Allocator {
       .await;
   }
 
-  async fn allocate_new_block_and_then_allocate_lpage(
-    &mut self,
-    txn: &mut Transaction,
-    pages: &Pages,
-  ) -> u64 {
-    let lpage_size = 1 << pages.lpage_size_pow2;
+  async fn allocate_new_block_and_then_allocate_lpage(&mut self, txn: &mut Transaction) -> u64 {
+    let lpage_size = 1 << self.pages.lpage_size_pow2;
     let block_dev_offset = self.frontier_dev_offset;
-    let new_frontier = block_dev_offset + pages.block_size;
+    let new_frontier = block_dev_offset + self.pages.block_size;
     if new_frontier > self.heap_dev_offset + self.heap_size {
       panic!("out of space");
     };
@@ -188,7 +192,8 @@ impl Allocator {
       .skip(1)
       .tuple_windows()
     {
-      pages
+      self
+        .pages
         .write_page_header(txn, lpage_dev_offset, FreePagePageHeader {
           prev: if left == block_dev_offset { 0 } else { left },
           next: if right == new_frontier { 0 } else { right },
@@ -197,86 +202,76 @@ impl Allocator {
     }
     self.insert_page_into_free_list(
       txn,
-      pages,
       block_dev_offset + 2 * lpage_size,
-      pages.lpage_size_pow2,
+      self.pages.lpage_size_pow2,
     );
     block_dev_offset + lpage_size
   }
 
   /// This function will write the FreePagePageHeader to all split pages that aren't returned for the requested allocation, and VoidPageHeader to the returned allocated page, so all page headers will remain in a consistent state.
   #[async_recursion]
-  async fn allocate_page(
-    &mut self,
-    txn: &mut Transaction,
-    pages: &Pages,
-    page_size_pow2: u8,
-  ) -> u64 {
-    assert!(page_size_pow2 >= pages.spage_size_pow2 && page_size_pow2 <= pages.lpage_size_pow2);
+  async fn allocate_page(&mut self, txn: &mut Transaction, page_size_pow2: u8) -> u64 {
+    assert!(
+      page_size_pow2 >= self.pages.spage_size_pow2 && page_size_pow2 <= self.pages.lpage_size_pow2
+    );
     let page_dev_offset = match self
-      .try_consume_page_at_free_list_head(txn, pages, page_size_pow2)
+      .try_consume_page_at_free_list_head(txn, page_size_pow2)
       .await
     {
       Some(page_dev_offset) => page_dev_offset,
-      None if page_size_pow2 == pages.lpage_size_pow2 => {
+      None if page_size_pow2 == self.pages.lpage_size_pow2 => {
         // There is no lpage to break, so create new block at frontier.
-        self
-          .allocate_new_block_and_then_allocate_lpage(txn, pages)
-          .await
+        self.allocate_new_block_and_then_allocate_lpage(txn).await
       }
       None => {
         // Find or create a larger page.
-        let larger_page_dev_offset = self.allocate_page(txn, pages, page_size_pow2 + 1).await;
+        let larger_page_dev_offset = self.allocate_page(txn, page_size_pow2 + 1).await;
         // Split the larger page in two, and release right page (we'll take the left one).
         let right_page_dev_offset = larger_page_dev_offset + (1 << page_size_pow2);
-        self.insert_page_into_free_list(txn, pages, right_page_dev_offset, page_size_pow2);
+        self.insert_page_into_free_list(txn, right_page_dev_offset, page_size_pow2);
         larger_page_dev_offset
       }
     };
     // If we don't initialise it, its page header won't have a size, and `write_page_header` won't work.
-    pages
+    self
+      .pages
       .initialise_new_page(txn, page_dev_offset, page_size_pow2)
       .await;
     page_dev_offset
   }
 
-  pub async fn allocate(&mut self, txn: &mut Transaction, pages: &Pages, size: u64) -> u64 {
+  pub async fn allocate(&mut self, txn: &mut Transaction, size: u64) -> u64 {
     let pow2 = max(
-      pages.spage_size_pow2,
+      self.pages.spage_size_pow2,
       size.next_power_of_two().ilog2().try_into().unwrap(),
     );
-    assert!(pow2 <= pages.lpage_size_pow2);
-    self.allocate_page(txn, pages, pow2).await
+    assert!(pow2 <= self.pages.lpage_size_pow2);
+    self.allocate_page(txn, pow2).await
   }
 
   #[async_recursion]
-  pub async fn release(
-    &mut self,
-    txn: &mut Transaction,
-    pages: &Pages,
-    page_dev_offset: u64,
-    page_size_pow2: u8,
-  ) {
+  pub async fn release(&mut self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
     // Check if buddy is also free so we can recompact. This doesn't apply to lpages as they don't have buddies (they aren't split).
-    if page_size_pow2 < pages.lpage_size_pow2 {
+    if page_size_pow2 < self.pages.lpage_size_pow2 {
       let buddy_page_dev_offset = page_dev_offset ^ (1 << page_size_pow2);
-      if pages
+      if self
+        .pages
         .read_page_header_type_and_size(buddy_page_dev_offset)
         .await
         == (PageType::FreePage, page_size_pow2)
       {
         // Buddy is also free. We must clear both page headers before merging them to avoid stale reads of their headers.
-        pages.clear_page_header(txn, page_dev_offset);
-        pages.clear_page_header(txn, buddy_page_dev_offset);
+        self.pages.clear_page_header(txn, page_dev_offset);
+        self.pages.clear_page_header(txn, buddy_page_dev_offset);
         // Merge by freeing parent larger page.
         let parent_page_dev_offset = page_dev_offset & !((1 << (page_size_pow2 + 1)) - 1);
         self
-          .release(txn, pages, parent_page_dev_offset, page_size_pow2 + 1)
+          .release(txn, parent_page_dev_offset, page_size_pow2 + 1)
           .await;
         return;
       };
     };
     // This will overwrite the page's header.
-    self.insert_page_into_free_list(txn, pages, page_dev_offset, page_size_pow2);
+    self.insert_page_into_free_list(txn, page_dev_offset, page_size_pow2);
   }
 }
