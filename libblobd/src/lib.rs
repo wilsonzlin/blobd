@@ -138,10 +138,7 @@ impl BlobdLoader {
 
     info!(
       buckets_size,
-      journal_size,
-      reserved_space,
-      heap_dev_offset,
-      "init",
+      journal_size, reserved_space, heap_dev_offset, "init",
     );
 
     let journal = Arc::new(WriteJournal::new(
@@ -191,6 +188,7 @@ impl BlobdLoader {
 
     let pages = Arc::new(Pages::new(
       self.journal.clone(),
+      self.heap_dev_offset,
       self.spage_size_pow2,
       self.lpage_size_pow2,
     ));

@@ -91,8 +91,14 @@ pub(crate) async fn op_create_object(
     inode_raw.write_u64_be_at(off.object_id(), object_id);
 
     // TODO Parallelise all awaits and loops.
+    trace!(key = key_debug_str(&req.key), "allocating inode for object");
     let inode_dev_offset = state.allocator.allocate(&mut txn, inode_size).await;
     for i in 0..lpage_segment_count {
+      trace!(
+        key = key_debug_str(&req.key),
+        lpage_segment_index = i,
+        "allocating lpage for object"
+      );
       let lpage_dev_offset = state
         .allocator
         .allocate(&mut txn, ctx.pages.lpage_size())
@@ -100,6 +106,11 @@ pub(crate) async fn op_create_object(
       inode_raw.write_u48_be_at(off.lpage_segment(i), lpage_dev_offset);
     }
     for (i, tail_segment_page_size_pow2) in tail_segment_page_sizes_pow2 {
+      trace!(
+        key = key_debug_str(&req.key),
+        tail_segment_page_size_pow2,
+        "allocating tail page for object"
+      );
       let page_dev_offset = state
         .allocator
         .allocate(&mut txn, 1 << tail_segment_page_size_pow2)

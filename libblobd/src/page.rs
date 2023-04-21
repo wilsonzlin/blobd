@@ -1,3 +1,4 @@
+use crate::util::mod_pow2;
 use chrono::Utc;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -6,6 +7,7 @@ use off64::int::Off64WriteMutInt;
 use off64::u32;
 use off64::usz;
 use std::sync::Arc;
+use tracing::trace;
 use write_journal::Transaction;
 use write_journal::WriteJournal;
 
@@ -15,7 +17,8 @@ pub(crate) const MAX_PAGE_SIZE_POW2: u8 = 32;
 /// WARNING: Do not change the order of entries, as values are significant.
 #[derive(Clone, Copy, PartialEq, Eq, FromPrimitive, Debug)]
 pub(crate) enum PageType {
-  Void, // A void page is one that is not of any other type. All pages must have a valid page header, including type and size, which is why this type exists.
+  // Don't use zero to detect missing/uninitialised/corrupt headers.
+  Void = 1, // A void page is one that is not of any other type. All pages must have a valid page header, including type and size, which is why this type exists.
   FreePage,
   ObjectSegmentData,
   ActiveInode,
@@ -188,6 +191,8 @@ pub(crate) struct Pages {
   block_mask: u64,
   // To access the overlay.
   journal: Arc<WriteJournal>,
+  heap_dev_offset: u64,
+  block_size_pow2: u8,
   /// WARNING: Do not modify after creation.
   pub block_size: u64,
   /// WARNING: Do not modify after creation.
@@ -197,12 +202,16 @@ pub(crate) struct Pages {
 }
 
 impl Pages {
-  /// `spage_size_pow2` must be at least 8 (256 bytes).
-  /// `lpage_size_pow2` must be at least `spage_size_pow2` and at most 64.
-  /// WARNING: For all these fast bitwise calculations to be correct, the heap needs to be aligned to `2^lpage_size_pow2` i.e. start at an address that is a multiple of the large page size in bytes.
-  pub fn new(journal: Arc<WriteJournal>, spage_size_pow2: u8, lpage_size_pow2: u8) -> Pages {
-    assert!(spage_size_pow2 >= 8);
-    assert!(lpage_size_pow2 >= spage_size_pow2 && lpage_size_pow2 <= 64);
+  pub fn new(
+    journal: Arc<WriteJournal>,
+    heap_dev_offset: u64,
+    spage_size_pow2: u8,
+    lpage_size_pow2: u8,
+  ) -> Pages {
+    assert!(spage_size_pow2 >= MIN_PAGE_SIZE_POW2);
+    assert!(lpage_size_pow2 >= spage_size_pow2 && lpage_size_pow2 <= MAX_PAGE_SIZE_POW2);
+    /// For fast bitwise calculations to be correct, the heap needs to be aligned to `2^lpage_size_pow2` i.e. start at an address that is a multiple of the largest page size in bytes.
+    assert_eq!(mod_pow2(heap_dev_offset, lpage_size_pow2), 0);
     // `lpage` means a page of the largest size. `spage` means a page of the smallest size. A data lpage contains actual data, while a metadata lpage contains the page headers for all spages in the following N data lpages (see following code for value of N). Both are lpages (i.e. pages of the largest page size). A data lpage can have X spages, where X is how many pages of the smallest size can fit in one page of the largest size.
     // A metadata lpage and the data lpage it covers constitute a block.
     // The spage count per lpage is equal to `2^lpage_size_pow2 / 2^spage_size_pow2` which is identical to `2^(lpage_size_pow2 - spage_size_pow2)`.
@@ -218,7 +227,9 @@ impl Pages {
     let block_mask = block_size - 1;
     Pages {
       block_mask,
+      block_size_pow2,
       block_size,
+      heap_dev_offset,
       journal,
       lpage_size_pow2,
       spage_size_pow2,
@@ -233,8 +244,27 @@ impl Pages {
     1 << self.lpage_size_pow2
   }
 
+  fn assert_valid_page_dev_offset(&self, page_dev_offset: u64) {
+    // Must be in the heap.
+    assert!(
+      page_dev_offset >= self.heap_dev_offset,
+      "page dev offset {page_dev_offset} is not in the heap"
+    );
+    // Must not be in a metadata lpage. Note that the heap is only aligned to lpage, not an entire block, so we must first subtract the heap dev offset.
+    assert!(
+      mod_pow2(page_dev_offset - self.heap_dev_offset, self.block_size_pow2) >= self.lpage_size(),
+      "page dev offset {page_dev_offset} is in a metadata lpage"
+    );
+    // Must be a multiple of the spage size.
+    assert_eq!(
+      mod_pow2(page_dev_offset, self.spage_size_pow2),
+      0,
+      "page dev offset {page_dev_offset} is not a multiple of spage"
+    );
+  }
+
   fn get_page_header_dev_offset(&self, page_dev_offset: u64) -> u64 {
-    debug_assert_eq!(page_dev_offset & ((1 << self.spage_size_pow2) - 1), 0);
+    self.assert_valid_page_dev_offset(page_dev_offset);
     let metadata_lpage = page_dev_offset & !self.block_mask;
     let offset_within_metadata_lpage =
       (page_dev_offset & self.block_mask) >> (self.spage_size_pow2 - PAGE_HEADER_CAP_POW2);
@@ -243,15 +273,23 @@ impl Pages {
   }
 
   fn parse_header_size_and_type(&self, raw: &[u8]) -> (PageType, u8) {
-    let typ = PageType::from_u8(raw[0] & 0b111).unwrap();
+    let typ = PageType::from_u8(raw[0] & 0b111).expect("invalid page type in header");
     let size = raw[0] >> 3;
     // Detect when we have forgotten to initialise a page.
-    assert!(size >= self.spage_size_pow2 && size <= self.lpage_size_pow2);
+    assert!(
+      size >= self.spage_size_pow2 && size <= self.lpage_size_pow2,
+      "unexpected size value in page header of type {typ:?}: {size}"
+    );
     (typ, size)
   }
 
   pub async fn read_page_header_type_and_size(&self, page_dev_offset: u64) -> (PageType, u8) {
     let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
+    trace!(
+      page_dev_offset,
+      header_dev_offset = hdr_dev_offset,
+      "reading header type and size for page"
+    );
     let raw = self
       .journal
       .read_with_overlay(hdr_dev_offset, PAGE_HEADER_CAP)
@@ -264,6 +302,11 @@ impl Pages {
     page_dev_offset: u64,
   ) -> Option<(u8, H)> {
     let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
+    trace!(
+      page_dev_offset,
+      header_dev_offset = hdr_dev_offset,
+      "reading header for page"
+    );
     let raw = self
       .journal
       .read_with_overlay(hdr_dev_offset, PAGE_HEADER_CAP)

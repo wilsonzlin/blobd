@@ -19,6 +19,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::debug;
 use tracing::info;
+use tracing::trace;
 use write_journal::Transaction;
 
 const ALLOCSTATE_OFFSETOF_FRONTIER: u64 = 0;
@@ -146,7 +147,7 @@ impl Allocator {
     Some(page_dev_offset)
   }
 
-  /// Updates the page's prev and next pointers in its header. Updates the free list's head.
+  /// Sets the page's header to FreePagePageHeader with correct prev and next pointers, overwriting any existing header. Updates the free list's head.
   async fn insert_page_into_free_list(
     &mut self,
     txn: &mut Transaction,
@@ -221,10 +222,15 @@ impl Allocator {
     {
       Some(page_dev_offset) => page_dev_offset,
       None if page_size_pow2 == self.pages.lpage_size_pow2 => {
+        trace!(page_size_pow2, "ran out of lpages, allocating new block");
         // There is no lpage to break, so create new block at frontier.
         self.allocate_new_block_and_then_allocate_lpage(txn).await
       }
       None => {
+        trace!(
+          page_size_pow2,
+          "ran out of pages, allocating page of the next bigger size"
+        );
         // Find or create a larger page.
         let larger_page_dev_offset = self.allocate_page(txn, page_size_pow2 + 1).await;
         // Split the larger page in two, and release right page (we'll take the left one).
@@ -239,6 +245,7 @@ impl Allocator {
     self
       .pages
       .initialise_page_header(txn, page_dev_offset, page_size_pow2, VoidPageHeader {});
+    trace!(page_size_pow2, "allocated page");
     page_dev_offset
   }
 
