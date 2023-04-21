@@ -4,6 +4,8 @@ use crate::page::ActiveInodePageHeader;
 use crate::page::Pages;
 use crate::page::MIN_PAGE_SIZE_POW2;
 use crate::stream::Stream;
+use crate::stream::StreamEvent;
+use crate::stream::StreamEventType;
 use itertools::Itertools;
 use off64::int::create_u40_be;
 use off64::int::Off64ReadInt;
@@ -150,7 +152,6 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
     stream: &mut Stream,
   ) -> Option<()> {
     let buckets = self.state.buckets;
-    let bkt_id = self.state.bucket_id;
     let key = self.state.key;
     let key_len = self.state.key_len;
     let Some(FoundInode {
@@ -179,6 +180,13 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
         self.mutate_head(txn, next_inode.unwrap_or(0));
       }
     };
+
+    stream.create_event(txn, StreamEvent {
+      typ: StreamEventType::ObjectDelete,
+      bucket_id: self.state.bucket_id,
+      object_id,
+    });
+
     Some(())
   }
 

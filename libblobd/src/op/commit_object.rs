@@ -36,7 +36,7 @@ pub(crate) async fn op_commit_object(
   };
 
   let txn = {
-    let mut state = ctx.state.write().await;
+    let mut state = ctx.state.lock().await;
     let mut txn = ctx.journal.begin_transaction();
 
     let mut bkt_lock = ctx.buckets.get_bucket_mut_for_key(&req.key).await;

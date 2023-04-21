@@ -84,7 +84,7 @@ pub(crate) async fn op_create_object(
   inode_raw.write_at(off.custom_headers(), &custom_headers_raw);
 
   let (txn, inode_dev_offset, object_id) = {
-    let mut state = ctx.state.write().await;
+    let mut state = ctx.state.lock().await;
     let mut txn = ctx.journal.begin_transaction();
 
     let object_id = state.object_id_serial.next(&mut txn);
