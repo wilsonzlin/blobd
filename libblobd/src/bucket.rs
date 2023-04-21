@@ -215,14 +215,14 @@ pub(crate) struct Buckets {
   bucket_locks: Vec<RwLock<()>>,
   dev_offset: u64,
   dev: SeekableAsyncFile,
-  journal: WriteJournal,
+  journal: Arc<WriteJournal>,
   pages: Arc<Pages>,
 }
 
 impl Buckets {
   pub async fn load_from_device(
     dev: SeekableAsyncFile,
-    journal: WriteJournal,
+    journal: Arc<WriteJournal>,
     pages: Arc<Pages>,
     dev_offset: u64,
     bucket_lock_count_pow2: u8,
@@ -247,9 +247,9 @@ impl Buckets {
     }
   }
 
-  pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64, bucket_count: u64) {
-    let mut raw = vec![0u8; usz!(BUCKETS_SIZE(bucket_count))];
-    raw[usz!(BUCKETS_OFFSETOF_COUNT_LOG2)] = bucket_count.ilog2() as u8;
+  pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64, bucket_count_pow2: u8) {
+    let mut raw = vec![0u8; usz!(BUCKETS_SIZE(1 << bucket_count_pow2))];
+    raw[usz!(BUCKETS_OFFSETOF_COUNT_LOG2)] = bucket_count_pow2;
     dev.write_at(dev_offset, raw).await;
   }
 

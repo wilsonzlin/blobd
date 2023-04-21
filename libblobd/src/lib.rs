@@ -1,19 +1,19 @@
 #![allow(non_snake_case)]
 
+use crate::allocator::Allocator;
+use crate::allocator::ALLOCSTATE_SIZE;
 use crate::bucket::Buckets;
-use crate::free_list::FreeList;
-use crate::free_list::FREELIST_TILE_CAP;
-use crate::incomplete_slots::IncompleteSlots;
-use crate::incomplete_slots::INCOMPLETE_SLOTS_SIZE;
+use crate::deleted_list::DeletedList;
+use crate::deleted_list::DELETED_LIST_STATE_SIZE;
+use crate::incomplete_list::IncompleteList;
+use crate::incomplete_list::INCOMPLETE_LIST_STATE_SIZE;
 use crate::object_id::ObjectIdSerial;
 use crate::stream::Stream;
 use crate::stream::STREAM_SIZE;
-use crate::tile::TILE_SIZE_U64;
+use crate::util::ceil_pow2;
 use bucket::BUCKETS_SIZE;
 use ctx::Ctx;
-use ctx::FreeListWithChangeTracker;
-use ctx::SequentialisedJournal;
-use free_list::FREELIST_SIZE;
+use ctx::State;
 use futures::join;
 use op::commit_object::op_commit_object;
 use op::commit_object::OpCommitObjectInput;
@@ -34,11 +34,14 @@ use op::write_object::op_write_object;
 use op::write_object::OpWriteObjectInput;
 use op::write_object::OpWriteObjectOutput;
 use op::OpResult;
+use page::Pages;
 use seekable_async_file::SeekableAsyncFile;
 use std::error::Error;
+use std::sync::atomic::AtomicU16;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::sync::RwLock;
 use write_journal::WriteJournal;
 
 pub mod allocator;
@@ -78,65 +81,97 @@ fn div_ceil(n: u64, d: u64) -> u64 {
 
 pub struct BlobdLoader {
   device: SeekableAsyncFile,
+  device_size: Arc<AtomicU64>, // To allow online resizing, this must be atomically mutable at any time.
   journal: Arc<WriteJournal>,
-  bucket_count: u64,
+  bucket_count_log2: u8,
+  lpage_size_pow2: u8,
+  spage_size_pow2: u8,
+  incomplete_objects_expire_after_hours: u32,
 
-  offsetof_object_id_serial: u64,
-  offsetof_stream: u64,
-  offsetof_incomplete_slots: u64,
-  offsetof_free_list: u64,
-  offsetof_buckets: u64,
-  reserved_tiles: u32,
-  total_tiles: u32,
+  object_id_serial_dev_offset: u64,
+  stream_dev_offset: u64,
+  incomplete_list_dev_offset: u64,
+  deleted_list_dev_offset: u64,
+  allocator_dev_offset: u64,
+  buckets_dev_offset: u64,
+
+  heap_dev_offset: u64,
+}
+
+pub struct BlobdInit {
+  pub bucket_count_log2: u8,
+  pub device_size: u64,
+  pub device: SeekableAsyncFile,
+  pub incomplete_objects_expire_after_hours: u32,
+  pub lpage_size_pow2: u8,
+  pub spage_size_pow2: u8,
 }
 
 impl BlobdLoader {
-  pub fn new(device: SeekableAsyncFile, device_size: u64, bucket_count_log2: u8) -> Self {
+  pub fn new(
+    BlobdInit {
+      bucket_count_log2,
+      device_size,
+      device,
+      incomplete_objects_expire_after_hours,
+      lpage_size_pow2,
+      spage_size_pow2,
+    }: BlobdInit,
+  ) -> Self {
     assert!(bucket_count_log2 >= 12 && bucket_count_log2 <= 48);
     let bucket_count = 1u64 << bucket_count_log2;
 
-    let offsetof_journal = 0;
-    let sizeof_journal = 1024 * 1024 * 8;
-    let offsetof_object_id_serial = offsetof_journal + sizeof_journal;
-    let offsetof_stream = offsetof_object_id_serial + 8;
-    let offsetof_incomplete_slots = offsetof_stream + INCOMPLETE_SLOTS_SIZE;
-    let offsetof_free_list = offsetof_incomplete_slots + STREAM_SIZE;
-    let offsetof_buckets = offsetof_free_list + FREELIST_SIZE();
-    let sizeof_buckets = BUCKETS_SIZE(bucket_count);
-    let reserved_space = offsetof_buckets + sizeof_buckets;
-    let reserved_tiles: u32 = div_ceil(reserved_space, TILE_SIZE_U64).try_into().unwrap();
-    let total_tiles: u32 = (device_size / TILE_SIZE_U64).try_into().unwrap();
-    assert!(total_tiles <= FREELIST_TILE_CAP);
+    const JOURNAL_SIZE_MIN: u64 = 1024 * 1024 * 32;
+
+    let object_id_serial_dev_offset = 0;
+    let stream_dev_offset = object_id_serial_dev_offset + 8;
+    let incomplete_list_dev_offset = stream_dev_offset + STREAM_SIZE;
+    let deleted_list_dev_offset = incomplete_list_dev_offset + INCOMPLETE_LIST_STATE_SIZE;
+    let allocator_dev_offset = deleted_list_dev_offset + DELETED_LIST_STATE_SIZE;
+    let buckets_dev_offset = allocator_dev_offset + ALLOCSTATE_SIZE;
+    let buckets_size = BUCKETS_SIZE(bucket_count);
+    let journal_dev_offset = buckets_dev_offset + buckets_size;
+    let min_reserved_space = journal_dev_offset + JOURNAL_SIZE_MIN;
+
+    let heap_dev_offset = ceil_pow2(min_reserved_space, lpage_size_pow2);
+    let sizeof_journal = heap_dev_offset - journal_dev_offset;
+    let reserved_space = journal_dev_offset + sizeof_journal;
 
     let journal = Arc::new(WriteJournal::new(
       device.clone(),
-      offsetof_journal,
+      journal_dev_offset,
       sizeof_journal,
+      Duration::from_micros(200),
     ));
 
     Self {
-      bucket_count,
+      allocator_dev_offset,
+      bucket_count_log2,
+      buckets_dev_offset,
+      deleted_list_dev_offset,
       device,
+      device_size: Arc::new(AtomicU64::new(device_size)),
+      heap_dev_offset,
+      incomplete_list_dev_offset,
+      incomplete_objects_expire_after_hours,
       journal,
-      offsetof_buckets,
-      offsetof_free_list,
-      offsetof_incomplete_slots,
-      offsetof_object_id_serial,
-      offsetof_stream,
-      reserved_tiles,
-      total_tiles,
+      lpage_size_pow2,
+      object_id_serial_dev_offset,
+      spage_size_pow2,
+      stream_dev_offset,
     }
   }
 
   pub async fn format(&self) {
     let dev = &self.device;
     join! {
+      ObjectIdSerial::format_device(dev, self.object_id_serial_dev_offset),
+      Stream::format_device(dev, self.stream_dev_offset),
+      IncompleteList::format_device(dev, self.incomplete_list_dev_offset),
+      DeletedList::format_device(dev, self.deleted_list_dev_offset),
+      Allocator::format_device(dev, self.allocator_dev_offset, self.heap_dev_offset),
+      Buckets::format_device(dev, self.buckets_dev_offset, self.bucket_count_log2),
       self.journal.format_device(),
-      ObjectIdSerial::format_device(dev, self.offsetof_object_id_serial),
-      Stream::format_device(dev, self.offsetof_stream),
-      IncompleteSlots::format_device(dev, self.offsetof_incomplete_slots),
-      FreeList::format_device(dev, self.offsetof_free_list),
-      Buckets::format_device(dev, self.offsetof_buckets, self.bucket_count),
     };
     dev.sync_data().await;
   }
@@ -146,28 +181,35 @@ impl BlobdLoader {
 
     let dev = &self.device;
 
-    // Ensure journal has been recovered first before loading any other data.
-    let object_id_serial = ObjectIdSerial::load_from_device(dev, self.offsetof_object_id_serial);
-    let stream = Stream::load_from_device(&dev, self.offsetof_stream);
-    let incomplete_slots = IncompleteSlots::load_from_device(&dev, self.offsetof_incomplete_slots);
-    let free_list = FreeList::load_from_device(
-      &dev,
-      self.offsetof_free_list,
-      self.reserved_tiles,
-      self.total_tiles,
-    );
-    let buckets = Buckets::load_from_device(dev.clone(), self.offsetof_buckets);
+    let pages = Arc::new(Pages::new(
+      self.journal.clone(),
+      self.spage_size_pow2,
+      self.lpage_size_pow2,
+    ));
 
-    let journal = SequentialisedJournal::new(self.journal.clone());
+    // Ensure journal has been recovered first before loading any other data.
+    let (object_id_serial, stream, incomplete_list, deleted_list, allocator, buckets) = join! {
+      ObjectIdSerial::load_from_device(dev, self.object_id_serial_dev_offset),
+      Stream::load_from_device(dev, self.stream_dev_offset),
+      IncompleteList::load_from_device(dev.clone(), self.incomplete_list_dev_offset, pages.clone(), self.incomplete_objects_expire_after_hours),
+      DeletedList::load_from_device(dev.clone(), self.deleted_list_dev_offset, pages.clone()),
+      Allocator::load_from_device(dev, self.device_size.clone(), self.allocator_dev_offset, pages.clone(), self.heap_dev_offset, ),
+      Buckets::load_from_device(dev.clone(), self.journal.clone(), pages.clone(), self.buckets_dev_offset, self.bucket_count_log2),
+    };
 
     let ctx = Arc::new(Ctx {
       buckets,
       device: dev.clone(),
-      free_list: Mutex::new(FreeListWithChangeTracker::new(free_list)),
-      incomplete_slots,
-      journal,
-      object_id_serial,
-      stream: RwLock::new(stream),
+      incomplete_objects_expire_after_hours: self.incomplete_objects_expire_after_hours,
+      journal: self.journal.clone(),
+      pages: pages.clone(),
+      state: Mutex::new(State {
+        allocator,
+        deleted_list,
+        incomplete_list,
+        object_id_serial,
+        stream,
+      }),
     });
 
     Blobd {

@@ -27,7 +27,7 @@ u48 tail
 
 const OFFSETOF_HEAD: u64 = 0;
 const OFFSETOF_TAIL: u64 = OFFSETOF_HEAD + 5;
-const SIZE: u64 = OFFSETOF_TAIL + 5;
+pub(crate) const INCOMPLETE_LIST_STATE_SIZE: u64 = OFFSETOF_TAIL + 5;
 
 /// WARNING: All methods on this struct must be called from within a transaction, **including non-mut ones.** If *any* incomplete inode page changes type or merges without this struct knowing about/performing it, including due to very subtle race conditions and/or concurrency, **corruption will occur.**
 /// This is because all methods will read a page's header as a IncompleteInodePageHeader, even if it's a different type or the page has been merged/split and doesn't exist at the time.
@@ -39,7 +39,7 @@ pub struct IncompleteList {
   head: u64,
   pages: Arc<Pages>,
   tail: u64,
-  reap_after_hours: u32,
+  incomplete_objects_expire_after_hours: u32,
 }
 
 fn get_now_hour() -> u32 {
@@ -52,7 +52,7 @@ impl IncompleteList {
     dev: SeekableAsyncFile,
     dev_offset: u64,
     pages: Arc<Pages>,
-    reap_after_hours: u32,
+    incomplete_objects_expire_after_hours: u32,
   ) -> Self {
     let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD).await;
     let tail = dev.read_u48_be_at(dev_offset + OFFSETOF_TAIL).await;
@@ -60,14 +60,14 @@ impl IncompleteList {
       dev_offset,
       dev,
       head,
+      incomplete_objects_expire_after_hours,
       pages,
-      reap_after_hours,
       tail,
     }
   }
 
   pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
-    let raw = vec![0u8; usz!(SIZE)];
+    let raw = vec![0u8; usz!(INCOMPLETE_LIST_STATE_SIZE)];
     dev.write_at(dev_offset, raw).await;
   }
 
@@ -146,7 +146,8 @@ impl IncompleteList {
       .read_page_header_and_size::<IncompleteInodePageHeader>(page_dev_offset)
       .await
       .unwrap();
-    if get_now_hour() - hdr.created_hour < self.reap_after_hours {
+    // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time AFTER `incomplete_objects_expire_after_hours`.
+    if get_now_hour() - hdr.created_hour < self.incomplete_objects_expire_after_hours + 1 {
       return false;
     };
     // `alloc.release` will clear page header.

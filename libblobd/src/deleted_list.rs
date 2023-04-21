@@ -28,7 +28,7 @@ u48 tail
 
 const OFFSETOF_HEAD: u64 = 0;
 const OFFSETOF_TAIL: u64 = OFFSETOF_HEAD + 5;
-const SIZE: u64 = OFFSETOF_TAIL + 5;
+pub(crate) const DELETED_LIST_STATE_SIZE: u64 = OFFSETOF_TAIL + 5;
 
 /// WARNING: Same safety requirements and warnings as `IncompleteList`.
 /// WARNING: Readers and writers must check if inode still exists while reading/writing no later than `DELETE_REAP_DELAY_SEC_MIN / 2` seconds since the last check. Otherwise, the reaper may reap the object from under them, and the reader/writer will be reading from/writing to released pages. Be conservative to prevent race conditions and clock drift issues.
@@ -58,7 +58,7 @@ impl DeletedList {
   }
 
   pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
-    let raw = vec![0u8; usz!(SIZE)];
+    let raw = vec![0u8; usz!(DELETED_LIST_STATE_SIZE)];
     dev.write_at(dev_offset, raw).await;
   }
 

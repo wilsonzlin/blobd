@@ -13,24 +13,25 @@ use off64::usz;
 use seekable_async_file::SeekableAsyncFile;
 use std::cmp::max;
 use std::cmp::min;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use write_journal::Transaction;
-use write_journal::WriteJournal;
 
 const ALLOCSTATE_OFFSETOF_FRONTIER: u64 = 0;
 const fn ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(page_size_pow2: u8) -> u64 {
   ALLOCSTATE_OFFSETOF_FRONTIER + 8 * u64::from(page_size_pow2 - MIN_PAGE_SIZE_POW2)
 }
-const ALLOCSTATE_SIZE: u64 = ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(MAX_PAGE_SIZE_POW2 + 1);
+pub(crate) const ALLOCSTATE_SIZE: u64 =
+  ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(MAX_PAGE_SIZE_POW2 + 1);
 
 pub struct Allocator {
   state_dev_offset: u64,
   pages: Arc<Pages>,
-  journal: Arc<WriteJournal>,
   // To avoid needing to write to the entire device at format time to set up linked list of free lpages, we simply record where the next block would be if there's no free lpage available.
   frontier_dev_offset: u64,
   heap_dev_offset: u64,
-  heap_size: u64,
+  device_size: Arc<AtomicU64>, // This could change during online resizing.
   // One device offset (or zero) for each page size.
   free_list_head: Vec<u64>,
 }
@@ -38,11 +39,10 @@ pub struct Allocator {
 impl Allocator {
   pub async fn load_from_device(
     dev: &SeekableAsyncFile,
+    device_size: Arc<AtomicU64>,
     state_dev_offset: u64,
     pages: Arc<Pages>,
-    journal: Arc<WriteJournal>,
     heap_dev_offset: u64,
-    heap_size: u64,
   ) -> Self {
     // Getting the buddy of a page using only XOR requires that the heap starts at an address aligned to the lpage size.
     assert_eq!(heap_dev_offset % (1 << pages.lpage_size_pow2), 0);
@@ -53,11 +53,10 @@ impl Allocator {
     )
     .await;
     Self {
+      device_size,
       free_list_head,
       frontier_dev_offset,
       heap_dev_offset,
-      heap_size,
-      journal,
       pages,
       state_dev_offset,
     }
@@ -173,7 +172,7 @@ impl Allocator {
     let lpage_size = 1 << self.pages.lpage_size_pow2;
     let block_dev_offset = self.frontier_dev_offset;
     let new_frontier = block_dev_offset + self.pages.block_size;
-    if new_frontier > self.heap_dev_offset + self.heap_size {
+    if new_frontier > self.device_size.load(Ordering::Relaxed) {
       panic!("out of space");
     };
     // We don't need to use overlay as we have our own copy in `self.frontier_dev_offset`.

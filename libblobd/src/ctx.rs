@@ -6,6 +6,7 @@ use crate::object_id::ObjectIdSerial;
 use crate::page::Pages;
 use crate::stream::Stream;
 use seekable_async_file::SeekableAsyncFile;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use write_journal::WriteJournal;
 
@@ -22,9 +23,9 @@ pub(crate) struct Ctx {
   pub buckets: Buckets,
   pub device: SeekableAsyncFile,
   pub incomplete_objects_expire_after_hours: u32,
-  pub journal: WriteJournal,
+  pub journal: Arc<WriteJournal>,
   /// WARNING: Do not call methods that mutate data on the device from outside a transactionand locked `State`. This isn't enforced via `&mut self` methods to save some hassle with the Rust borrow checker.
-  pub pages: Pages,
+  pub pages: Arc<Pages>,
   /// WARNING: Begin transaction AFTER acquiring lock, as otherwise state change data will be written out of order. The journal will always write transactions in order (even if committed out of order), which means transactions must be started in the order that state is changed, and that's not guaranteed if lock hasn't been acquired yet.
   pub state: Mutex<State>,
 }

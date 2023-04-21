@@ -28,4 +28,4 @@ strum = { version = "0.24", features = ["derive"] }
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1.37"
 twox-hash = "=1.6.3" # Pin the version as the docs mention that outputs could change in future versions: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
-write-journal = "0.7.0"
+write-journal = "0.7.1"
