@@ -1,5 +1,5 @@
 use crate::allocator::Allocator;
-use crate::inode::release_inode;
+use crate::object::release_object;
 use crate::page::DeletedInodePageHeader;
 use crate::page::Pages;
 use chrono::Utc;
@@ -114,7 +114,7 @@ impl DeletedList {
       return false;
     };
     // `alloc.release` will clear page header.
-    release_inode(
+    release_object(
       txn,
       &self.dev,
       &self.pages,

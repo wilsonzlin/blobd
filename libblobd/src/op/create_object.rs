@@ -1,8 +1,8 @@
 use super::OpResult;
 use crate::ctx::Ctx;
-use crate::inode::calc_inode_layout;
-use crate::inode::InodeLayout;
-use crate::inode::INODE_OFF;
+use crate::object::calc_object_layout;
+use crate::object::ObjectLayout;
+use crate::object::OBJECT_OFF;
 use crate::op::key_debug_str;
 use off64::int::create_u16_be;
 use off64::int::Off64WriteMutInt;
@@ -28,10 +28,10 @@ pub(crate) async fn op_create_object(
   req: OpCreateObjectInput,
 ) -> OpResult<OpCreateObjectOutput> {
   let key_len: u16 = req.key.len().try_into().unwrap();
-  let InodeLayout {
+  let ObjectLayout {
     lpage_segment_count,
     tail_segment_page_sizes_pow2,
-  } = calc_inode_layout(&ctx.pages, req.size);
+  } = calc_object_layout(&ctx.pages, req.size);
   let custom_header_count = u16!(req.custom_headers.len());
 
   let mut custom_headers_raw = Vec::new();
@@ -52,7 +52,7 @@ pub(crate) async fn op_create_object(
     custom_headers_raw.extend_from_slice(value.as_bytes());
   }
 
-  let off = INODE_OFF
+  let off = OBJECT_OFF
     .with_key_len(key_len)
     .with_lpage_segments(lpage_segment_count)
     .with_tail_segments(tail_segment_page_sizes_pow2.len())

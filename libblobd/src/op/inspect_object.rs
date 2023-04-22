@@ -2,7 +2,7 @@ use super::OpError;
 use super::OpResult;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
-use crate::inode::INODE_OFF;
+use crate::object::OBJECT_OFF;
 use off64::int::Off64AsyncReadInt;
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ pub(crate) async fn op_inspect_object(
   };
   let object_size = ctx
     .device
-    .read_u40_be_at(inode_dev_offset + INODE_OFF.size())
+    .read_u40_be_at(inode_dev_offset + OBJECT_OFF.size())
     .await;
 
   Ok(OpInspectObjectOutput {

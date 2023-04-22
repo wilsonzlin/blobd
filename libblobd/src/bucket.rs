@@ -1,6 +1,6 @@
 use crate::ctx::State;
-use crate::inode::INODE_OFF;
-use crate::inode::INO_KEY_LEN_MAX;
+use crate::object::OBJECT_OFF;
+use crate::object::OBJECT_KEY_LEN_MAX;
 use crate::page::ActiveInodePageHeader;
 use crate::page::Pages;
 use crate::page::MIN_PAGE_SIZE_POW2;
@@ -79,15 +79,15 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
     while dev_offset > 0 {
       let (hdr, raw) = join! {
         self.buckets.pages.read_page_header::<ActiveInodePageHeader>(dev_offset),
-        self.buckets.dev.read_at(dev_offset, INODE_OFF.with_key_len(INO_KEY_LEN_MAX).lpage_segments()),
+        self.buckets.dev.read_at(dev_offset, OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpage_segments()),
       };
       // It's impossible for this to be any other type, as we hold write lock when changing a bucket's linked list.
       let hdr = hdr.unwrap();
       let next_dev_offset = hdr.next;
-      let object_id = raw.read_u64_be_at(INODE_OFF.object_id());
+      let object_id = raw.read_u64_be_at(OBJECT_OFF.object_id());
       if (expected_object_id.is_none() || expected_object_id.unwrap() == object_id)
-        && raw.read_u16_be_at(INODE_OFF.key_len()) == self.key_len
-        && raw.read_at(INODE_OFF.key(), self.key_len.into()) == self.key
+        && raw.read_u16_be_at(OBJECT_OFF.key_len()) == self.key_len
+        && raw.read_at(OBJECT_OFF.key(), self.key_len.into()) == self.key
       {
         return Some(FoundInode {
           dev_offset,

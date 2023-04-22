@@ -49,7 +49,7 @@ pub mod bucket;
 pub mod ctx;
 pub mod deleted_list;
 pub mod incomplete_list;
-pub mod inode;
+pub mod object;
 pub mod object_id;
 pub mod op;
 pub mod page;

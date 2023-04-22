@@ -1,5 +1,5 @@
 use crate::allocator::Allocator;
-use crate::inode::release_inode;
+use crate::object::release_object;
 use crate::page::IncompleteInodePageHeader;
 use crate::page::Pages;
 use chrono::Utc;
@@ -151,7 +151,7 @@ impl IncompleteList {
       return false;
     };
     // `alloc.release` will clear page header.
-    release_inode(
+    release_object(
       txn,
       &self.dev,
       &self.pages,

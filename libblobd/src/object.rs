@@ -38,14 +38,14 @@ u16 custom_header_entry_count
 **/
 
 #[derive(Clone, Copy)]
-pub(crate) struct InodeOffsets {
+pub(crate) struct ObjectOffsets {
   key_len: u16,
   lpage_segment_count: u64,
   tail_segment_count: u8,
   custom_header_byte_count: u16,
 }
 
-impl InodeOffsets {
+impl ObjectOffsets {
   pub fn with_key_len(self, key_len: u16) -> Self {
     Self { key_len, ..self }
   }
@@ -121,7 +121,7 @@ impl InodeOffsets {
 }
 
 /// WARNING: This is only safe to use for getting offset of fields up to and including `key`. Call `with_*` methods to get offsets of other fields.
-pub(crate) const INODE_OFF: InodeOffsets = InodeOffsets {
+pub(crate) const OBJECT_OFF: ObjectOffsets = ObjectOffsets {
   custom_header_byte_count: 0,
   key_len: 0,
   lpage_segment_count: 0,
@@ -136,7 +136,7 @@ pub(crate) const INODE_OFF: InodeOffsets = InodeOffsets {
 // aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 // aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 // aaaaaaaaaaaaaaaaa
-pub const INO_KEY_LEN_MAX: u16 = 497;
+pub const OBJECT_KEY_LEN_MAX: u16 = 497;
 
 // Two benefits of this over Vec<u8>:
 // - Length type is u8, which is the type for `tail_segment_count`.
@@ -228,12 +228,12 @@ impl Iterator for TailSegmentPageSizesIterator {
   }
 }
 
-pub(crate) struct InodeLayout {
+pub(crate) struct ObjectLayout {
   pub lpage_segment_count: u64,
   pub tail_segment_page_sizes_pow2: TailSegmentPageSizes,
 }
 
-pub(crate) fn calc_inode_layout(pages: &Pages, object_size: u64) -> InodeLayout {
+pub(crate) fn calc_object_layout(pages: &Pages, object_size: u64) -> ObjectLayout {
   let (lpage_segment_count, tail_size) = div_mod_pow2(object_size, pages.lpage_size_pow2);
   let mut rem = ceil_pow2(tail_size, pages.spage_size_pow2);
   let mut tail_segment_page_sizes_pow2 = TailSegmentPageSizes::new();
@@ -246,14 +246,14 @@ pub(crate) fn calc_inode_layout(pages: &Pages, object_size: u64) -> InodeLayout 
     tail_segment_page_sizes_pow2.push(pow2);
     rem &= !(1 << pow2);
   }
-  InodeLayout {
+  ObjectLayout {
     lpage_segment_count,
     tail_segment_page_sizes_pow2,
   }
 }
 
 /// WARNING: This does not verify the page type, nor detach the inode from whatever list it's on, but will clear the page header via `alloc.release`.
-pub(crate) async fn release_inode(
+pub(crate) async fn release_object(
   txn: &mut Transaction,
   dev: &SeekableAsyncFile,
   pages: &Pages,
@@ -262,14 +262,14 @@ pub(crate) async fn release_inode(
   page_size_pow2: u8,
 ) {
   let raw = dev.read_at(page_dev_offset, 1 << page_size_pow2).await;
-  let object_size = raw.read_u40_be_at(INODE_OFF.size());
-  let key_len = raw.read_u16_be_at(INODE_OFF.key_len());
-  let InodeLayout {
+  let object_size = raw.read_u40_be_at(OBJECT_OFF.size());
+  let key_len = raw.read_u16_be_at(OBJECT_OFF.key_len());
+  let ObjectLayout {
     lpage_segment_count,
     tail_segment_page_sizes_pow2,
-  } = calc_inode_layout(pages, object_size);
+  } = calc_object_layout(pages, object_size);
 
-  let off = INODE_OFF
+  let off = OBJECT_OFF
     .with_key_len(key_len)
     .with_lpage_segments(lpage_segment_count)
     .with_tail_segments(tail_segment_page_sizes_pow2.len());

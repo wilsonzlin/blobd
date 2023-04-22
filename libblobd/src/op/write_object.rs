@@ -1,9 +1,9 @@
 use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
-use crate::inode::calc_inode_layout;
-use crate::inode::InodeLayout;
-use crate::inode::INODE_OFF;
+use crate::object::calc_object_layout;
+use crate::object::ObjectLayout;
+use crate::object::OBJECT_OFF;
 use crate::page::PageType;
 use crate::util::div_pow2;
 use crate::util::is_multiple_of_pow2;
@@ -77,10 +77,10 @@ pub(crate) async fn op_write_object<
   };
 
   // Read fields before `key` i.e. `size`, `obj_id`, `key_len`.
-  let raw = ctx.device.read_at(inode_dev_offset, INODE_OFF.key()).await;
-  let object_id = raw.read_u64_be_at(INODE_OFF.object_id());
-  let size = raw.read_u40_be_at(INODE_OFF.size());
-  let key_len = raw.read_u16_be_at(INODE_OFF.key_len());
+  let raw = ctx.device.read_at(inode_dev_offset, OBJECT_OFF.key()).await;
+  let object_id = raw.read_u64_be_at(OBJECT_OFF.object_id());
+  let size = raw.read_u40_be_at(OBJECT_OFF.size());
+  let key_len = raw.read_u16_be_at(OBJECT_OFF.key_len());
   trace!(
     object_id = req.object_id,
     inode_dev_offset,
@@ -103,11 +103,11 @@ pub(crate) async fn op_write_object<
     return Err(OpError::InexactWriteLength);
   };
 
-  let InodeLayout {
+  let ObjectLayout {
     lpage_segment_count,
     tail_segment_page_sizes_pow2,
-  } = calc_inode_layout(&ctx.pages, size);
-  let off = INODE_OFF
+  } = calc_object_layout(&ctx.pages, size);
+  let off = OBJECT_OFF
     .with_key_len(key_len)
     .with_lpage_segments(lpage_segment_count)
     .with_tail_segments(tail_segment_page_sizes_pow2.len());

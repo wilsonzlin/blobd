@@ -2,8 +2,8 @@ use super::OpError;
 use super::OpResult;
 use crate::bucket::FoundInode;
 use crate::ctx::Ctx;
-use crate::inode::calc_inode_layout;
-use crate::inode::INODE_OFF;
+use crate::object::calc_object_layout;
+use crate::object::OBJECT_OFF;
 use crate::op::key_debug_str;
 use crate::page::PageType;
 use crate::util::div_pow2;
@@ -49,7 +49,7 @@ pub(crate) async fn op_read_object(
   let Some(FoundInode { dev_offset: inode_dev_offset, object_id, .. }) = ctx.buckets.get_bucket_for_key(&req.key).await.find_inode(None).await else {
     return Err(OpError::ObjectNotFound);
   };
-  let object_size = ctx.device.read_u40_be_at(INODE_OFF.size()).await;
+  let object_size = ctx.device.read_u40_be_at(OBJECT_OFF.size()).await;
   let start = req.start;
   // Exclusive.
   let end = req.end.unwrap_or(object_size);
@@ -67,8 +67,8 @@ pub(crate) async fn op_read_object(
     "found object to read"
   );
 
-  let alloc_cfg = calc_inode_layout(&ctx.pages, object_size);
-  let off = INODE_OFF
+  let alloc_cfg = calc_object_layout(&ctx.pages, object_size);
+  let off = OBJECT_OFF
     .with_key_len(u16!(req.key.len()))
     .with_lpage_segments(alloc_cfg.lpage_segment_count)
     .with_tail_segments(alloc_cfg.tail_segment_page_sizes_pow2.len());
