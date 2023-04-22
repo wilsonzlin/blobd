@@ -1,4 +1,5 @@
-use crate::deleted_list::DeletedList;
+use crate::ctx::Ctx;
+use crate::ctx::State;
 use crate::object::OBJECT_OFF;
 use crate::page::ObjectPageHeader;
 use crate::page::ObjectState;
@@ -9,6 +10,8 @@ use off64::int::Off64AsyncReadInt;
 use off64::usz;
 use seekable_async_file::SeekableAsyncFile;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::sleep;
 use write_journal::Transaction;
 
 /*
@@ -141,40 +144,57 @@ impl IncompleteList {
         .await;
     };
   }
+}
 
-  pub async fn maybe_reap_next(
-    &mut self,
-    txn: &mut Transaction,
-    deleted_list: &mut DeletedList,
-  ) -> bool {
-    let page_dev_offset = self.head;
-    if page_dev_offset == 0 {
-      return false;
-    };
+/// If there's nothing to reap, `Err(sleep_time_sec)` will be returned.
+/// TODO This is currently a free function to work around the fact that Rust won't let us call a mut method on `state.incomplete_list` with `&mut state.deleted_list` even though they are different fields.
+pub(crate) async fn maybe_reap_next_incomplete(
+  state: &mut State,
+  txn: &mut Transaction,
+) -> Result<(), u64> {
+  let page_dev_offset = state.incomplete_list.head;
+  if page_dev_offset == 0 {
+    return Err(3600);
+  };
 
-    // SAFETY: Object must still exist because only DeletedList::maybe_reap_next function reaps and we're holding the entire State lock right now so it cannot be running.
-    let created_sec = self
-      .dev
-      .read_u48_be_at(page_dev_offset + OBJECT_OFF.created_ms())
+  // SAFETY: Object must still exist because only DeletedList::maybe_reap_next function reaps and we're holding the entire State lock right now so it cannot be running.
+  let created_sec = state
+    .incomplete_list
+    .dev
+    .read_u48_be_at(page_dev_offset + OBJECT_OFF.created_ms())
+    .await
+    / 1000;
+
+  // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time AFTER `reap_objects_after_secs`.
+  let now = get_now_sec();
+  let reap_time = created_sec + state.incomplete_list.reap_objects_after_secs + 3600;
+  if now < reap_time {
+    return Err(reap_time - now);
+  };
+
+  // We don't release directly. It's better to have just one reaper, for simplicity and safety.
+  // TODO List reasons why.
+  // SAFETY:
+  // - We are holding the entire State lock right now.
+  // - Incomplete objects can be deleted directly, but since we're holding the lock, it's impossible for that to be happening right now.
+  // - Since lock is required to update IncompleteList, if an incomplete object was deleted, it should've been detached and we should not be seeing it right now.
+  // - The page header will be updated using the overlay, so the changes will be seen immediately, and definitely after we've released the lock.
+  // - The deletion reaper won't release until well after deletion time.
+  // WARNING: Detach first.
+  state.incomplete_list.detach(txn, page_dev_offset).await;
+  state.deleted_list.attach(txn, page_dev_offset).await;
+  Ok(())
+}
+
+pub(crate) async fn start_incomplete_list_reaper_background_loop(ctx: Arc<Ctx>) {
+  loop {
+    let mut state = ctx.state.lock().await;
+    let mut txn = ctx.journal.begin_transaction();
+    let sleep_sec = maybe_reap_next_incomplete(&mut state, &mut txn)
       .await
-      / 1000;
-
-    // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time AFTER `reap_objects_after_secs`.
-    if get_now_sec() - created_sec < self.reap_objects_after_secs + 3600 {
-      return false;
-    };
-
-    // We don't release directly. It's better to have just one reaper, for simplicity and safety.
-    // TODO List reasons why.
-    // SAFETY:
-    // - We are holding the entire State lock right now.
-    // - Incomplete objects can be deleted directly, but since we're holding the lock, it's impossible for that to be happening right now.
-    // - Since lock is required to update IncompleteList, if an incomplete object was deleted, it should've been detached and we should not be seeing it right now.
-    // - The page header will be updated using the overlay, so the changes will be seen immediately, and definitely after we've released the lock.
-    // - The deletion reaper won't release until well after deletion time.
-    // WARNING: Detach first.
-    self.detach(txn, page_dev_offset).await;
-    deleted_list.attach(txn, page_dev_offset).await;
-    true
+      .err()
+      .unwrap_or(0);
+    ctx.journal.commit_transaction(txn).await;
+    sleep(Duration::from_secs(sleep_sec)).await;
   }
 }

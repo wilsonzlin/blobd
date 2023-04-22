@@ -3,8 +3,10 @@
 use crate::allocator::Allocator;
 use crate::allocator::ALLOCSTATE_SIZE;
 use crate::bucket::Buckets;
+use crate::deleted_list::start_deleted_list_reaper_background_loop;
 use crate::deleted_list::DeletedList;
 use crate::deleted_list::DELETED_LIST_STATE_SIZE;
+use crate::incomplete_list::start_incomplete_list_reaper_background_loop;
 use crate::incomplete_list::IncompleteList;
 use crate::incomplete_list::INCOMPLETE_LIST_STATE_SIZE;
 use crate::object_id::ObjectIdSerial;
@@ -247,6 +249,8 @@ impl Blobd {
     join! {
       self.ctx.journal.start_commit_background_loop(),
       self.journal.start_commit_background_loop(),
+      start_incomplete_list_reaper_background_loop(self.ctx.clone()),
+      start_deleted_list_reaper_background_loop(self.ctx.clone()),
     };
   }
 

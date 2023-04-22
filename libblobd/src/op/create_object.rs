@@ -7,7 +7,6 @@ use crate::object::OBJECT_OFF;
 use crate::op::key_debug_str;
 use crate::op::OpError;
 use crate::util::get_now_ms;
-use off64::int::create_u48_be;
 use off64::int::Off64AsyncWriteInt;
 use off64::int::Off64WriteMutInt;
 use off64::u16;

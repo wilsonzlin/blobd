@@ -1,4 +1,5 @@
-use crate::allocator::Allocator;
+use crate::ctx::Ctx;
+use crate::ctx::State;
 use crate::object::release_object;
 use crate::object::OBJECT_OFF;
 use crate::page::ObjectPageHeader;
@@ -9,7 +10,10 @@ use off64::int::create_u48_be;
 use off64::int::Off64AsyncReadInt;
 use off64::usz;
 use seekable_async_file::SeekableAsyncFile;
+use std::cmp::max;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::sleep;
 use write_journal::Transaction;
 
 /*
@@ -109,46 +113,68 @@ impl DeletedList {
     };
     self.update_tail(txn, page_dev_offset);
   }
+}
 
-  pub async fn maybe_reap_next(&mut self, txn: &mut Transaction, alloc: &mut Allocator) -> bool {
-    let page_dev_offset = self.head;
-    if page_dev_offset == 0 {
-      return false;
-    };
-    let hdr = self
-      .pages
-      .read_page_header::<ObjectPageHeader>(page_dev_offset)
-      .await;
-
-    // SAFETY: Object must still exist because only this function reaps and we haven't processed this object yet.
-    let created_sec = self
-      .dev
-      .read_u48_be_at(page_dev_offset + OBJECT_OFF.created_ms())
-      .await
-      / 1000;
-
-    // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time.
-    // Our token must always be able to read the object state, so we must not reap until well after token expires.
-    let now = get_now_sec();
-    if now - hdr.deleted_sec.unwrap() < 3600
-      || now - created_sec < self.reap_objects_after_secs + 3600
-    {
-      return false;
-    };
-    // `alloc.release` will clear page header.
-    release_object(
-      txn,
-      &self.dev,
-      &self.pages,
-      alloc,
-      page_dev_offset,
-      hdr.metadata_size_pow2,
-    )
+/// If there's nothing to reap, `Err(sleep_time_sec)` will be returned.
+/// TODO This is currently a free function to work around the fact that Rust won't let us call a mut method on `state.deleted_list` with `&mut state.allocator` even though they are different fields.
+pub(crate) async fn maybe_reap_next_deleted(
+  state: &mut State,
+  txn: &mut Transaction,
+) -> Result<(), u64> {
+  let page_dev_offset = state.deleted_list.head;
+  if page_dev_offset == 0 {
+    return Err(3600);
+  };
+  let hdr = state
+    .deleted_list
+    .pages
+    .read_page_header::<ObjectPageHeader>(page_dev_offset)
     .await;
-    self.update_head(txn, hdr.next);
-    if hdr.next == 0 {
-      self.update_tail(txn, 0);
-    };
-    true
+
+  // SAFETY: Object must still exist because only this function reaps and we haven't processed this object yet.
+  let created_sec = state
+    .deleted_list
+    .dev
+    .read_u48_be_at(page_dev_offset + OBJECT_OFF.created_ms())
+    .await
+    / 1000;
+
+  // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time.
+  // Our token must always be able to read the object state, so we must not reap until well after token expires.
+  let now = get_now_sec();
+  let reap_time = max(
+    hdr.deleted_sec.unwrap() + 3600,
+    created_sec + state.deleted_list.reap_objects_after_secs + 3600,
+  );
+  if now < reap_time {
+    return Err(reap_time - now);
+  };
+  // `alloc.release` will clear page header.
+  release_object(
+    txn,
+    &state.deleted_list.dev,
+    &state.deleted_list.pages,
+    &mut state.allocator,
+    page_dev_offset,
+    hdr.metadata_size_pow2,
+  )
+  .await;
+  state.deleted_list.update_head(txn, hdr.next);
+  if hdr.next == 0 {
+    state.deleted_list.update_tail(txn, 0);
+  };
+  Ok(())
+}
+
+pub(crate) async fn start_deleted_list_reaper_background_loop(ctx: Arc<Ctx>) {
+  loop {
+    let mut state = ctx.state.lock().await;
+    let mut txn = ctx.journal.begin_transaction();
+    let sleep_sec = maybe_reap_next_deleted(&mut state, &mut txn)
+      .await
+      .err()
+      .unwrap_or(0);
+    ctx.journal.commit_transaction(txn).await;
+    sleep(Duration::from_secs(sleep_sec)).await;
   }
 }
