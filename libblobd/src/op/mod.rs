@@ -16,6 +16,7 @@ pub enum OpError {
   DataStreamError(Box<dyn Error + Send + Sync>),
   DataStreamLengthMismatch,
   InexactWriteLength,
+  ObjectMetadataTooLarge,
   ObjectNotFound,
   RangeOutOfBounds,
   UnalignedWrite,

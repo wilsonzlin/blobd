@@ -35,7 +35,7 @@ pub async fn endpoint_inspect_object(
     Ok(o) => {
       let mut headers = HeaderMap::new();
       headers.insert(CONTENT_LENGTH, o.size.into());
-      headers.insert("x-blobd-object-id", o.object_id.into());
+      headers.insert("x-blobd-object-id", o.id.into());
       (StatusCode::OK, headers)
     }
     Err(err) => (transform_op_error(err), HeaderMap::new()),

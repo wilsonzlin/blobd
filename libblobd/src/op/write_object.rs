@@ -145,15 +145,10 @@ pub(crate) async fn op_write_object<
   let mut written = 0;
   let mut write_page_idx = 0;
   let mut buf = Vec::new();
-  let mut last_checked_valid = Instant::now();
   loop {
-    // Incomplete object may have expired while we were writing. This is important to check regularly as we must not write after an object has been released, which would otherwise cause corruption.
-    let now = Instant::now();
-    if now.duration_since(last_checked_valid).as_secs() >= 60 {
-      if !incomplete_object_is_still_valid().await {
-        return Err(OpError::ObjectNotFound);
-      };
-      last_checked_valid = now;
+    // See comment for code below.
+    if !incomplete_object_is_still_valid().await {
+      return Err(OpError::ObjectNotFound);
     };
     let Ok(maybe_chunk) = timeout(Duration::from_secs(60), req.data_stream.next()).await else {
       // We timed out, and need to check if the object is still valid.
@@ -173,6 +168,14 @@ pub(crate) async fn op_write_object<
       );
       return Err(OpError::DataStreamLengthMismatch);
     };
+
+    // We have two reasons to check the object state again:
+    // - Prevent use-after-free: incomplete object may have expired while we were writing. This is important to check regularly as we must not write after an object has been released, which would otherwise cause corruption. We need to do this well before actual reap time, to account for possible clock drift and slow execution delaying checks, but no need to do every iteration, e.g. around every 60 seconds.
+    // - Prevent writing after committing: unlike use-after-free, this doesn't actually lead to any corruption, but it's to assist the user to ensure that what they get after they commit is always the same, very useful when creator is different from reader (e.g. content is uploaded by customer, and then hashed and processed by service straight away). AFAICT, doing this every iteration just before writing should be good enough, only possibly microseconds delay due to CPU cache coherence as we're not using locks, atomics, or memory barriers to read the object state. This should be reasonably fast given the object metadata should be in the page cache.
+    if !incomplete_object_is_still_valid().await {
+      return Err(OpError::ObjectNotFound);
+    };
+
     // TODO We could write more frequently instead of buffering an entire page if the page is larger than one SSD page/block write. However, if it's smaller, the I/O system (e.g. mmap) would be doing buffering and repeated writes anyway.
     let (amount_to_write, page_dev_offset) = write_dev_offsets[write_page_idx];
     if buf_len < amount_to_write {

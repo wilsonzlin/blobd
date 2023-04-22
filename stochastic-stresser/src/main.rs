@@ -404,7 +404,7 @@ async fn main() {
               })
               .await
               .unwrap();
-            assert_eq!(res.object_id, object_id);
+            assert_eq!(res.id, object_id);
             assert_eq!(res.size, data_len);
             tasks_sender
               .send(Task::Read {

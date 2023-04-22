@@ -52,7 +52,7 @@ impl IncompleteList {
     dev: SeekableAsyncFile,
     dev_offset: u64,
     pages: Arc<Pages>,
-    incomplete_objects_expire_after_hours: u32,
+    incomplete_objects_expire_after_ms: u64,
   ) -> Self {
     let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD).await;
     let tail = dev.read_u48_be_at(dev_offset + OFFSETOF_TAIL).await;
@@ -60,7 +60,7 @@ impl IncompleteList {
       dev_offset,
       dev,
       head,
-      incomplete_objects_expire_after_hours,
+      incomplete_objects_expire_after_ms,
       pages,
       tail,
     }
@@ -146,8 +146,8 @@ impl IncompleteList {
       .read_page_header_and_size::<IncompleteInodePageHeader>(page_dev_offset)
       .await
       .unwrap();
-    // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time AFTER `incomplete_objects_expire_after_hours`.
-    if get_now_hour() - hdr.created_hour < self.incomplete_objects_expire_after_hours + 1 {
+    // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time AFTER `incomplete_objects_expire_after_ms`.
+    if get_now_ms() - hdr.created_hour < self.incomplete_objects_expire_after_ms + 1 {
       return false;
     };
     // `alloc.release` will clear page header.

@@ -83,7 +83,7 @@ pub struct BlobdLoader {
   bucket_lock_count_log2: u8,
   lpage_size_pow2: u8,
   spage_size_pow2: u8,
-  incomplete_objects_expire_after_hours: u32,
+  incomplete_objects_expire_after_ms: u64,
 
   object_id_serial_dev_offset: u64,
   stream_dev_offset: u64,
@@ -163,7 +163,7 @@ impl BlobdLoader {
       device,
       heap_dev_offset,
       incomplete_list_dev_offset,
-      incomplete_objects_expire_after_hours,
+      incomplete_objects_expire_after_ms,
       journal,
       lpage_size_pow2,
       object_id_serial_dev_offset,
