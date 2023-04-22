@@ -2,6 +2,7 @@ use crate::allocator::Allocator;
 use crate::object::release_object;
 use crate::object::OBJECT_OFF;
 use crate::page::ObjectPageHeader;
+use crate::page::ObjectState;
 use crate::page::Pages;
 use crate::util::get_now_sec;
 use off64::int::create_u48_be;
@@ -86,6 +87,8 @@ impl DeletedList {
     self
       .pages
       .update_page_header::<ObjectPageHeader>(txn, page_dev_offset, |o| {
+        debug_assert_ne!(o.state, ObjectState::Deleted);
+        debug_assert_eq!(o.deleted_sec, None);
         o.deleted_sec = Some(get_now_sec());
         o.next = 0;
       })
@@ -96,7 +99,11 @@ impl DeletedList {
     if self.tail != 0 {
       self
         .pages
-        .update_page_header::<ObjectPageHeader>(txn, self.tail, |i| i.next = page_dev_offset)
+        .update_page_header::<ObjectPageHeader>(txn, self.tail, |i| {
+          debug_assert_eq!(i.state, ObjectState::Deleted);
+          debug_assert_ne!(i.deleted_sec, None);
+          i.next = page_dev_offset;
+        })
         .await;
     };
     self.update_tail(txn, page_dev_offset);

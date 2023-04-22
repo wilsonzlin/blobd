@@ -2,6 +2,7 @@ use crate::ctx::State;
 use crate::object::OBJECT_KEY_LEN_MAX;
 use crate::object::OBJECT_OFF;
 use crate::page::ObjectPageHeader;
+use crate::page::ObjectState;
 use crate::page::Pages;
 use crate::page::MIN_PAGE_SIZE_POW2;
 use crate::stream::StreamEvent;
@@ -83,6 +84,7 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
         self.buckets.pages.read_page_header::<ObjectPageHeader>(dev_offset),
         self.buckets.dev.read_at(dev_offset, OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages()),
       };
+      assert_eq!(hdr.state, ObjectState::Committed);
       let next_dev_offset = hdr.next;
       let object_id = raw.read_u64_be_at(OBJECT_OFF.id());
       if (expected_id.is_none() || expected_id.unwrap() == object_id)
@@ -164,6 +166,8 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
           .buckets
           .pages
           .update_page_header::<ObjectPageHeader>(txn, prev_inode_dev_offset, |p| {
+            debug_assert_eq!(p.state, ObjectState::Committed);
+            debug_assert_eq!(p.deleted_sec, None);
             p.next = next_obj.unwrap_or(0)
           })
           .await;

@@ -101,6 +101,8 @@ impl IncompleteList {
       self
         .pages
         .update_page_header::<ObjectPageHeader>(txn, self.tail, |i| {
+          debug_assert_eq!(i.state, ObjectState::Incomplete);
+          debug_assert_eq!(i.deleted_sec, None);
           i.next = page_dev_offset;
         })
         .await;
@@ -119,7 +121,11 @@ impl IncompleteList {
     } else {
       self
         .pages
-        .update_page_header::<ObjectPageHeader>(txn, hdr.prev, |i| i.next = hdr.next)
+        .update_page_header::<ObjectPageHeader>(txn, hdr.prev, |i| {
+          debug_assert_eq!(i.state, ObjectState::Incomplete);
+          debug_assert_eq!(i.deleted_sec, None);
+          i.next = hdr.next;
+        })
         .await;
     };
     if hdr.next == 0 {
@@ -127,7 +133,11 @@ impl IncompleteList {
     } else {
       self
         .pages
-        .update_page_header::<ObjectPageHeader>(txn, hdr.next, |i| i.prev = hdr.prev)
+        .update_page_header::<ObjectPageHeader>(txn, hdr.next, |i| {
+          debug_assert_eq!(i.state, ObjectState::Incomplete);
+          debug_assert_eq!(i.deleted_sec, None);
+          i.prev = hdr.prev;
+        })
         .await;
     };
   }

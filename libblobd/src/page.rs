@@ -54,7 +54,8 @@ impl PageHeader for FreePagePageHeader {
 #[derive(PartialEq, Eq, Clone, Copy, Debug, FromPrimitive)]
 #[repr(u8)]
 pub(crate) enum ObjectState {
-  Incomplete,
+  // Avoid 0 to detect uninitialised/missing/corrupt state.
+  Incomplete = 1,
   Committed,
   Deleted,
 }
@@ -238,6 +239,7 @@ impl Pages {
   }
 
   pub async fn read_page_header<H: PageHeader>(&self, page_dev_offset: u64) -> H {
+    self.assert_valid_page_dev_offset(page_dev_offset);
     let raw = self
       .journal
       .read_with_overlay(page_dev_offset, PAGE_HEADER_CAP)
@@ -251,6 +253,7 @@ impl Pages {
     page_dev_offset: u64,
     h: H,
   ) {
+    self.assert_valid_page_dev_offset(page_dev_offset);
     let mut out = vec![0u8; usz!(PAGE_HEADER_CAP)];
     h.serialize(&mut out);
     txn.write_with_overlay(page_dev_offset, out);

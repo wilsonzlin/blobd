@@ -85,6 +85,9 @@ pub(crate) async fn op_commit_object(
     ctx
       .pages
       .update_page_header::<ObjectPageHeader>(&mut txn, object_dev_offset, |o| {
+        debug_assert_eq!(o.state, ObjectState::Incomplete);
+        debug_assert_eq!(o.deleted_sec, None);
+        o.state = ObjectState::Committed;
         o.next = cur_bkt_head;
       })
       .await;
