@@ -20,16 +20,9 @@ pub(crate) async fn op_inspect_object(
   req: OpInspectObjectInput,
 ) -> OpResult<OpInspectObjectOutput> {
   let bkt = ctx.buckets.get_bucket_for_key(&req.key).await;
-  let Some(FoundObject { dev_offset: inode_dev_offset, id: object_id, .. }) = bkt.find_object(None).await else {
+  let Some(FoundObject { dev_offset, id, size, .. }) = bkt.find_object(None).await else {
     return Err(OpError::ObjectNotFound);
   };
-  let object_size = ctx
-    .device
-    .read_u40_be_at(inode_dev_offset + OBJECT_OFF.size())
-    .await;
 
-  Ok(OpInspectObjectOutput {
-    id: object_id,
-    size: object_size,
-  })
+  Ok(OpInspectObjectOutput { id, size })
 }

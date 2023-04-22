@@ -58,6 +58,7 @@ pub(crate) struct FoundObject {
   pub next_dev_offset: Option<u64>,
   pub dev_offset: u64,
   pub id: u64,
+  pub size: u64,
 }
 
 // This type exists to make sure methods are called only when holding appropriate lock.
@@ -93,6 +94,7 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
           next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0),
           id: object_id,
           prev_dev_offset,
+          size: raw.read_u40_be_at(OBJECT_OFF.size()),
         });
       };
       prev_dev_offset = Some(dev_offset);

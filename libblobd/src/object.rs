@@ -1,5 +1,6 @@
 use crate::allocator::Allocator;
 use crate::page::Pages;
+use crate::page::PAGE_HEADER_CAP;
 use crate::util::ceil_pow2;
 use crate::util::div_mod_pow2;
 use off64::int::Off64ReadInt;
@@ -73,7 +74,7 @@ impl ObjectOffsets {
   }
 
   pub fn created_ms(self) -> u64 {
-    self._reserved_by_header() + 16
+    self._reserved_by_header() + PAGE_HEADER_CAP
   }
 
   pub fn size(self) -> u64 {

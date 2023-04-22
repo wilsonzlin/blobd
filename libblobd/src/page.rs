@@ -16,7 +16,7 @@ pub(crate) const MAX_PAGE_SIZE_POW2: u8 = 32;
 
 // Bytes to reserve per page.
 const PAGE_HEADER_CAP_POW2: u8 = 4;
-const PAGE_HEADER_CAP: u64 = 1 << PAGE_HEADER_CAP_POW2;
+pub(crate) const PAGE_HEADER_CAP: u64 = 1 << PAGE_HEADER_CAP_POW2;
 
 const FREE_PAGE_OFFSETOF_PREV: u64 = 0;
 const FREE_PAGE_OFFSETOF_NEXT: u64 = FREE_PAGE_OFFSETOF_PREV + 5;

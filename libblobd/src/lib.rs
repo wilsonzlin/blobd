@@ -133,14 +133,13 @@ impl BlobdLoader {
     let journal_dev_offset = buckets_dev_offset + buckets_size;
     let min_reserved_space = journal_dev_offset + JOURNAL_SIZE_MIN;
 
+    // `heap_dev_offset` is equivalent to the reserved size.
     let heap_dev_offset = ceil_pow2(min_reserved_space, lpage_size_pow2);
     let journal_size = heap_dev_offset - journal_dev_offset;
-    let reserved_space = journal_dev_offset + journal_size;
 
     info!(
       buckets_size,
       journal_size,
-      reserved_space,
       heap_dev_offset,
       lpage_size = 1 << lpage_size_pow2,
       spage_size = 1 << spage_size_pow2,

@@ -4,7 +4,6 @@ use crate::page::ObjectPageHeader;
 use crate::page::ObjectState;
 use crate::page::Pages;
 use crate::util::get_now_sec;
-use chrono::Utc;
 use off64::int::create_u48_be;
 use off64::int::Off64AsyncReadInt;
 use off64::usz;
@@ -142,10 +141,6 @@ impl IncompleteList {
     if page_dev_offset == 0 {
       return false;
     };
-    let hdr = self
-      .pages
-      .read_page_header::<ObjectPageHeader>(page_dev_offset)
-      .await;
 
     // SAFETY: Object must still exist because only DeletedList::maybe_reap_next function reaps and we're holding the entire State lock right now so it cannot be running.
     let created_sec = self.dev.read_u48_be_at(OBJECT_OFF.created_ms()).await / 1000;
@@ -160,6 +155,7 @@ impl IncompleteList {
     // SAFETY:
     // - We are holding the entire State lock right now.
     // - Incomplete objects can be deleted directly, but since we're holding the lock, it's impossible for that to be happening right now.
+    // - Since lock is required to update IncompleteList, if an incomplete object was deleted, it should've been detached and we should not be seeing it right now.
     // - The page header will be updated using the overlay, so the changes will be seen immediately, and definitely after we've released the lock.
     // - The deletion reaper won't release until well after deletion time.
     // WARNING: Detach first.
