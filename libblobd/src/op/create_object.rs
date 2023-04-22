@@ -7,6 +7,8 @@ use crate::object::OBJECT_OFF;
 use crate::op::key_debug_str;
 use crate::op::OpError;
 use crate::util::get_now_ms;
+use off64::int::create_u48_be;
+use off64::int::Off64AsyncWriteInt;
 use off64::int::Off64WriteMutInt;
 use off64::u16;
 use off64::usz;
@@ -79,6 +81,13 @@ pub(crate) async fn op_create_object(
       .allocator
       .allocate_and_ret_with_size(&mut txn, meta_size)
       .await;
+
+    // This is a one-time special direct write to prevent an edge case where the object is attached to the incomplete list, and the incomplete list tries to read the object's metadata (e.g. creation time), *before* the journal has actually written it out to the mmap. Normally this is dangerous because an unexpected page writeback could leave the device in a corrupted state, but in this specific case it's fine because we're writing to free space, so even if we crash right after this it's just junk. This specific issue can only occur here because object metadata is immutable and all other ops on the object can only occur after the journal has committed and the reseponse has been returned.
+    ctx
+      .device
+      .write_u48_be_at(dev_offset + off.created_ms(), created_ms)
+      .await;
+
     for i in 0..lpage_count {
       trace!(
         key = key_debug_str(&req.key),
