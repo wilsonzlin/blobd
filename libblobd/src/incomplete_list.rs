@@ -44,11 +44,6 @@ pub(crate) struct IncompleteList {
   tail: u64,
 }
 
-fn get_now_hour() -> u32 {
-  let hr = Utc::now().timestamp() / 60 / 60;
-  hr.try_into().unwrap()
-}
-
 impl IncompleteList {
   pub async fn load_from_device(
     dev: SeekableAsyncFile,

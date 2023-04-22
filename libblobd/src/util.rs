@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 use chrono::Utc;
+use off64::u32;
 use off64::u64;
 
 pub(crate) fn get_now_ms() -> u64 {
@@ -9,6 +10,10 @@ pub(crate) fn get_now_ms() -> u64 {
 
 pub(crate) fn get_now_sec() -> u64 {
   u64!(Utc::now().timestamp())
+}
+
+pub(crate) fn get_now_hour() -> u32 {
+  u32!(Utc::now().timestamp() / 60 / 60)
 }
 
 pub(crate) fn div_ceil(n: u64, d: u64) -> u64 {
