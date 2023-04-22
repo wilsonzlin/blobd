@@ -33,6 +33,7 @@ impl Display for OpError {
         "the input data stream contains more or less bytes than specified"
       ),
       OpError::InexactWriteLength => write!(f, "data to write is not an exact chunk"),
+      OpError::ObjectMetadataTooLarge => write!(f, "object metadata is too large"),
       OpError::ObjectNotFound => write!(f, "object does not exist"),
       OpError::RangeOutOfBounds => write!(f, "requested range to read or write is invalid"),
       OpError::UnalignedWrite => {

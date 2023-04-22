@@ -22,10 +22,13 @@ pub(crate) struct State {
 pub(crate) struct Ctx {
   pub buckets: Buckets,
   pub device: SeekableAsyncFile,
-  pub incomplete_objects_expire_after_ms: u64,
   pub journal: Arc<WriteJournal>,
   /// WARNING: Do not call methods that mutate data on the device from outside a transactionand locked `State`. This isn't enforced via `&mut self` methods to save some hassle with the Rust borrow checker.
   pub pages: Arc<Pages>,
+  // This value controls:
+  // - How long tokens live for, which forces the object to live at least that long (even if marked as deleted).
+  // - How long before incomplete objects are automatically sent for deletion.
+  pub reap_objects_after_secs: u64,
   /// WARNING: Begin transaction AFTER acquiring lock, as otherwise state change data will be written out of order. The journal will always write transactions in order (even if committed out of order), which means transactions must be started in the order that state is changed, and that's not guaranteed if lock hasn't been acquired yet.
   pub state: Mutex<State>,
 }

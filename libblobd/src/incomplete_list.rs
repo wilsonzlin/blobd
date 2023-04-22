@@ -1,7 +1,9 @@
-use crate::allocator::Allocator;
-use crate::object::release_object;
-use crate::page::IncompleteInodePageHeader;
+use crate::deleted_list::DeletedList;
+use crate::object::OBJECT_OFF;
+use crate::page::ObjectPageHeader;
+use crate::page::ObjectState;
 use crate::page::Pages;
+use crate::util::get_now_sec;
 use chrono::Utc;
 use off64::int::create_u48_be;
 use off64::int::Off64AsyncReadInt;
@@ -34,12 +36,12 @@ pub(crate) const INCOMPLETE_LIST_STATE_SIZE: u64 = OFFSETOF_TAIL + 5;
 /// This also means that the background incomplete reaper loop must also lock the entire state and perform everything in a transaction every iteration.
 /// WARNING: Writers must not begin or continue writing if within one hour of an incomplete object's reap time. Otherwise, the reaper may reap the object from under them, and the writer will be writing to released pages. If streaming, check in regularly. Stop before one hour to prevent race conditions and clock drift issues. Commits are safe because they acquire the state lock.
 pub(crate) struct IncompleteList {
-  dev: SeekableAsyncFile,
   dev_offset: u64,
+  dev: SeekableAsyncFile,
   head: u64,
   pages: Arc<Pages>,
+  reap_objects_after_secs: u64,
   tail: u64,
-  incomplete_objects_expire_after_hours: u32,
 }
 
 fn get_now_hour() -> u32 {
@@ -52,7 +54,7 @@ impl IncompleteList {
     dev: SeekableAsyncFile,
     dev_offset: u64,
     pages: Arc<Pages>,
-    incomplete_objects_expire_after_ms: u64,
+    reap_objects_after_secs: u64,
   ) -> Self {
     let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD).await;
     let tail = dev.read_u48_be_at(dev_offset + OFFSETOF_TAIL).await;
@@ -60,8 +62,8 @@ impl IncompleteList {
       dev_offset,
       dev,
       head,
-      incomplete_objects_expire_after_ms,
       pages,
+      reap_objects_after_secs,
       tail,
     }
   }
@@ -88,23 +90,24 @@ impl IncompleteList {
   }
 
   /// WARNING: This will overwrite the page header.
-  pub async fn attach(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
+  pub async fn attach(&mut self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
     self
       .pages
-      .write_page_header(txn, page_dev_offset, IncompleteInodePageHeader {
-        created_hour: get_now_hour(),
-        prev: self.tail,
+      .write_page_header(txn, page_dev_offset, ObjectPageHeader {
+        deleted_sec: None,
+        metadata_size_pow2: page_size_pow2,
         next: 0,
-      })
-      .await;
+        prev: self.tail,
+        state: ObjectState::Incomplete,
+      });
     if self.head == 0 {
       self.update_head(txn, page_dev_offset);
     };
     if self.tail != 0 {
       self
         .pages
-        .update_page_header::<IncompleteInodePageHeader>(txn, self.tail, |i| {
-          i.next = page_dev_offset
+        .update_page_header::<ObjectPageHeader>(txn, self.tail, |i| {
+          i.next = page_dev_offset;
         })
         .await;
     };
@@ -115,15 +118,14 @@ impl IncompleteList {
   pub async fn detach(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
     let hdr = self
       .pages
-      .read_page_header::<IncompleteInodePageHeader>(page_dev_offset)
-      .await
-      .unwrap();
+      .read_page_header::<ObjectPageHeader>(page_dev_offset)
+      .await;
     if hdr.prev == 0 {
       self.update_head(txn, hdr.next);
     } else {
       self
         .pages
-        .update_page_header::<IncompleteInodePageHeader>(txn, hdr.prev, |i| i.next = hdr.next)
+        .update_page_header::<ObjectPageHeader>(txn, hdr.prev, |i| i.next = hdr.next)
         .await;
     };
     if hdr.next == 0 {
@@ -131,36 +133,43 @@ impl IncompleteList {
     } else {
       self
         .pages
-        .update_page_header::<IncompleteInodePageHeader>(txn, hdr.next, |i| i.prev = hdr.prev)
+        .update_page_header::<ObjectPageHeader>(txn, hdr.next, |i| i.prev = hdr.prev)
         .await;
     };
   }
 
-  pub async fn maybe_reap_next(&mut self, txn: &mut Transaction, alloc: &mut Allocator) -> bool {
+  pub async fn maybe_reap_next(
+    &mut self,
+    txn: &mut Transaction,
+    deleted_list: &mut DeletedList,
+  ) -> bool {
     let page_dev_offset = self.head;
     if page_dev_offset == 0 {
       return false;
     };
-    let (page_size_pow2, hdr) = self
+    let hdr = self
       .pages
-      .read_page_header_and_size::<IncompleteInodePageHeader>(page_dev_offset)
-      .await
-      .unwrap();
-    // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time AFTER `incomplete_objects_expire_after_ms`.
-    if get_now_ms() - hdr.created_hour < self.incomplete_objects_expire_after_ms + 1 {
+      .read_page_header::<ObjectPageHeader>(page_dev_offset)
+      .await;
+
+    // SAFETY: Object must still exist because only DeletedList::maybe_reap_next function reaps and we're holding the entire State lock right now so it cannot be running.
+    let created_sec = self.dev.read_u48_be_at(OBJECT_OFF.created_ms()).await / 1000;
+
+    // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time AFTER `reap_objects_after_secs`.
+    if get_now_sec() - created_sec < self.reap_objects_after_secs + 3600 {
       return false;
     };
-    // `alloc.release` will clear page header.
-    release_object(
-      txn,
-      &self.dev,
-      &self.pages,
-      alloc,
-      page_dev_offset,
-      page_size_pow2,
-    )
-    .await;
+
+    // We don't release directly. It's better to have just one reaper, for simplicity and safety.
+    // TODO List reasons why.
+    // SAFETY:
+    // - We are holding the entire State lock right now.
+    // - Incomplete objects can be deleted directly, but since we're holding the lock, it's impossible for that to be happening right now.
+    // - The page header will be updated using the overlay, so the changes will be seen immediately, and definitely after we've released the lock.
+    // - The deletion reaper won't release until well after deletion time.
+    // WARNING: Detach first.
     self.detach(txn, page_dev_offset).await;
+    deleted_list.attach(txn, page_dev_offset).await;
     true
   }
 }

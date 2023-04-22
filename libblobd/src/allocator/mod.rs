@@ -2,9 +2,7 @@
 pub mod tests;
 
 use crate::page::FreePagePageHeader;
-use crate::page::PageType;
 use crate::page::Pages;
-use crate::page::VoidPageHeader;
 use crate::page::MAX_PAGE_SIZE_POW2;
 use crate::page::MIN_PAGE_SIZE_POW2;
 use crate::util::mod_pow2;
@@ -17,7 +15,6 @@ use off64::int::Off64WriteMutInt;
 use off64::usz;
 use seekable_async_file::SeekableAsyncFile;
 use std::cmp::max;
-use std::cmp::min;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -112,8 +109,7 @@ impl Allocator {
     let hdr = self
       .pages
       .read_page_header::<FreePagePageHeader>(page_dev_offset)
-      .await
-      .unwrap();
+      .await;
     if hdr.prev == 0 {
       // Update head.
       self.update_free_list_head(txn, page_size_pow2, hdr.next);
@@ -149,11 +145,14 @@ impl Allocator {
       return None;
     };
     trace!(page_size_pow2, page_dev_offset, "found free page");
+    self
+      .pages
+      .mark_page_as_not_free(txn, page_dev_offset, page_size_pow2)
+      .await;
     let new_free_page = self
       .pages
       .read_page_header::<FreePagePageHeader>(page_dev_offset)
       .await
-      .unwrap()
       .next;
     self.update_free_list_head(txn, page_size_pow2, new_free_page);
     if new_free_page != 0 {
@@ -172,11 +171,10 @@ impl Allocator {
     page_dev_offset: u64,
     page_size_pow2: u8,
   ) {
-    // Don't assert that current page type is not FreePage, as we use this function for inserting pages from a freshly-minted block, where the pages are already linked.
     let cur_head = self.get_free_list_head(page_size_pow2);
     self
       .pages
-      .initialise_page_header(txn, page_dev_offset, page_size_pow2, FreePagePageHeader {
+      .write_page_header(txn, page_dev_offset, FreePagePageHeader {
         prev: 0,
         next: cur_head,
       });
@@ -208,6 +206,12 @@ impl Allocator {
       create_u64_be(new_frontier).to_vec(),
     );
     self.frontier_dev_offset = new_frontier;
+
+    // Write bitmap of free pages in metadata lpage for block. We must use overlay.
+    for i in (0..self.pages.lpage_size()).step_by(8) {
+      txn.write_with_overlay(block_dev_offset + i, create_u64_be(u64::MAX).to_vec());
+    }
+
     // This code is subtle:
     // - The first lpage of a block is always reserved for the metadata lpage, so we should not mark that as a free page.
     // - The first data lpage (second lpage) will be immediately returned for usage, so we should not mark that as a free page.
@@ -219,15 +223,12 @@ impl Allocator {
       .skip(1)
       .tuple_windows()
     {
-      self.pages.initialise_page_header(
-        txn,
-        lpage_dev_offset,
-        self.pages.lpage_size_pow2,
-        FreePagePageHeader {
+      self
+        .pages
+        .write_page_header(txn, lpage_dev_offset, FreePagePageHeader {
           prev: if left == block_dev_offset { 0 } else { left },
           next: if right == new_frontier { 0 } else { right },
-        },
-      );
+        });
     }
     self
       .insert_page_into_free_list(
@@ -237,7 +238,13 @@ impl Allocator {
       )
       .await;
     info!(block_dev_offset, new_frontier, "allocated new block");
-    block_dev_offset + lpage_size
+
+    let first_data_lpage_dev_offset = block_dev_offset + lpage_size;
+    self
+      .pages
+      .mark_page_as_not_free(txn, first_data_lpage_dev_offset, self.pages.lpage_size_pow2)
+      .await;
+    first_data_lpage_dev_offset
   }
 
   /// This function will write the FreePagePageHeader to all split pages that aren't returned for the requested allocation, and VoidPageHeader to the returned allocated page, so all page headers will remain in a consistent state.
@@ -271,60 +278,53 @@ impl Allocator {
         larger_page_dev_offset
       }
     };
-    // If we don't initialise it, its page header won't have a size, and `write_page_header` won't work.
-    self
-      .pages
-      .initialise_page_header(txn, page_dev_offset, page_size_pow2, VoidPageHeader {});
     trace!(page_size_pow2, page_dev_offset, "allocated page");
     page_dev_offset
   }
 
-  pub async fn allocate(&mut self, txn: &mut Transaction, size: u64) -> u64 {
+  pub async fn allocate_and_ret_with_size(
+    &mut self,
+    txn: &mut Transaction,
+    size: u64,
+  ) -> (u64, u8) {
     let pow2 = max(
       self.pages.spage_size_pow2,
       size.next_power_of_two().ilog2().try_into().unwrap(),
     );
     assert!(pow2 <= self.pages.lpage_size_pow2);
-    self.allocate_page(txn, pow2).await
+    (self.allocate_page(txn, pow2).await, pow2)
+  }
+
+  pub async fn allocate(&mut self, txn: &mut Transaction, size: u64) -> u64 {
+    self.allocate_and_ret_with_size(txn, size).await.0
   }
 
   #[async_recursion]
-  pub async fn release(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
-    let (typ, page_size_pow2) = self
-      .pages
-      .read_page_header_type_and_size(page_dev_offset)
-      .await;
-    // Our current system design/logic only allows releasing deleted inodes by reaper, or from merging released buddies (this function), so let's be strict.
-    assert!(
-      typ == PageType::DeletedInode || typ == PageType::ObjectSegmentData || typ == PageType::Void
-    );
+  pub async fn release(&mut self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
     // Check if buddy is also free so we can recompact. This doesn't apply to lpages as they don't have buddies (they aren't split).
     if page_size_pow2 < self.pages.lpage_size_pow2 {
       let buddy_page_dev_offset = page_dev_offset ^ (1 << page_size_pow2);
       if self
         .pages
-        .read_page_header_type_and_size(buddy_page_dev_offset)
+        .is_page_free(buddy_page_dev_offset, page_size_pow2)
         .await
-        == (PageType::FreePage, page_size_pow2)
       {
-        // Buddy is also free. We must clear both page headers before merging them to avoid stale reads of their headers.
-        // For the left page, since we'll recursively call `release` on it, it needs to have correct size in its header for the recursive call (which will read the size) to work correctly.
-        let (left_page, right_page) = (
-          min(page_dev_offset, buddy_page_dev_offset),
-          max(page_dev_offset, buddy_page_dev_offset),
-        );
+        // Buddy is also free. We could mark both these pages as free in the bitmap but we don't need to.
         self
-          .pages
-          .initialise_page_header(txn, left_page, page_size_pow2 + 1, VoidPageHeader {});
-        self
-          .pages
-          .initialise_page_header(txn, right_page, page_size_pow2, VoidPageHeader {});
+          .detach_page_from_free_list(txn, buddy_page_dev_offset, page_size_pow2)
+          .await;
         // Merge by freeing parent larger page.
         let parent_page_dev_offset = page_dev_offset & !((1 << (page_size_pow2 + 1)) - 1);
-        self.release(txn, parent_page_dev_offset).await;
+        self
+          .release(txn, parent_page_dev_offset, page_size_pow2 + 1)
+          .await;
         return;
       };
     };
+    self
+      .pages
+      .mark_page_as_free(txn, page_dev_offset, page_size_pow2)
+      .await;
     // This will overwrite the page's header.
     self
       .insert_page_into_free_list(txn, page_dev_offset, page_size_pow2)

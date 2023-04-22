@@ -20,6 +20,8 @@ The ordering of these fields is important (and somewhat strange/seemingly random
 - **read_object** requires *find_inode_in_bucket* as well as `size`, `tail_data_fragment_dev_offset_or_zero_if_none`, and one `tile` element.
 - **commit_object** requires `obj_id`.
 
+u8[16] _reserved_by_header
+u48 created_ms
 u40 size
 u64 obj_id
 u16 key_len
@@ -66,8 +68,16 @@ impl ObjectOffsets {
     }
   }
 
-  pub fn size(self) -> u64 {
+  pub fn _reserved_by_header(self) -> u64 {
     0
+  }
+
+  pub fn created_ms(self) -> u64 {
+    self._reserved_by_header() + 16
+  }
+
+  pub fn size(self) -> u64 {
+    self.created_ms() + 6
   }
 
   pub fn id(self) -> u64 {
@@ -266,11 +276,15 @@ pub(crate) async fn release_object(
     .with_tail_pages(tail_page_sizes_pow2.len());
   for i in 0..lpage_count {
     let page_dev_offset = raw.read_u48_be_at(off.lpage(i));
-    alloc.release(txn, page_dev_offset).await;
+    alloc
+      .release(txn, page_dev_offset, pages.lpage_size_pow2)
+      .await;
   }
-  for i in 0..tail_page_sizes_pow2.len() {
+  for (i, tail_page_size_pow2) in tail_page_sizes_pow2 {
     let page_dev_offset = raw.read_u48_be_at(off.tail_page(i));
-    alloc.release(txn, page_dev_offset).await;
+    alloc
+      .release(txn, page_dev_offset, tail_page_size_pow2)
+      .await;
   }
-  alloc.release(txn, page_dev_offset).await;
+  alloc.release(txn, page_dev_offset, page_size_pow2).await;
 }

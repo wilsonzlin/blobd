@@ -1,10 +1,12 @@
 use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
+use crate::incomplete_token::IncompleteToken;
 use crate::object::calc_object_layout;
 use crate::object::ObjectLayout;
 use crate::object::OBJECT_OFF;
-use crate::page::PageType;
+use crate::page::ObjectPageHeader;
+use crate::page::ObjectState;
 use crate::util::div_pow2;
 use crate::util::is_multiple_of_pow2;
 use futures::Stream;
@@ -19,7 +21,6 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
-use tokio::time::Instant;
 use tracing::trace;
 use tracing::warn;
 
@@ -27,8 +28,7 @@ pub struct OpWriteObjectInput<
   S: Unpin + Stream<Item = Result<Vec<u8>, Box<dyn Error + Send + Sync>>>,
 > {
   pub offset: u64,
-  pub object_id: u64,
-  pub inode_dev_offset: u64,
+  pub incomplete_token: IncompleteToken,
   pub data_len: u64,
   pub data_stream: S,
 }
@@ -36,7 +36,6 @@ pub struct OpWriteObjectInput<
 pub struct OpWriteObjectOutput {}
 
 // TODO We currently don't verify that the key is correct.
-// TODO The caller must ensure that the object exists, otherwise corruption could occur. For example, use a signed token that expires well before any incomplete object would be reaped, and do not allow direct deletions of incomplete objects.
 pub(crate) async fn op_write_object<
   S: Unpin + Stream<Item = Result<Vec<u8>, Box<dyn Error + Send + Sync>>>,
 >(
@@ -44,23 +43,29 @@ pub(crate) async fn op_write_object<
   mut req: OpWriteObjectInput<S>,
 ) -> OpResult<OpWriteObjectOutput> {
   let len = req.data_len;
-  let inode_dev_offset = req.inode_dev_offset;
+  let object_dev_offset = req.incomplete_token.object_dev_offset;
   trace!(
-    object_id = req.object_id,
-    inode_dev_offset,
+    dev_offset = object_dev_offset,
     offset = req.offset,
     length = req.data_len,
     "writing object"
   );
 
+  // See IncompleteToken for why if the token has not expired, the object definitely still exists (i.e. safe to read any metadata).
+  if req
+    .incomplete_token
+    .has_expired(ctx.reap_objects_after_secs)
+  {
+    return Err(OpError::ObjectNotFound);
+  };
+
   let incomplete_object_is_still_valid = || async {
     // Our incomplete reaper simply deletes incomplete objects instead of reaping directly, which avoids some clock drift issues, so we only need to check the type, and should not check if it's expired based on its creation time. This is always correct, as if the page still exists, it's definitely still the same object, as we check well before any deleted object would be reaped.
-    let (hdr_type, _) = ctx
+    let hdr = ctx
       .pages
-      .read_page_header_type_and_size(inode_dev_offset)
+      .read_page_header::<ObjectPageHeader>(object_dev_offset)
       .await;
-    // TODO It's a user bug if they've committed before they've finished all writes (including ones that haven't started yet), but should we assert that it's not PageType::ActiveInode or PageType::DeletedInode just to be safe?
-    hdr_type == PageType::IncompleteInode
+    hdr.state == ObjectState::Incomplete
   };
 
   if !incomplete_object_is_still_valid().await {
@@ -77,21 +82,19 @@ pub(crate) async fn op_write_object<
   };
 
   // Read fields before `key` i.e. `size`, `obj_id`, `key_len`.
-  let raw = ctx.device.read_at(inode_dev_offset, OBJECT_OFF.key()).await;
+  let raw = ctx
+    .device
+    .read_at(object_dev_offset, OBJECT_OFF.key())
+    .await;
   let object_id = raw.read_u64_be_at(OBJECT_OFF.id());
   let size = raw.read_u40_be_at(OBJECT_OFF.size());
   let key_len = raw.read_u16_be_at(OBJECT_OFF.key_len());
   trace!(
-    object_id = req.object_id,
-    inode_dev_offset,
+    object_id,
+    object_dev_offset,
     size,
     "found object to write to"
   );
-
-  if object_id != req.object_id {
-    // Inode has different object ID.
-    return Err(OpError::ObjectNotFound);
-  };
 
   if req.offset + len > size {
     // Offset is past size.
@@ -122,10 +125,7 @@ pub(crate) async fn op_write_object<
     } else {
       let raw = ctx
         .device
-        .read_at(
-          off.tail_pages(),
-          6 * u64!(tail_page_sizes_pow2.len()),
-        )
+        .read_at(off.tail_pages(), 6 * u64!(tail_page_sizes_pow2.len()))
         .await;
       let mut offsets = tail_page_sizes_pow2
         .into_iter()

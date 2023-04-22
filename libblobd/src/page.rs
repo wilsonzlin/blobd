@@ -1,12 +1,11 @@
 use crate::util::div_mod_pow2;
 use crate::util::div_pow2;
-use crate::util::get_now_sec;
 use crate::util::mod_pow2;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use off64::int::create_u64_be;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
-use off64::int::create_u64_be;
 use off64::usz;
 use std::sync::Arc;
 use write_journal::Transaction;
@@ -24,8 +23,8 @@ const FREE_PAGE_OFFSETOF_NEXT: u64 = FREE_PAGE_OFFSETOF_PREV + 5;
 
 const OBJECT_OFFSETOF_PREV: u64 = 0;
 const OBJECT_OFFSETOF_NEXT: u64 = OBJECT_OFFSETOF_PREV + 5;
-const OBJECT_OFFSETOF_CREATED_SEC: u64 = OBJECT_OFFSETOF_NEXT + 5;
-const OBJECT_OFFSETOF_STATE: u64 = OBJECT_OFFSETOF_CREATED_SEC + 5;
+const OBJECT_OFFSETOF_DELETED_SEC: u64 = OBJECT_OFFSETOF_NEXT + 5;
+const OBJECT_OFFSETOF_META_SIZE_AND_STATE: u64 = OBJECT_OFFSETOF_DELETED_SEC + 5;
 
 pub(crate) trait PageHeader {
   /// Many device offsets can be reduced by 1 byte by right shifting by MIN_PAGE_SIZE_POW2 because it can't refer to anything more granular than a page. Remember to left shift when deserialising.
@@ -65,36 +64,28 @@ pub(crate) struct ObjectPageHeader {
   pub prev: u64,
   pub next: u64,
   // Timestamp in seconds since epoch.
-  pub created_sec: u64,
+  pub deleted_sec: Option<u64>,
   pub state: ObjectState,
-}
-
-impl ObjectPageHeader {
-  pub fn has_expired(&self, expire_after_sec: u64) -> bool {
-    get_now_sec() - self.created_sec >= expire_after_sec
-  }
+  pub metadata_size_pow2: u8,
 }
 
 impl PageHeader for ObjectPageHeader {
   fn serialize(&self, out: &mut [u8]) {
-    out.write_u40_be_at(
-      OBJECT_OFFSETOF_PREV,
-      self.prev >> MIN_PAGE_SIZE_POW2,
-    );
-    out.write_u40_be_at(
-      OBJECT_OFFSETOF_NEXT,
-      self.next >> MIN_PAGE_SIZE_POW2,
-    );
-    out.write_u40_be_at(OBJECT_OFFSETOF_CREATED_SEC, self.created_sec);
-    out[usz!(OBJECT_OFFSETOF_STATE)] = self.state as u8;
+    out.write_u40_be_at(OBJECT_OFFSETOF_PREV, self.prev >> MIN_PAGE_SIZE_POW2);
+    out.write_u40_be_at(OBJECT_OFFSETOF_NEXT, self.next >> MIN_PAGE_SIZE_POW2);
+    out.write_u40_be_at(OBJECT_OFFSETOF_DELETED_SEC, self.deleted_sec.unwrap_or(0));
+    out[usz!(OBJECT_OFFSETOF_META_SIZE_AND_STATE)] =
+      (self.metadata_size_pow2 << 3) | (self.state as u8);
   }
 
   fn deserialize(raw: &[u8]) -> Self {
+    let b = raw[usz!(OBJECT_OFFSETOF_META_SIZE_AND_STATE)];
     Self {
       prev: raw.read_u40_be_at(OBJECT_OFFSETOF_PREV) << MIN_PAGE_SIZE_POW2,
       next: raw.read_u40_be_at(OBJECT_OFFSETOF_NEXT) << MIN_PAGE_SIZE_POW2,
-      created_sec: raw.read_u40_be_at(OBJECT_OFFSETOF_CREATED_SEC),
-      state: ObjectState::from_u8(raw[usz!(OBJECT_OFFSETOF_STATE)]).unwrap(),
+      deleted_sec: Some(raw.read_u40_be_at(OBJECT_OFFSETOF_DELETED_SEC)).filter(|ts| *ts != 0),
+      state: ObjectState::from_u8(b & 0b111).unwrap(),
+      metadata_size_pow2: b >> 3,
     }
   }
 }
@@ -205,20 +196,45 @@ impl Pages {
 
   pub async fn is_page_free(&self, page_dev_offset: u64, page_size_pow2: u8) -> bool {
     let (elem_dev_offset, bit) = self.get_page_free_bit_offset(page_dev_offset, page_size_pow2);
-    let bitmap = self.journal.read_with_overlay(elem_dev_offset, 8).await.read_u64_be_at(0);
+    let bitmap = self
+      .journal
+      .read_with_overlay(elem_dev_offset, 8)
+      .await
+      .read_u64_be_at(0);
     (bitmap & (1 << bit)) != 0
   }
 
-  pub async fn mark_page_as_free(&self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
+  pub async fn mark_page_as_free(
+    &self,
+    txn: &mut Transaction,
+    page_dev_offset: u64,
+    page_size_pow2: u8,
+  ) {
     let (elem_dev_offset, bit) = self.get_page_free_bit_offset(page_dev_offset, page_size_pow2);
-    let bitmap = self.journal.read_with_overlay(elem_dev_offset, 8).await.read_u64_be_at(0);
+    let bitmap = self
+      .journal
+      .read_with_overlay(elem_dev_offset, 8)
+      .await
+      .read_u64_be_at(0);
     txn.write_with_overlay(elem_dev_offset, create_u64_be(bitmap | (1 << bit)).to_vec());
   }
 
-  pub async fn mark_page_as_not_free(&self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
+  pub async fn mark_page_as_not_free(
+    &self,
+    txn: &mut Transaction,
+    page_dev_offset: u64,
+    page_size_pow2: u8,
+  ) {
     let (elem_dev_offset, bit) = self.get_page_free_bit_offset(page_dev_offset, page_size_pow2);
-    let bitmap = self.journal.read_with_overlay(elem_dev_offset, 8).await.read_u64_be_at(0);
-    txn.write_with_overlay(elem_dev_offset, create_u64_be(bitmap & !(1 << bit)).to_vec());
+    let bitmap = self
+      .journal
+      .read_with_overlay(elem_dev_offset, 8)
+      .await
+      .read_u64_be_at(0);
+    txn.write_with_overlay(
+      elem_dev_offset,
+      create_u64_be(bitmap & !(1 << bit)).to_vec(),
+    );
   }
 
   pub async fn read_page_header<H: PageHeader>(&self, page_dev_offset: u64) -> H {
@@ -246,9 +262,7 @@ impl Pages {
     page_dev_offset: u64,
     f: impl FnOnce(&mut H) -> (),
   ) {
-    let mut hdr = self
-      .read_page_header(page_dev_offset)
-      .await;
+    let mut hdr = self.read_page_header(page_dev_offset).await;
     f(&mut hdr);
     self.write_page_header(txn, page_dev_offset, hdr);
   }

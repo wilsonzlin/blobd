@@ -5,7 +5,8 @@ use crate::ctx::Ctx;
 use crate::object::calc_object_layout;
 use crate::object::OBJECT_OFF;
 use crate::op::key_debug_str;
-use crate::page::PageType;
+use crate::page::ObjectPageHeader;
+use crate::page::ObjectState;
 use crate::util::div_pow2;
 use crate::util::mod_pow2;
 use futures::Stream;
@@ -82,11 +83,11 @@ pub(crate) async fn op_read_object(
       let now = Instant::now();
       if now.duration_since(last_checked_valid).as_secs() >= 60 {
         // Check that object is still valid.
-        let (hdr_type, _) = ctx
+        let hdr = ctx
           .pages
-          .read_page_header_type_and_size(inode_dev_offset)
+          .read_page_header::<ObjectPageHeader>(inode_dev_offset)
           .await;
-        if hdr_type == PageType::ActiveInode {
+        if hdr.state == ObjectState::Committed {
           Ok(())
         } else {
           Err(OpError::ObjectNotFound)

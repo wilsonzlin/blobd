@@ -49,6 +49,7 @@ pub mod bucket;
 pub mod ctx;
 pub mod deleted_list;
 pub mod incomplete_list;
+pub mod incomplete_token;
 pub mod object;
 pub mod object_id;
 pub mod op;
@@ -83,7 +84,7 @@ pub struct BlobdLoader {
   bucket_lock_count_log2: u8,
   lpage_size_pow2: u8,
   spage_size_pow2: u8,
-  incomplete_objects_expire_after_ms: u64,
+  reap_objects_after_secs: u64,
 
   object_id_serial_dev_offset: u64,
   stream_dev_offset: u64,
@@ -100,7 +101,7 @@ pub struct BlobdInit {
   pub bucket_lock_count_log2: u8,
   pub device_size: u64,
   pub device: SeekableAsyncFile,
-  pub incomplete_objects_expire_after_hours: u32,
+  pub reap_objects_after_secs: u64,
   pub lpage_size_pow2: u8,
   pub spage_size_pow2: u8,
 }
@@ -112,8 +113,8 @@ impl BlobdLoader {
       bucket_lock_count_log2,
       device_size,
       device,
-      incomplete_objects_expire_after_hours,
       lpage_size_pow2,
+      reap_objects_after_secs,
       spage_size_pow2,
     }: BlobdInit,
   ) -> Self {
@@ -163,10 +164,10 @@ impl BlobdLoader {
       device,
       heap_dev_offset,
       incomplete_list_dev_offset,
-      incomplete_objects_expire_after_ms,
       journal,
       lpage_size_pow2,
       object_id_serial_dev_offset,
+      reap_objects_after_secs,
       spage_size_pow2,
       stream_dev_offset,
     }
@@ -202,8 +203,8 @@ impl BlobdLoader {
     let (object_id_serial, stream, incomplete_list, deleted_list, allocator, buckets) = join! {
       ObjectIdSerial::load_from_device(dev, self.object_id_serial_dev_offset),
       Stream::load_from_device(dev, self.stream_dev_offset),
-      IncompleteList::load_from_device(dev.clone(), self.incomplete_list_dev_offset, pages.clone(), self.incomplete_objects_expire_after_hours),
-      DeletedList::load_from_device(dev.clone(), self.deleted_list_dev_offset, pages.clone()),
+      IncompleteList::load_from_device(dev.clone(), self.incomplete_list_dev_offset, pages.clone(), self.reap_objects_after_secs),
+      DeletedList::load_from_device(dev.clone(), self.deleted_list_dev_offset, pages.clone(), self.reap_objects_after_secs),
       Allocator::load_from_device(dev, self.device_size.clone(), self.allocator_dev_offset, pages.clone(), self.heap_dev_offset),
       Buckets::load_from_device(dev.clone(), self.journal.clone(), pages.clone(), self.buckets_dev_offset, self.bucket_lock_count_log2),
     };
@@ -211,7 +212,7 @@ impl BlobdLoader {
     let ctx = Arc::new(Ctx {
       buckets,
       device: dev.clone(),
-      incomplete_objects_expire_after_hours: self.incomplete_objects_expire_after_hours,
+      reap_objects_after_secs: self.reap_objects_after_secs,
       journal: self.journal.clone(),
       pages: pages.clone(),
       state: Mutex::new(State {

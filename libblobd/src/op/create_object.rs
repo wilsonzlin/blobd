@@ -1,9 +1,12 @@
 use super::OpResult;
 use crate::ctx::Ctx;
+use crate::incomplete_token::IncompleteToken;
 use crate::object::calc_object_layout;
 use crate::object::ObjectLayout;
 use crate::object::OBJECT_OFF;
 use crate::op::key_debug_str;
+use crate::op::OpError;
+use crate::util::get_now_ms;
 use off64::int::Off64WriteMutInt;
 use off64::u16;
 use off64::usz;
@@ -18,8 +21,7 @@ pub struct OpCreateObjectInput {
 }
 
 pub struct OpCreateObjectOutput {
-  pub inode_dev_offset: u64,
-  pub object_id: u64,
+  pub token: IncompleteToken,
 }
 
 pub(crate) async fn op_create_object(
@@ -51,7 +53,10 @@ pub(crate) async fn op_create_object(
     "creating object"
   );
 
+  let created_ms = get_now_ms();
+
   let mut raw = vec![0u8; usz!(meta_size)];
+  raw.write_u48_be_at(off.created_ms(), created_ms);
   raw.write_u40_be_at(off.size(), req.size);
   raw.write_u16_be_at(off.key_len(), key_len);
   raw.write_at(off.key(), &req.key);
@@ -66,8 +71,14 @@ pub(crate) async fn op_create_object(
     raw.write_u64_be_at(off.id(), object_id);
 
     // TODO Parallelise all awaits and loops.
-    trace!(key = key_debug_str(&req.key), "allocating metadata for object");
-    let dev_offset = state.allocator.allocate(&mut txn, meta_size).await;
+    trace!(
+      key = key_debug_str(&req.key),
+      "allocating metadata for object"
+    );
+    let (dev_offset, meta_size_pow2) = state
+      .allocator
+      .allocate_and_ret_with_size(&mut txn, meta_size)
+      .await;
     for i in 0..lpage_count {
       trace!(
         key = key_debug_str(&req.key),
@@ -95,7 +106,7 @@ pub(crate) async fn op_create_object(
 
     state
       .incomplete_list
-      .attach(&mut txn, dev_offset)
+      .attach(&mut txn, dev_offset, meta_size_pow2)
       .await;
 
     (txn, dev_offset, object_id)
@@ -113,7 +124,9 @@ pub(crate) async fn op_create_object(
   trace!(key = key_debug_str(&req.key), object_id, "created object");
 
   Ok(OpCreateObjectOutput {
-    inode_dev_offset,
-    object_id,
+    token: IncompleteToken {
+      created_sec: created_ms / 1000,
+      object_dev_offset: dev_offset,
+    },
   })
 }

@@ -1,7 +1,7 @@
 use crate::ctx::State;
 use crate::object::OBJECT_KEY_LEN_MAX;
 use crate::object::OBJECT_OFF;
-use crate::page::ActiveInodePageHeader;
+use crate::page::ObjectPageHeader;
 use crate::page::Pages;
 use crate::page::MIN_PAGE_SIZE_POW2;
 use crate::stream::StreamEvent;
@@ -78,11 +78,10 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
     let mut prev_dev_offset = None;
     while dev_offset > 0 {
       let (hdr, raw) = join! {
-        self.buckets.pages.read_page_header::<ActiveInodePageHeader>(dev_offset),
+        // SAFETY: We're holding a read lock, so the linked list cannot be in an invalid/intermediate state, and all elements should be committed objects.
+        self.buckets.pages.read_page_header::<ObjectPageHeader>(dev_offset),
         self.buckets.dev.read_at(dev_offset, OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages()),
       };
-      // It's impossible for this to be any other type, as we hold write lock when changing a bucket's linked list.
-      let hdr = hdr.unwrap();
       let next_dev_offset = hdr.next;
       let object_id = raw.read_u64_be_at(OBJECT_OFF.id());
       if (expected_id.is_none() || expected_id.unwrap() == object_id)
@@ -162,7 +161,7 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
         self
           .buckets
           .pages
-          .update_page_header::<ActiveInodePageHeader>(txn, prev_inode_dev_offset, |p| {
+          .update_page_header::<ObjectPageHeader>(txn, prev_inode_dev_offset, |p| {
             p.next = next_obj.unwrap_or(0)
           })
           .await;
