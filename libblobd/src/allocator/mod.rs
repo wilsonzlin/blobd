@@ -1,4 +1,5 @@
-#[cfg(test)] pub mod tests;
+#[cfg(test)]
+pub mod tests;
 
 use crate::page::FreePagePageHeader;
 use crate::page::PageType;

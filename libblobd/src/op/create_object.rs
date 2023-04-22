@@ -4,7 +4,6 @@ use crate::object::calc_object_layout;
 use crate::object::ObjectLayout;
 use crate::object::OBJECT_OFF;
 use crate::op::key_debug_str;
-use off64::int::create_u16_be;
 use off64::int::Off64WriteMutInt;
 use off64::u16;
 use off64::usz;
@@ -15,7 +14,7 @@ use tracing::trace;
 pub struct OpCreateObjectInput {
   pub key: Vec<u8>,
   pub size: u64,
-  pub custom_headers: Vec<(String, String)>,
+  pub assoc_data: Vec<u8>,
 }
 
 pub struct OpCreateObjectOutput {
@@ -32,31 +31,12 @@ pub(crate) async fn op_create_object(
     lpage_segment_count,
     tail_segment_page_sizes_pow2,
   } = calc_object_layout(&ctx.pages, req.size);
-  let custom_header_count = u16!(req.custom_headers.len());
-
-  let mut custom_headers_raw = Vec::new();
-  // TODO Validations?
-  // - Name length.
-  // - Value length.
-  // - Lowercase.
-  // - Duplicates.
-  // - Characters that are not ASCII.
-  // - Characters that are not display characters.
-  // - Invalid characters.
-  // - Whitespace in headers. (Could be malicious.)
-  // - Whitelist of allowed overrides if not `x-`.
-  for (name, value) in req.custom_headers {
-    custom_headers_raw.extend_from_slice(&create_u16_be(u16!(name.len())));
-    custom_headers_raw.extend_from_slice(&create_u16_be(u16!(value.len())));
-    custom_headers_raw.extend_from_slice(name.as_bytes());
-    custom_headers_raw.extend_from_slice(value.as_bytes());
-  }
 
   let off = OBJECT_OFF
     .with_key_len(key_len)
     .with_lpage_segments(lpage_segment_count)
     .with_tail_segments(tail_segment_page_sizes_pow2.len())
-    .with_custom_headers(u16!(custom_headers_raw.len()));
+    .with_assoc_data_len(u16!(req.assoc_data.len()));
   let inode_size = off._total_inode_size();
   // TODO
   if inode_size > ctx.pages.lpage_size() {
@@ -76,12 +56,8 @@ pub(crate) async fn op_create_object(
   inode_raw.write_u40_be_at(off.size(), req.size);
   inode_raw.write_u16_be_at(off.key_len(), key_len);
   inode_raw.write_at(off.key(), &req.key);
-  inode_raw.write_u16_be_at(
-    off.custom_header_byte_count(),
-    u16!(custom_headers_raw.len()),
-  );
-  inode_raw.write_u16_be_at(off.custom_header_entry_count(), custom_header_count);
-  inode_raw.write_at(off.custom_headers(), &custom_headers_raw);
+  inode_raw.write_u16_be_at(off.assoc_data_len(), u16!(req.assoc_data.len()));
+  inode_raw.write_at(off.assoc_data(), &req.assoc_data);
 
   let (txn, inode_dev_offset, object_id) = {
     let mut state = ctx.state.lock().await;

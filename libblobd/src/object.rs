@@ -26,14 +26,9 @@ u16 key_len
 u8[] key
 u48[] lpage_segment_page_dev_offset
 u48[] tail_segment_page_dev_offset
-u16 custom_header_byte_count
-u16 custom_header_entry_count
-{
-  u16 name_len
-  u16 value_len
-  u8[] name
-  u8[] value
-}[] custom_headers
+// Put whatever you want here, it'll have the same lifecycle as the object. This could be raw bytes, serialised map, packed array of structs, slotted data, whatever.
+u16 assoc_data_len
+u8[] assoc_data
 
 **/
 
@@ -42,7 +37,7 @@ pub(crate) struct ObjectOffsets {
   key_len: u16,
   lpage_segment_count: u64,
   tail_segment_count: u8,
-  custom_header_byte_count: u16,
+  assoc_data_len: u16,
 }
 
 impl ObjectOffsets {
@@ -64,9 +59,9 @@ impl ObjectOffsets {
     }
   }
 
-  pub fn with_custom_headers(self, custom_header_byte_count: u16) -> Self {
+  pub fn with_assoc_data_len(self, assoc_data_len: u16) -> Self {
     Self {
-      custom_header_byte_count,
+      assoc_data_len,
       ..self
     }
   }
@@ -103,26 +98,22 @@ impl ObjectOffsets {
     self.tail_segments() + 6 * u64::from(idx)
   }
 
-  pub fn custom_header_byte_count(self) -> u64 {
+  pub fn assoc_data_len(self) -> u64 {
     self.tail_segment(self.tail_segment_count)
   }
 
-  pub fn custom_header_entry_count(self) -> u64 {
-    self.custom_header_byte_count() + 2
-  }
-
-  pub fn custom_headers(self) -> u64 {
-    self.custom_header_entry_count() + 2
+  pub fn assoc_data(self) -> u64 {
+    self.assoc_data_len() + 2
   }
 
   pub fn _total_inode_size(self) -> u64 {
-    self.custom_headers() + u64::from(self.custom_header_byte_count)
+    self.assoc_data() + u64::from(self.assoc_data_len)
   }
 }
 
 /// WARNING: This is only safe to use for getting offset of fields up to and including `key`. Call `with_*` methods to get offsets of other fields.
 pub(crate) const OBJECT_OFF: ObjectOffsets = ObjectOffsets {
-  custom_header_byte_count: 0,
+  assoc_data_len: 0,
   key_len: 0,
   lpage_segment_count: 0,
   tail_segment_count: 0,
