@@ -1,6 +1,6 @@
 use super::OpError;
 use super::OpResult;
-use crate::bucket::FoundInode;
+use crate::bucket::FoundObject;
 use crate::ctx::Ctx;
 use crate::object::OBJECT_OFF;
 use off64::int::Off64AsyncReadInt;
@@ -20,7 +20,7 @@ pub(crate) async fn op_inspect_object(
   req: OpInspectObjectInput,
 ) -> OpResult<OpInspectObjectOutput> {
   let bkt = ctx.buckets.get_bucket_for_key(&req.key).await;
-  let Some(FoundInode { dev_offset: inode_dev_offset, object_id, .. }) = bkt.find_inode(None).await else {
+  let Some(FoundObject { dev_offset: inode_dev_offset, id: object_id, .. }) = bkt.find_object(None).await else {
     return Err(OpError::ObjectNotFound);
   };
   let object_size = ctx

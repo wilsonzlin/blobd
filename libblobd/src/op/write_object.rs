@@ -78,7 +78,7 @@ pub(crate) async fn op_write_object<
 
   // Read fields before `key` i.e. `size`, `obj_id`, `key_len`.
   let raw = ctx.device.read_at(inode_dev_offset, OBJECT_OFF.key()).await;
-  let object_id = raw.read_u64_be_at(OBJECT_OFF.object_id());
+  let object_id = raw.read_u64_be_at(OBJECT_OFF.id());
   let size = raw.read_u40_be_at(OBJECT_OFF.size());
   let key_len = raw.read_u16_be_at(OBJECT_OFF.key_len());
   trace!(
@@ -99,39 +99,39 @@ pub(crate) async fn op_write_object<
   };
 
   if req.offset + len != min(req.offset + ctx.pages.lpage_size(), size) {
-    // Write does not fully fill lpage segment or tail. All writes must fill as otherwise uninitialised data will get exposed.
+    // Write does not fully fill lpage or entire tail. All writes must fill as otherwise uninitialised data will get exposed.
     return Err(OpError::InexactWriteLength);
   };
 
   let ObjectLayout {
-    lpage_segment_count,
-    tail_segment_page_sizes_pow2,
+    lpage_count,
+    tail_page_sizes_pow2,
   } = calc_object_layout(&ctx.pages, size);
   let off = OBJECT_OFF
     .with_key_len(key_len)
-    .with_lpage_segments(lpage_segment_count)
-    .with_tail_segments(tail_segment_page_sizes_pow2.len());
+    .with_lpages(lpage_count)
+    .with_tail_pages(tail_page_sizes_pow2.len());
   // Vec of (page_size, page_dev_offset).
   let write_dev_offsets = {
     let idx = div_pow2(req.offset, ctx.pages.lpage_size_pow2);
-    if idx < lpage_segment_count {
+    if idx < lpage_count {
       vec![(
         ctx.pages.lpage_size(),
-        Off64AsyncReadInt::read_u48_be_at(&ctx.device, off.lpage_segment(idx)).await,
+        Off64AsyncReadInt::read_u48_be_at(&ctx.device, off.lpage(idx)).await,
       )]
     } else {
       let raw = ctx
         .device
         .read_at(
-          off.tail_segments(),
-          6 * u64!(tail_segment_page_sizes_pow2.len()),
+          off.tail_pages(),
+          6 * u64!(tail_page_sizes_pow2.len()),
         )
         .await;
-      let mut offsets = tail_segment_page_sizes_pow2
+      let mut offsets = tail_page_sizes_pow2
         .into_iter()
         .map(|(i, sz)| (1 << sz, raw.read_u48_be_at(u64!(i) * 6)))
         .collect_vec();
-      // For the very last tail page, we don't write a full page amount of bytes, unless the object just happens to be a multiple of that page's size. Use `.map` as there may not even be any tail segments at all.
+      // For the very last tail page, we don't write a full page amount of bytes, unless the object just happens to be a multiple of that page's size. Use `.map` as there may not even be any tail pages at all.
       offsets.last_mut().map(|(page_size, _page_dev_offset)| {
         let mod_ = size % *page_size;
         if mod_ != 0 {

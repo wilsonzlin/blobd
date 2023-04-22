@@ -24,8 +24,8 @@ u40 size
 u64 obj_id
 u16 key_len
 u8[] key
-u48[] lpage_segment_page_dev_offset
-u48[] tail_segment_page_dev_offset
+u48[] lpage_page_dev_offset
+u48[] tail_page_dev_offset
 // Put whatever you want here, it'll have the same lifecycle as the object. This could be raw bytes, serialised map, packed array of structs, slotted data, whatever.
 u16 assoc_data_len
 u8[] assoc_data
@@ -35,8 +35,8 @@ u8[] assoc_data
 #[derive(Clone, Copy)]
 pub(crate) struct ObjectOffsets {
   key_len: u16,
-  lpage_segment_count: u64,
-  tail_segment_count: u8,
+  lpage_count: u64,
+  tail_page_count: u8,
   assoc_data_len: u16,
 }
 
@@ -45,16 +45,16 @@ impl ObjectOffsets {
     Self { key_len, ..self }
   }
 
-  pub fn with_lpage_segments(self, lpage_segment_count: u64) -> Self {
+  pub fn with_lpages(self, lpage_count: u64) -> Self {
     Self {
-      lpage_segment_count,
+      lpage_count,
       ..self
     }
   }
 
-  pub fn with_tail_segments(self, tail_segment_count: u8) -> Self {
+  pub fn with_tail_pages(self, tail_page_count: u8) -> Self {
     Self {
-      tail_segment_count,
+      tail_page_count,
       ..self
     }
   }
@@ -70,43 +70,43 @@ impl ObjectOffsets {
     0
   }
 
-  pub fn object_id(self) -> u64 {
+  pub fn id(self) -> u64 {
     self.size() + 5
   }
 
   pub fn key_len(self) -> u64 {
-    self.object_id() + 8
+    self.id() + 8
   }
 
   pub fn key(self) -> u64 {
     self.key_len() + 2
   }
 
-  pub fn lpage_segments(self) -> u64 {
+  pub fn lpages(self) -> u64 {
     self.key() + u64::from(self.key_len)
   }
 
-  pub fn lpage_segment(self, idx: u64) -> u64 {
-    self.lpage_segments() + 6 * idx
+  pub fn lpage(self, idx: u64) -> u64 {
+    self.lpages() + 6 * idx
   }
 
-  pub fn tail_segments(self) -> u64 {
-    self.lpage_segment(self.lpage_segment_count)
+  pub fn tail_pages(self) -> u64 {
+    self.lpage(self.lpage_count)
   }
 
-  pub fn tail_segment(self, idx: u8) -> u64 {
-    self.tail_segments() + 6 * u64::from(idx)
+  pub fn tail_page(self, idx: u8) -> u64 {
+    self.tail_pages() + 6 * u64::from(idx)
   }
 
   pub fn assoc_data_len(self) -> u64 {
-    self.tail_segment(self.tail_segment_count)
+    self.tail_page(self.tail_page_count)
   }
 
   pub fn assoc_data(self) -> u64 {
     self.assoc_data_len() + 2
   }
 
-  pub fn _total_inode_size(self) -> u64 {
+  pub fn _total_size(self) -> u64 {
     self.assoc_data() + u64::from(self.assoc_data_len)
   }
 }
@@ -115,11 +115,11 @@ impl ObjectOffsets {
 pub(crate) const OBJECT_OFF: ObjectOffsets = ObjectOffsets {
   assoc_data_len: 0,
   key_len: 0,
-  lpage_segment_count: 0,
-  tail_segment_count: 0,
+  lpage_count: 0,
+  tail_page_count: 0,
 };
 
-// This makes it so that a read of the inode up to and including the key is at most exactly 512 bytes, which is a well-aligned well-sized no-waste read from most SSDs. In case you're worried that it's not long enough, this is 497 bytes:
+// This makes it so that a read of the object fields up to and including the key is at most exactly 512 bytes, which is a well-aligned well-sized no-waste read from most SSDs. In case you're worried that it's not long enough, this is 497 bytes:
 // aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 // aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 // aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -130,7 +130,7 @@ pub(crate) const OBJECT_OFF: ObjectOffsets = ObjectOffsets {
 pub const OBJECT_KEY_LEN_MAX: u16 = 497;
 
 // Two benefits of this over Vec<u8>:
-// - Length type is u8, which is the type for `tail_segment_count`.
+// - Length type is u8, which is the type for `tail_page_count`.
 // - No heap allocations; small enough to copy.
 // How it works:
 // - Page sizes can only be from `2^8` to `2^32` (see `{MIN,MAX}_PAGE_SIZE_POW2`).
@@ -139,9 +139,9 @@ pub const OBJECT_KEY_LEN_MAX: u16 = 497;
 // - There can be up to 24 entries, each taking 5 bits. It will take 5 bits to represent the length.
 // - We can't fit 125 bits neatly, so we split up into two shards (64-bit ints), and use 4 bits in each int to represent the length of up to 12 entries covered by its int, using exactly `4 + 12 * 5 = 64` bits.
 #[derive(Clone, Copy)]
-pub struct TailSegmentPageSizes(u64, u64);
+pub struct TailPageSizes(u64, u64);
 
-impl TailSegmentPageSizes {
+impl TailPageSizes {
   pub fn new() -> Self {
     Self(0, 0)
   }
@@ -196,19 +196,19 @@ impl TailSegmentPageSizes {
   }
 }
 
-impl IntoIterator for TailSegmentPageSizes {
-  type IntoIter = TailSegmentPageSizesIterator;
+impl IntoIterator for TailPageSizes {
+  type IntoIter = TailPageSizesIter;
   type Item = (u8, u8);
 
   fn into_iter(self) -> Self::IntoIter {
-    TailSegmentPageSizesIterator(self, 0)
+    TailPageSizesIter(self, 0)
   }
 }
 
 // Convenient iterator that provides `u8` indices instead of `.enumerate()` and `u8!(idx)`.
-pub struct TailSegmentPageSizesIterator(TailSegmentPageSizes, u8);
+pub struct TailPageSizesIter(TailPageSizes, u8);
 
-impl Iterator for TailSegmentPageSizesIterator {
+impl Iterator for TailPageSizesIter {
   type Item = (u8, u8);
 
   fn next(&mut self) -> Option<Self::Item> {
@@ -220,26 +220,26 @@ impl Iterator for TailSegmentPageSizesIterator {
 }
 
 pub(crate) struct ObjectLayout {
-  pub lpage_segment_count: u64,
-  pub tail_segment_page_sizes_pow2: TailSegmentPageSizes,
+  pub lpage_count: u64,
+  pub tail_page_sizes_pow2: TailPageSizes,
 }
 
 pub(crate) fn calc_object_layout(pages: &Pages, object_size: u64) -> ObjectLayout {
-  let (lpage_segment_count, tail_size) = div_mod_pow2(object_size, pages.lpage_size_pow2);
+  let (lpage_count, tail_size) = div_mod_pow2(object_size, pages.lpage_size_pow2);
   let mut rem = ceil_pow2(tail_size, pages.spage_size_pow2);
-  let mut tail_segment_page_sizes_pow2 = TailSegmentPageSizes::new();
+  let mut tail_page_sizes_pow2 = TailPageSizes::new();
   loop {
     let pos = rem.leading_zeros();
     if pos == 64 {
       break;
     };
     let pow2 = u8!(63 - pos);
-    tail_segment_page_sizes_pow2.push(pow2);
+    tail_page_sizes_pow2.push(pow2);
     rem &= !(1 << pow2);
   }
   ObjectLayout {
-    lpage_segment_count,
-    tail_segment_page_sizes_pow2,
+    lpage_count,
+    tail_page_sizes_pow2,
   }
 }
 
@@ -256,20 +256,20 @@ pub(crate) async fn release_object(
   let object_size = raw.read_u40_be_at(OBJECT_OFF.size());
   let key_len = raw.read_u16_be_at(OBJECT_OFF.key_len());
   let ObjectLayout {
-    lpage_segment_count,
-    tail_segment_page_sizes_pow2,
+    lpage_count,
+    tail_page_sizes_pow2,
   } = calc_object_layout(pages, object_size);
 
   let off = OBJECT_OFF
     .with_key_len(key_len)
-    .with_lpage_segments(lpage_segment_count)
-    .with_tail_segments(tail_segment_page_sizes_pow2.len());
-  for i in 0..lpage_segment_count {
-    let page_dev_offset = raw.read_u48_be_at(off.lpage_segment(i));
+    .with_lpages(lpage_count)
+    .with_tail_pages(tail_page_sizes_pow2.len());
+  for i in 0..lpage_count {
+    let page_dev_offset = raw.read_u48_be_at(off.lpage(i));
     alloc.release(txn, page_dev_offset).await;
   }
-  for i in 0..tail_segment_page_sizes_pow2.len() {
-    let page_dev_offset = raw.read_u48_be_at(off.tail_segment(i));
+  for i in 0..tail_page_sizes_pow2.len() {
+    let page_dev_offset = raw.read_u48_be_at(off.tail_page(i));
     alloc.release(txn, page_dev_offset).await;
   }
   alloc.release(txn, page_dev_offset).await;

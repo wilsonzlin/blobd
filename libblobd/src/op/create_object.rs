@@ -28,16 +28,16 @@ pub(crate) async fn op_create_object(
 ) -> OpResult<OpCreateObjectOutput> {
   let key_len: u16 = req.key.len().try_into().unwrap();
   let ObjectLayout {
-    lpage_segment_count,
-    tail_segment_page_sizes_pow2,
+    lpage_count,
+    tail_page_sizes_pow2,
   } = calc_object_layout(&ctx.pages, req.size);
 
   let off = OBJECT_OFF
     .with_key_len(key_len)
-    .with_lpage_segments(lpage_segment_count)
-    .with_tail_segments(tail_segment_page_sizes_pow2.len())
+    .with_lpages(lpage_count)
+    .with_tail_pages(tail_page_sizes_pow2.len())
     .with_assoc_data_len(u16!(req.assoc_data.len()));
-  let inode_size = off._total_inode_size();
+  let inode_size = off._total_size();
   // TODO
   if inode_size > ctx.pages.lpage_size() {
     panic!("inode too large");
@@ -47,8 +47,8 @@ pub(crate) async fn op_create_object(
     key = key_debug_str(&req.key),
     inode_size,
     size = req.size,
-    lpage_segment_count,
-    tail_segment_count = tail_segment_page_sizes_pow2.len(),
+    lpage_count,
+    tail_page_count = tail_page_sizes_pow2.len(),
     "creating object"
   );
 
@@ -64,34 +64,34 @@ pub(crate) async fn op_create_object(
     let mut txn = ctx.journal.begin_transaction();
 
     let object_id = state.object_id_serial.next(&mut txn);
-    inode_raw.write_u64_be_at(off.object_id(), object_id);
+    inode_raw.write_u64_be_at(off.id(), object_id);
 
     // TODO Parallelise all awaits and loops.
     trace!(key = key_debug_str(&req.key), "allocating inode for object");
     let inode_dev_offset = state.allocator.allocate(&mut txn, inode_size).await;
-    for i in 0..lpage_segment_count {
+    for i in 0..lpage_count {
       trace!(
         key = key_debug_str(&req.key),
-        lpage_segment_index = i,
+        lpage_index = i,
         "allocating lpage for object"
       );
       let lpage_dev_offset = state
         .allocator
         .allocate(&mut txn, ctx.pages.lpage_size())
         .await;
-      inode_raw.write_u48_be_at(off.lpage_segment(i), lpage_dev_offset);
+      inode_raw.write_u48_be_at(off.lpage(i), lpage_dev_offset);
     }
-    for (i, tail_segment_page_size_pow2) in tail_segment_page_sizes_pow2 {
+    for (i, tail_page_size_pow2) in tail_page_sizes_pow2 {
       trace!(
         key = key_debug_str(&req.key),
-        tail_segment_page_size_pow2,
+        tail_page_size_pow2,
         "allocating tail page for object"
       );
       let page_dev_offset = state
         .allocator
-        .allocate(&mut txn, 1 << tail_segment_page_size_pow2)
+        .allocate(&mut txn, 1 << tail_page_size_pow2)
         .await;
-      inode_raw.write_u48_be_at(off.tail_segment(i), page_dev_offset);
+      inode_raw.write_u48_be_at(off.tail_page(i), page_dev_offset);
     }
 
     state

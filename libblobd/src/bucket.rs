@@ -53,11 +53,11 @@ pub(crate) fn BUCKETS_SIZE(bkt_cnt: u64) -> u64 {
   BUCKETS_OFFSETOF_BUCKET(bkt_cnt)
 }
 
-pub(crate) struct FoundInode {
+pub(crate) struct FoundObject {
   pub prev_dev_offset: Option<u64>,
   pub next_dev_offset: Option<u64>,
   pub dev_offset: u64,
-  pub object_id: u64,
+  pub id: u64,
 }
 
 // This type exists to make sure methods are called only when holding appropriate lock.
@@ -73,26 +73,26 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
     self.bucket_id
   }
 
-  pub async fn find_inode(&self, expected_object_id: Option<u64>) -> Option<FoundInode> {
+  pub async fn find_object(&self, expected_id: Option<u64>) -> Option<FoundObject> {
     let mut dev_offset = self.get_head().await;
     let mut prev_dev_offset = None;
     while dev_offset > 0 {
       let (hdr, raw) = join! {
         self.buckets.pages.read_page_header::<ActiveInodePageHeader>(dev_offset),
-        self.buckets.dev.read_at(dev_offset, OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpage_segments()),
+        self.buckets.dev.read_at(dev_offset, OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages()),
       };
       // It's impossible for this to be any other type, as we hold write lock when changing a bucket's linked list.
       let hdr = hdr.unwrap();
       let next_dev_offset = hdr.next;
-      let object_id = raw.read_u64_be_at(OBJECT_OFF.object_id());
-      if (expected_object_id.is_none() || expected_object_id.unwrap() == object_id)
+      let object_id = raw.read_u64_be_at(OBJECT_OFF.id());
+      if (expected_id.is_none() || expected_id.unwrap() == object_id)
         && raw.read_u16_be_at(OBJECT_OFF.key_len()) == self.key_len
         && raw.read_at(OBJECT_OFF.key(), self.key_len.into()) == self.key
       {
-        return Some(FoundInode {
+        return Some(FoundObject {
           dev_offset,
           next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0),
-          object_id,
+          id: object_id,
           prev_dev_offset,
         });
       };
@@ -146,34 +146,34 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
     // TODO This is a workaround for the borrow checker, as it won't let us borrow both `deleted_list` and `stream` in `State` mutably.
     state: &mut State,
   ) -> Option<()> {
-    let Some(FoundInode {
-      prev_dev_offset: prev_inode,
-      next_dev_offset: next_inode,
-      dev_offset: inode_dev_offset,
-      object_id,
+    let Some(FoundObject {
+      prev_dev_offset: prev_obj,
+      next_dev_offset: next_obj,
+      dev_offset: obj_dev_offset,
+      id: object_id,
       ..
-    }) = self.find_inode(None).await else {
+    }) = self.find_object(None).await else {
       return None;
     };
 
-    match prev_inode {
+    match prev_obj {
       Some(prev_inode_dev_offset) => {
         // Update next pointer of previous inode.
         self
           .buckets
           .pages
           .update_page_header::<ActiveInodePageHeader>(txn, prev_inode_dev_offset, |p| {
-            p.next = next_inode.unwrap_or(0)
+            p.next = next_obj.unwrap_or(0)
           })
           .await;
       }
       None => {
         // Update bucket head.
-        self.mutate_head(txn, next_inode.unwrap_or(0));
+        self.mutate_head(txn, next_obj.unwrap_or(0));
       }
     };
 
-    state.deleted_list.attach(txn, inode_dev_offset).await;
+    state.deleted_list.attach(txn, obj_dev_offset).await;
 
     state.stream.create_event(txn, StreamEvent {
       typ: StreamEventType::ObjectDelete,

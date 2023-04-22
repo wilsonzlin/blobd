@@ -1,6 +1,6 @@
 use super::OpError;
 use super::OpResult;
-use crate::bucket::FoundInode;
+use crate::bucket::FoundObject;
 use crate::ctx::Ctx;
 use crate::object::calc_object_layout;
 use crate::object::OBJECT_OFF;
@@ -46,7 +46,7 @@ pub(crate) async fn op_read_object(
   );
 
   // WARNING: Drop bucket lock immediately.
-  let Some(FoundInode { dev_offset: inode_dev_offset, object_id, .. }) = ctx.buckets.get_bucket_for_key(&req.key).await.find_inode(None).await else {
+  let Some(FoundObject { dev_offset: inode_dev_offset, id: object_id, .. }) = ctx.buckets.get_bucket_for_key(&req.key).await.find_object(None).await else {
     return Err(OpError::ObjectNotFound);
   };
   let object_size = ctx.device.read_u40_be_at(OBJECT_OFF.size()).await;
@@ -70,8 +70,8 @@ pub(crate) async fn op_read_object(
   let alloc_cfg = calc_object_layout(&ctx.pages, object_size);
   let off = OBJECT_OFF
     .with_key_len(u16!(req.key.len()))
-    .with_lpage_segments(alloc_cfg.lpage_segment_count)
-    .with_tail_segments(alloc_cfg.tail_segment_page_sizes_pow2.len());
+    .with_lpages(alloc_cfg.lpage_count)
+    .with_tail_pages(alloc_cfg.tail_page_sizes_pow2.len());
 
   let data_stream = async_stream::try_stream! {
     // This is the lpage index (incremented every lpage) or tail page index (incremented every tail page **which differ in size**).
@@ -93,14 +93,14 @@ pub(crate) async fn op_read_object(
         }?;
         last_checked_valid = now;
       }
-      let (page_dev_offset, page_size_pow2) = if idx < alloc_cfg.lpage_segment_count {
-        let dev_offset = ctx.device.read_u48_be_at(off.lpage_segment(idx)).await;
+      let (page_dev_offset, page_size_pow2) = if idx < alloc_cfg.lpage_count {
+        let dev_offset = ctx.device.read_u48_be_at(off.lpage(idx)).await;
         let page_size_pow2 = ctx.pages.lpage_size_pow2;
         (dev_offset, page_size_pow2)
       } else {
-        let tail_idx = u8!(idx - alloc_cfg.lpage_segment_count);
-        let dev_offset = ctx.device.read_u48_be_at(off.tail_segment(tail_idx)).await;
-        let page_size_pow2 = alloc_cfg.tail_segment_page_sizes_pow2.get(tail_idx).unwrap();
+        let tail_idx = u8!(idx - alloc_cfg.lpage_count);
+        let dev_offset = ctx.device.read_u48_be_at(off.tail_page(tail_idx)).await;
+        let page_size_pow2 = alloc_cfg.tail_page_sizes_pow2.get(tail_idx).unwrap();
         (dev_offset, page_size_pow2)
       };
       // The device offset of the current lpage or tail page changes each lpage amount, so this is not the same as `next`. Think of `next` as the virtual pointer within a contiguous span of the object's data bytes, and this as the physical offset within the physical page that backs the current position of the virtual pointer within the object's data made from many pages of different sizes.
