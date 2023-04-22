@@ -188,12 +188,15 @@ pub(crate) async fn maybe_reap_next_incomplete(
 
 pub(crate) async fn start_incomplete_list_reaper_background_loop(ctx: Arc<Ctx>) {
   loop {
-    let mut state = ctx.state.lock().await;
-    let mut txn = ctx.journal.begin_transaction();
-    let sleep_sec = maybe_reap_next_incomplete(&mut state, &mut txn)
-      .await
-      .err()
-      .unwrap_or(0);
+    let (txn, sleep_sec) = {
+      let mut state = ctx.state.lock().await;
+      let mut txn = ctx.journal.begin_transaction();
+      let sleep_sec = maybe_reap_next_incomplete(&mut state, &mut txn)
+        .await
+        .err()
+        .unwrap_or(0);
+      (txn, sleep_sec)
+    };
     ctx.journal.commit_transaction(txn).await;
     sleep(Duration::from_secs(sleep_sec)).await;
   }
