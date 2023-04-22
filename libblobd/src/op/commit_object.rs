@@ -16,7 +16,9 @@ pub struct OpCommitObjectInput {
   pub incomplete_token: IncompleteToken,
 }
 
-pub struct OpCommitObjectOutput {}
+pub struct OpCommitObjectOutput {
+  pub object_id: u64,
+}
 
 pub(crate) async fn op_commit_object(
   ctx: Arc<Ctx>,
@@ -106,5 +108,5 @@ pub(crate) async fn op_commit_object(
     "committed object"
   );
 
-  Ok(OpCommitObjectOutput {})
+  Ok(OpCommitObjectOutput { object_id })
 }

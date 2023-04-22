@@ -11,8 +11,8 @@ pub struct OpInspectObjectInput {
 }
 
 pub struct OpInspectObjectOutput {
+  pub id: u64,
   pub size: u64,
-  pub object_id: u64,
 }
 
 pub(crate) async fn op_inspect_object(
@@ -29,7 +29,7 @@ pub(crate) async fn op_inspect_object(
     .await;
 
   Ok(OpInspectObjectOutput {
-    object_id,
+    id: object_id,
     size: object_size,
   })
 }

@@ -1,6 +1,7 @@
 use clap::Parser;
 use futures::stream::once;
 use futures::StreamExt;
+use libblobd::incomplete_token::IncompleteToken;
 use libblobd::object::OBJECT_KEY_LEN_MAX;
 use libblobd::op::commit_object::OpCommitObjectInput;
 use libblobd::op::create_object::OpCreateObjectInput;
@@ -121,8 +122,7 @@ enum Task {
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
-    object_id: u64,
-    inode_dev_offset: u64,
+    incomplete_token: IncompleteToken,
     chunk_offset: u64,
   },
   Commit {
@@ -130,8 +130,7 @@ enum Task {
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
-    object_id: u64,
-    inode_dev_offset: u64,
+    incomplete_token: IncompleteToken,
   },
   Inspect {
     key_len: u64,
@@ -182,7 +181,7 @@ async fn main() {
     bucket_lock_count_log2: bucket_count_log2,
     device_size,
     device: device.clone(),
-    incomplete_objects_expire_after_hours: 24,
+    reap_objects_after_secs: 60 * 60 * 24 * 7,
     lpage_size_pow2: u8!(cli.lpage_size.ilog2()),
     spage_size_pow2: u8!(cli.spage_size.ilog2()),
   });
@@ -300,7 +299,7 @@ async fn main() {
               .create_object(OpCreateObjectInput {
                 key: pool.get(key_offset, key_len),
                 size: data_len,
-                custom_headers: Vec::new(),
+                assoc_data: Vec::new(),
               })
               .await
               .unwrap();
@@ -310,8 +309,7 @@ async fn main() {
                 key_offset,
                 data_len,
                 data_offset,
-                object_id: res.object_id,
-                inode_dev_offset: res.inode_dev_offset,
+                incomplete_token: res.token,
                 chunk_offset: 0,
               })
               .unwrap();
@@ -322,8 +320,7 @@ async fn main() {
             data_len,
             data_offset,
             chunk_offset,
-            object_id,
-            inode_dev_offset,
+            incomplete_token,
           } => {
             let next_chunk_offset = chunk_offset + cli.lpage_size;
             let chunk_len = if next_chunk_offset <= data_len {
@@ -336,8 +333,7 @@ async fn main() {
                 data_len: chunk_len,
                 data_stream: once(async { Ok(pool.get(data_offset + chunk_offset, chunk_len)) })
                   .boxed(),
-                inode_dev_offset,
-                object_id,
+                incomplete_token,
                 offset: chunk_offset,
               })
               .await
@@ -349,8 +345,7 @@ async fn main() {
                   key_offset,
                   data_len,
                   data_offset,
-                  object_id,
-                  inode_dev_offset,
+                  incomplete_token,
                   chunk_offset: next_chunk_offset,
                 }
               } else {
@@ -359,8 +354,7 @@ async fn main() {
                   key_offset,
                   data_len,
                   data_offset,
-                  object_id,
-                  inode_dev_offset,
+                  incomplete_token,
                 }
               })
               .unwrap();
@@ -370,15 +364,10 @@ async fn main() {
             key_offset,
             data_len,
             data_offset,
-            object_id,
-            inode_dev_offset,
+            incomplete_token,
           } => {
-            blobd
-              .commit_object(OpCommitObjectInput {
-                inode_dev_offset,
-                object_id,
-                key: pool.get(key_offset, key_len),
-              })
+            let res = blobd
+              .commit_object(OpCommitObjectInput { incomplete_token })
               .await
               .unwrap();
             tasks_sender
@@ -387,7 +376,7 @@ async fn main() {
                 key_offset,
                 data_len,
                 data_offset,
-                object_id,
+                object_id: res.object_id,
               })
               .unwrap();
           }
