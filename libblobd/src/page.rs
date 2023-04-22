@@ -1,30 +1,19 @@
+use crate::util::div_mod_pow2;
+use crate::util::div_pow2;
+use crate::util::get_now_sec;
 use crate::util::mod_pow2;
-use chrono::Utc;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
-use off64::u32;
+use off64::int::create_u64_be;
 use off64::usz;
 use std::sync::Arc;
-use tracing::trace;
 use write_journal::Transaction;
 use write_journal::WriteJournal;
 
 pub(crate) const MIN_PAGE_SIZE_POW2: u8 = 8;
 pub(crate) const MAX_PAGE_SIZE_POW2: u8 = 32;
-
-/// WARNING: Do not change the order of entries, as values are significant.
-#[derive(Clone, Copy, PartialEq, Eq, FromPrimitive, Debug)]
-pub(crate) enum PageType {
-  // Don't use zero to detect missing/uninitialised/corrupt headers.
-  Void = 1, // A void page is one that is not of any other type. All pages must have a valid page header, including type and size, which is why this type exists.
-  FreePage,
-  ObjectSegmentData,
-  ActiveInode,
-  IncompleteInode,
-  DeletedInode,
-}
 
 // Bytes to reserve per page.
 const PAGE_HEADER_CAP_POW2: u8 = 4;
@@ -33,34 +22,15 @@ const PAGE_HEADER_CAP: u64 = 1 << PAGE_HEADER_CAP_POW2;
 const FREE_PAGE_OFFSETOF_PREV: u64 = 0;
 const FREE_PAGE_OFFSETOF_NEXT: u64 = FREE_PAGE_OFFSETOF_PREV + 5;
 
-const ACTIVE_INODE_OFFSETOF_NEXT: u64 = 0;
-
-const INCOMPLETE_INODE_OFFSETOF_PREV: u64 = 0;
-const INCOMPLETE_INODE_OFFSETOF_NEXT: u64 = INCOMPLETE_INODE_OFFSETOF_PREV + 5;
-const INCOMPLETE_INODE_OFFSETOF_CREATED_HOUR: u64 = INCOMPLETE_INODE_OFFSETOF_NEXT + 5;
-
-const DELETED_INODE_OFFSETOF_NEXT: u64 = 0;
-const DELETED_INODE_OFFSETOF_DELETED_SEC: u64 = DELETED_INODE_OFFSETOF_NEXT + 5;
+const OBJECT_OFFSETOF_PREV: u64 = 0;
+const OBJECT_OFFSETOF_NEXT: u64 = OBJECT_OFFSETOF_PREV + 5;
+const OBJECT_OFFSETOF_CREATED_SEC: u64 = OBJECT_OFFSETOF_NEXT + 5;
+const OBJECT_OFFSETOF_STATE: u64 = OBJECT_OFFSETOF_CREATED_SEC + 5;
 
 pub(crate) trait PageHeader {
-  fn typ() -> PageType;
   /// Many device offsets can be reduced by 1 byte by right shifting by MIN_PAGE_SIZE_POW2 because it can't refer to anything more granular than a page. Remember to left shift when deserialising.
   fn serialize(&self, out: &mut [u8]);
   fn deserialize(raw: &[u8]) -> Self;
-}
-
-pub(crate) struct VoidPageHeader {}
-
-impl PageHeader for VoidPageHeader {
-  fn typ() -> PageType {
-    PageType::Void
-  }
-
-  fn serialize(&self, _out: &mut [u8]) {}
-
-  fn deserialize(_raw: &[u8]) -> Self {
-    Self {}
-  }
 }
 
 pub(crate) struct FreePagePageHeader {
@@ -69,10 +39,6 @@ pub(crate) struct FreePagePageHeader {
 }
 
 impl PageHeader for FreePagePageHeader {
-  fn typ() -> PageType {
-    PageType::FreePage
-  }
-
   fn serialize(&self, out: &mut [u8]) {
     out.write_u40_be_at(FREE_PAGE_OFFSETOF_PREV, self.prev >> MIN_PAGE_SIZE_POW2);
     out.write_u40_be_at(FREE_PAGE_OFFSETOF_NEXT, self.next >> MIN_PAGE_SIZE_POW2);
@@ -86,103 +52,49 @@ impl PageHeader for FreePagePageHeader {
   }
 }
 
-pub(crate) struct ObjectSegmentDataPageHeader {}
-
-impl PageHeader for ObjectSegmentDataPageHeader {
-  fn typ() -> PageType {
-    PageType::ObjectSegmentData
-  }
-
-  fn serialize(&self, _out: &mut [u8]) {}
-
-  fn deserialize(_raw: &[u8]) -> Self {
-    Self {}
-  }
+#[derive(PartialEq, Eq, Clone, Copy, Debug, FromPrimitive)]
+#[repr(u8)]
+pub(crate) enum ObjectState {
+  Incomplete,
+  Committed,
+  Deleted,
 }
 
-pub(crate) struct ActiveInodePageHeader {
-  // Device offset of next inode in bucket linked list, or zero if tail.
-  pub next: u64,
-}
-
-impl PageHeader for ActiveInodePageHeader {
-  fn typ() -> PageType {
-    PageType::ActiveInode
-  }
-
-  fn serialize(&self, out: &mut [u8]) {
-    out.write_u40_be_at(ACTIVE_INODE_OFFSETOF_NEXT, self.next >> MIN_PAGE_SIZE_POW2);
-  }
-
-  fn deserialize(raw: &[u8]) -> Self {
-    Self {
-      next: raw.read_u40_be_at(ACTIVE_INODE_OFFSETOF_NEXT) << MIN_PAGE_SIZE_POW2,
-    }
-  }
-}
-
-pub(crate) struct IncompleteInodePageHeader {
-  // Device offset of prev/next inode in incomplete linked list, or zero if tail.
+pub(crate) struct ObjectPageHeader {
+  // Device offset of prev/next inode in incomplete/deleted/bucket linked list, or zero if tail.
   pub prev: u64,
   pub next: u64,
-  // Timestamp in hours since epoch.
-  pub created_hour: u32,
+  // Timestamp in seconds since epoch.
+  pub created_sec: u64,
+  pub state: ObjectState,
 }
 
-impl IncompleteInodePageHeader {
-  pub fn has_expired(&self, incomplete_objects_expire_after_hours: u32) -> bool {
-    let now_hour = u32!(Utc::now().timestamp() / 60 / 60);
-    now_hour - self.created_hour >= incomplete_objects_expire_after_hours
+impl ObjectPageHeader {
+  pub fn has_expired(&self, expire_after_sec: u64) -> bool {
+    get_now_sec() - self.created_sec >= expire_after_sec
   }
 }
 
-impl PageHeader for IncompleteInodePageHeader {
-  fn typ() -> PageType {
-    PageType::IncompleteInode
-  }
-
+impl PageHeader for ObjectPageHeader {
   fn serialize(&self, out: &mut [u8]) {
     out.write_u40_be_at(
-      INCOMPLETE_INODE_OFFSETOF_PREV,
+      OBJECT_OFFSETOF_PREV,
       self.prev >> MIN_PAGE_SIZE_POW2,
     );
     out.write_u40_be_at(
-      INCOMPLETE_INODE_OFFSETOF_NEXT,
+      OBJECT_OFFSETOF_NEXT,
       self.next >> MIN_PAGE_SIZE_POW2,
     );
-    out.write_u32_be_at(INCOMPLETE_INODE_OFFSETOF_CREATED_HOUR, self.created_hour);
+    out.write_u40_be_at(OBJECT_OFFSETOF_CREATED_SEC, self.created_sec);
+    out[usz!(OBJECT_OFFSETOF_STATE)] = self.state as u8;
   }
 
   fn deserialize(raw: &[u8]) -> Self {
     Self {
-      prev: raw.read_u40_be_at(INCOMPLETE_INODE_OFFSETOF_PREV) << MIN_PAGE_SIZE_POW2,
-      next: raw.read_u40_be_at(INCOMPLETE_INODE_OFFSETOF_NEXT) << MIN_PAGE_SIZE_POW2,
-      created_hour: raw.read_u32_be_at(INCOMPLETE_INODE_OFFSETOF_CREATED_HOUR),
-    }
-  }
-}
-
-pub(crate) struct DeletedInodePageHeader {
-  // Device offset of next inode in deleted linked list, or zero if tail.
-  pub next: u64,
-  // Timestamp in seconds since epoch.
-  pub deleted_sec: u64,
-}
-
-impl PageHeader for DeletedInodePageHeader {
-  fn typ() -> PageType {
-    PageType::DeletedInode
-  }
-
-  fn serialize(&self, out: &mut [u8]) {
-    out.write_u40_be_at(DELETED_INODE_OFFSETOF_NEXT, self.next >> MIN_PAGE_SIZE_POW2);
-    out.write_u40_be_at(DELETED_INODE_OFFSETOF_DELETED_SEC, self.deleted_sec);
-  }
-
-  fn deserialize(raw: &[u8]) -> Self {
-    Self {
-      next: raw.read_u40_be_at(DELETED_INODE_OFFSETOF_NEXT) << MIN_PAGE_SIZE_POW2,
-      deleted_sec: raw.read_u40_be_at(DELETED_INODE_OFFSETOF_DELETED_SEC),
+      prev: raw.read_u40_be_at(OBJECT_OFFSETOF_PREV) << MIN_PAGE_SIZE_POW2,
+      next: raw.read_u40_be_at(OBJECT_OFFSETOF_NEXT) << MIN_PAGE_SIZE_POW2,
+      created_sec: raw.read_u40_be_at(OBJECT_OFFSETOF_CREATED_SEC),
+      state: ObjectState::from_u8(raw[usz!(OBJECT_OFFSETOF_STATE)]).unwrap(),
     }
   }
 }
@@ -212,15 +124,12 @@ impl Pages {
     assert!(lpage_size_pow2 >= spage_size_pow2 && lpage_size_pow2 <= MAX_PAGE_SIZE_POW2);
     // For fast bitwise calculations to be correct, the heap needs to be aligned to `2^lpage_size_pow2` i.e. start at an address that is a multiple of the largest page size in bytes.
     assert_eq!(mod_pow2(heap_dev_offset, lpage_size_pow2), 0);
-    // `lpage` means a page of the largest size. `spage` means a page of the smallest size. A data lpage contains actual data, while a metadata lpage contains the page headers for all spages in the following N data lpages (see following code for value of N). Both are lpages (i.e. pages of the largest page size). A data lpage can have X spages, where X is how many pages of the smallest size can fit in one page of the largest size.
-    // A metadata lpage and the data lpage it covers constitute a block.
-    // The spage count per lpage is equal to `2^lpage_size_pow2 / 2^spage_size_pow2` which is identical to `2^(lpage_size_pow2 - spage_size_pow2)`.
-    let spage_per_lpage_pow2 = lpage_size_pow2 - spage_size_pow2;
-    // In the worst case, an lpage may be broken into spages only, so we need enough capacity to store that many page headers.
-    // Calculate how much space we need to store the page headers for all spages in a lpage. This is equal to `2^spage_per_lpage_pow2 * 2^page_header_cap_pow2` which is identical to `2^(spage_per_lpage_pow2 + page_header_cap_pow2)`.
-    let data_lpage_metadata_size_pow2 = spage_per_lpage_pow2 + PAGE_HEADER_CAP_POW2;
-    // Calculate how many data lpages we can track in one metadata lpage. This is equal to `2^lpage_size_pow2 / 2^data_lpage_metadata_size_pow2`, which is identical to `2^(lpage_size_pow2 - data_lpage_metadata_size_pow2)`.
-    let data_lpages_max_pow2 = lpage_size_pow2 - data_lpage_metadata_size_pow2;
+    // `lpage` means a page of the largest size. `spage` means a page of the smallest size. A data lpage contains actual data, while a metadata lpage contains the free page bitmap for all pages in the following N data lpages (see following code for value of N). Both are lpages (i.e. pages of the largest page size). A data lpage can have X pages, where X is how many pages of all sizes and offsets it could have.
+    // A metadata lpage and the following data lpages it covers constitute a block.
+    // The page count per lpage is equal to `2 * (2^lpage_size_pow2 / 2^spage_size_pow2)` which is identical to `2^(1 + lpage_size_pow2 - spage_size_pow2)`. It's equivalent to the count of nodes in a full binary tree, where leaf nodes are the spages and the root node is the sole lpage.
+    let pages_per_lpage_pow2 = 1 + lpage_size_pow2 - spage_size_pow2;
+    // Calculate how many data lpages we can track in one metadata lpage; we need one bit to track one page. This is equal to `2^lpage_size_pow2 * 8 / 2^pages_per_lpage_pow2`, which is identical to `2^(lpage_size_pow2 + 3 - pages_per_lpage_pow2)`.
+    let data_lpages_max_pow2 = lpage_size_pow2 + 3 - pages_per_lpage_pow2;
     // To keep calculations fast, we only store for the next N data lpages where N is a power of two minus one. This way, any device offset in those data lpages can get the device offset of the start of their corresponding metadata lpage with a simple bitwise AND, and the size of a block is simply `2^data_lpages_max_pow2 * 2^lpage_size_pow2` since one data lpage is effectively replaced with a metadata lpage. However, this does mean that the metadata lpage wastes some space.
     let block_size_pow2 = data_lpages_max_pow2 + lpage_size_pow2;
     let block_size = 1 << block_size_pow2;
@@ -263,93 +172,72 @@ impl Pages {
     );
   }
 
-  fn get_page_header_dev_offset(&self, page_dev_offset: u64) -> u64 {
+  fn get_page_free_bit_offset(&self, page_dev_offset: u64, page_size_pow2: u8) -> (u64, u64) {
     self.assert_valid_page_dev_offset(page_dev_offset);
-    let metadata_lpage = page_dev_offset & !self.block_mask;
-    let offset_within_metadata_lpage =
-      (page_dev_offset & self.block_mask) >> (self.spage_size_pow2 - PAGE_HEADER_CAP_POW2);
-    // This is faster than `metadata_lpage + offset_within_metadata_lpage`.
-    metadata_lpage | offset_within_metadata_lpage
+    let metadata_lpage_dev_offset = page_dev_offset & !self.block_mask;
+    // We store our bitmap like a binary tree, where the root node is the lpage, and leaf nodes are spages.
+    // Let's assume each bit is like an array element with a u64 index, and the array starts at index 1. Then, given `spage_pow2 == 2` and `lpage_pow2 == 16`:
+    // Index 1  (0b0001) = page16_0 => page_pow2 == lpage_pow2 - (63 - lead_zeros) = 16 - (63 - 63) = 16
+    // Index 2  (0b0010) = page15_0 => page_pow2 == lpage_pow2 - (63 - lead_zeros) = 16 - (63 - 62) = 15
+    // Index 3  (0b0011) = page15_1 => page_pow2 == lpage_pow2 - (63 - lead_zeros) = 16 - (63 - 62) = 15
+    // Index 4  (0b0100) = page14_0 => page_pow2 == lpage_pow2 - (63 - lead_zeros) = 16 - (63 - 61) = 14
+    // Index 5  (0b0101) = page14_1 => ...
+    // Index 6  (0b0110) = page14_2
+    // Index 7  (0b0111) = page14_3
+    // Index 8  (0b1000) = page13_0
+    // Index 9  (0b1001) = page13_1
+    // Index 10 (0b1010) = page13_2
+    // ...
+    // Based on the above pattern, we can determine that the index for a page of size 2^S and zero-based position N,
+    // the 1-based index I is `(1 << (lpage_pow2 - S)) + N`, where `N = (page_dev_offset - block_offset) / 2^S`.
+    // Now:
+    // - We split our bitmaps into 64-bit integers to reduce load on overlay bucket.
+    // - Indices are 0-based, not 1-based.
+    // So:
+    // - Get the u64 value at element `(I - 1) / 64`, which is at dev offset `metadata_lpage_dev_offset + ((I - 1) / 64) * 8`.
+    // - Get the bit at position `(I - 1) % 64`.
+    let n = div_pow2(page_dev_offset - metadata_lpage_dev_offset, page_size_pow2);
+    let i = (1 << (self.lpage_size_pow2 - page_size_pow2)) + n;
+    let (elem, bit) = div_mod_pow2(i - 1, 6);
+    let elem_dev_offset = metadata_lpage_dev_offset + elem * 8;
+    (elem_dev_offset, bit)
   }
 
-  fn parse_header_size_and_type(&self, raw: &[u8]) -> (PageType, u8) {
-    let typ = PageType::from_u8(raw[0] & 0b111).expect("invalid page type in header");
-    let size = raw[0] >> 3;
-    // Detect when we have forgotten to initialise a page.
-    assert!(
-      size >= self.spage_size_pow2 && size <= self.lpage_size_pow2,
-      "unexpected size value in page header of type {typ:?}: {size}"
-    );
-    (typ, size)
+  pub async fn is_page_free(&self, page_dev_offset: u64, page_size_pow2: u8) -> bool {
+    let (elem_dev_offset, bit) = self.get_page_free_bit_offset(page_dev_offset, page_size_pow2);
+    let bitmap = self.journal.read_with_overlay(elem_dev_offset, 8).await.read_u64_be_at(0);
+    (bitmap & (1 << bit)) != 0
   }
 
-  pub async fn read_page_header_type_and_size(&self, page_dev_offset: u64) -> (PageType, u8) {
-    let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
-    trace!(
-      page_dev_offset,
-      header_dev_offset = hdr_dev_offset,
-      "reading header type and size for page"
-    );
+  pub async fn mark_page_as_free(&self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
+    let (elem_dev_offset, bit) = self.get_page_free_bit_offset(page_dev_offset, page_size_pow2);
+    let bitmap = self.journal.read_with_overlay(elem_dev_offset, 8).await.read_u64_be_at(0);
+    txn.write_with_overlay(elem_dev_offset, create_u64_be(bitmap | (1 << bit)).to_vec());
+  }
+
+  pub async fn mark_page_as_not_free(&self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
+    let (elem_dev_offset, bit) = self.get_page_free_bit_offset(page_dev_offset, page_size_pow2);
+    let bitmap = self.journal.read_with_overlay(elem_dev_offset, 8).await.read_u64_be_at(0);
+    txn.write_with_overlay(elem_dev_offset, create_u64_be(bitmap & !(1 << bit)).to_vec());
+  }
+
+  pub async fn read_page_header<H: PageHeader>(&self, page_dev_offset: u64) -> H {
     let raw = self
       .journal
-      .read_with_overlay(hdr_dev_offset, PAGE_HEADER_CAP)
+      .read_with_overlay(page_dev_offset, PAGE_HEADER_CAP)
       .await;
-    self.parse_header_size_and_type(&raw)
+    H::deserialize(&raw)
   }
 
-  pub async fn read_page_header_and_size<H: PageHeader>(
-    &self,
-    page_dev_offset: u64,
-  ) -> Option<(u8, H)> {
-    let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
-    trace!(
-      page_dev_offset,
-      header_dev_offset = hdr_dev_offset,
-      "reading header for page"
-    );
-    let raw = self
-      .journal
-      .read_with_overlay(hdr_dev_offset, PAGE_HEADER_CAP)
-      .await;
-    let (typ, size) = self.parse_header_size_and_type(&raw);
-    if H::typ() == typ {
-      Some((size, H::deserialize(&raw[1..])))
-    } else {
-      None
-    }
-  }
-
-  pub async fn read_page_header<H: PageHeader>(&self, page_dev_offset: u64) -> Option<H> {
-    self
-      .read_page_header_and_size(page_dev_offset)
-      .await
-      .map(|(_, hdr)| hdr)
-  }
-
-  // This is almost the same as `write_page_header`, except it writes the page size directly instead of reading, which is important because in order for `write_page_header` someone has to be the first to set the page size. This is also useful when merging or splitting pages. However, use this carefully, as it will overwrite the size value without any checking. It's dangerous to write the size directly because page headers overlap with pages of other sizes at the same offset.
-  pub fn initialise_page_header<H: PageHeader>(
+  pub fn write_page_header<H: PageHeader>(
     &self,
     txn: &mut Transaction,
     page_dev_offset: u64,
-    page_size_pow2: u8,
     h: H,
   ) {
-    let hdr_dev_offset = self.get_page_header_dev_offset(page_dev_offset);
     let mut out = vec![0u8; usz!(PAGE_HEADER_CAP)];
-    out[0] = (page_size_pow2 << 3) | H::typ() as u8;
-    h.serialize(&mut out[1..]);
-    txn.write_with_overlay(hdr_dev_offset, out);
-  }
-
-  pub async fn write_page_header<H: PageHeader>(
-    &self,
-    txn: &mut Transaction,
-    page_dev_offset: u64,
-    h: H,
-  ) {
-    // To avoid an async read, we could just ask for the page size in this function's parameters, but that adds a lot of extra burden on callers, and we need to perform a read anyway, since any I/O system needs to read the device block into a buffer, apply the write to the buffer, then write the buffer, whether we're using mmap, direct I/O, pwrite, or our own userspace I/O library.
-    let (_, page_size_pow2) = self.read_page_header_type_and_size(page_dev_offset).await;
-    self.initialise_page_header(txn, page_dev_offset, page_size_pow2, h);
+    h.serialize(&mut out);
+    txn.write_with_overlay(page_dev_offset, out);
   }
 
   pub async fn update_page_header<H: PageHeader>(
@@ -358,11 +246,10 @@ impl Pages {
     page_dev_offset: u64,
     f: impl FnOnce(&mut H) -> (),
   ) {
-    let (_, mut hdr) = self
-      .read_page_header_and_size(page_dev_offset)
-      .await
-      .unwrap();
+    let mut hdr = self
+      .read_page_header(page_dev_offset)
+      .await;
     f(&mut hdr);
-    self.write_page_header(txn, page_dev_offset, hdr).await;
+    self.write_page_header(txn, page_dev_offset, hdr);
   }
 }

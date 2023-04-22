@@ -6,6 +6,11 @@ use off64::u64;
 pub(crate) fn get_now_ms() -> u64 {
   u64!(Utc::now().timestamp_millis())
 }
+
+pub(crate) fn get_now_sec() -> u64 {
+  u64!(Utc::now().timestamp())
+}
+
 pub(crate) fn div_ceil(n: u64, d: u64) -> u64 {
   (n / d) + ((n % d != 0) as u64)
 }
