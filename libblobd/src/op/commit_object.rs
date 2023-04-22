@@ -75,6 +75,12 @@ pub(crate) async fn op_commit_object(
       .move_object_to_deleted_list_if_exists(&mut txn, &mut state)
       .await;
 
+    // Detach from incomplete list.
+    state
+      .incomplete_list
+      .detach(&mut txn, object_dev_offset)
+      .await;
+
     // Get the current bucket head. We use the overlay, so we'll see any change made by the previous `move_object_to_deleted_list_if_exists` call.
     let cur_bkt_head = bkt_lock.get_head().await;
 

@@ -159,6 +159,7 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
       return None;
     };
 
+    // Detach from bucket.
     match prev_obj {
       Some(prev_inode_dev_offset) => {
         // Update next pointer of previous inode.
@@ -168,7 +169,7 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
           .update_page_header::<ObjectPageHeader>(txn, prev_inode_dev_offset, |p| {
             debug_assert_eq!(p.state, ObjectState::Committed);
             debug_assert_eq!(p.deleted_sec, None);
-            p.next = next_obj.unwrap_or(0)
+            p.next = next_obj.unwrap_or(0);
           })
           .await;
       }
@@ -178,8 +179,10 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
       }
     };
 
+    // Attach to deleted list.
     state.deleted_list.attach(txn, obj_dev_offset).await;
 
+    // Create event.
     state.stream.create_event(txn, StreamEvent {
       typ: StreamEventType::ObjectDelete,
       bucket_id: self.state.bucket_id,

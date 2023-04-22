@@ -89,6 +89,7 @@ impl DeletedList {
       .update_page_header::<ObjectPageHeader>(txn, page_dev_offset, |o| {
         debug_assert_ne!(o.state, ObjectState::Deleted);
         debug_assert_eq!(o.deleted_sec, None);
+        o.state = ObjectState::Deleted;
         o.deleted_sec = Some(get_now_sec());
         o.next = 0;
       })
