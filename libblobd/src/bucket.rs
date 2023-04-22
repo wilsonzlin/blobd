@@ -148,6 +148,7 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
     txn: &mut Transaction,
     // TODO This is a workaround for the borrow checker, as it won't let us borrow both `deleted_list` and `stream` in `State` mutably.
     state: &mut State,
+    id: Option<u64>,
   ) -> Option<()> {
     let Some(FoundObject {
       prev_dev_offset: prev_obj,
@@ -155,7 +156,7 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
       dev_offset: obj_dev_offset,
       id: object_id,
       ..
-    }) = self.find_object(None).await else {
+    }) = self.find_object(id).await else {
       return None;
     };
 

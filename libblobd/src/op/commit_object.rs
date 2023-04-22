@@ -50,7 +50,7 @@ pub(crate) async fn op_commit_object(
   let txn = {
     let mut state = ctx.state.lock().await;
 
-    let mut bkt_lock = ctx.buckets.get_bucket_mut_for_key(&key).await;
+    let mut bkt = ctx.buckets.get_bucket_mut_for_key(&key).await;
     trace!(
       key = key_debug_str(&key),
       object_id,
@@ -70,10 +70,12 @@ pub(crate) async fn op_commit_object(
     // Don't begin transaction until after possible previous `return` (otherwise our journal will wait forever for the transaction to commit).
     let mut txn = ctx.journal.begin_transaction();
 
-    // This will create an event for any deletion, which we want (we don't just want a commit event, as then anyone reading the stream must tracked all seen keys to know when a commit deletes an existing object).
-    bkt_lock
-      .move_object_to_deleted_list_if_exists(&mut txn, &mut state)
-      .await;
+    if !ctx.versioning {
+      // This will create an event for any deletion, which we want (we don't just want a commit event, as then anyone reading the stream must tracked all seen keys to know when a commit deletes an existing object).
+      bkt
+        .move_object_to_deleted_list_if_exists(&mut txn, &mut state, None)
+        .await;
+    };
 
     // Detach from incomplete list.
     state
@@ -82,10 +84,10 @@ pub(crate) async fn op_commit_object(
       .await;
 
     // Get the current bucket head. We use the overlay, so we'll see any change made by the previous `move_object_to_deleted_list_if_exists` call.
-    let cur_bkt_head = bkt_lock.get_head().await;
+    let cur_bkt_head = bkt.get_head().await;
 
     // Update bucket head to point to this new inode.
-    bkt_lock.mutate_head(&mut txn, object_dev_offset);
+    bkt.mutate_head(&mut txn, object_dev_offset);
 
     // Update inode next pointer.
     ctx
@@ -101,7 +103,7 @@ pub(crate) async fn op_commit_object(
     // Create stream event.
     state.stream.create_event(&mut txn, StreamEvent {
       typ: StreamEventType::ObjectCommit,
-      bucket_id: bkt_lock.bucket_id(),
+      bucket_id: bkt.bucket_id(),
       object_id,
     });
 

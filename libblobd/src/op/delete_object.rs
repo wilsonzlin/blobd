@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 pub struct OpDeleteObjectInput {
   pub key: Vec<u8>,
+  // Only useful if versioning is enabled.
+  pub id: Option<u64>,
 }
 
 pub struct OpDeleteObjectOutput {}
@@ -21,7 +23,7 @@ pub(crate) async fn op_delete_object(
     let mut bkt = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
     // We must always commit the transaction (otherwise our journal will wait forever), so we cannot return directly here.
     let deleted = bkt
-      .move_object_to_deleted_list_if_exists(&mut txn, &mut state)
+      .move_object_to_deleted_list_if_exists(&mut txn, &mut state, req.id)
       .await;
 
     (txn, deleted)

@@ -145,10 +145,12 @@ enum Task {
     data_len: u64,
     data_offset: u64,
     chunk_offset: u64,
+    object_id: u64,
   },
   Delete {
     key_len: u64,
     key_offset: u64,
+    object_id: u64,
   },
 }
 
@@ -184,6 +186,8 @@ async fn main() {
     reap_objects_after_secs: 60 * 60 * 24 * 7,
     lpage_size_pow2: u8!(cli.lpage_size.ilog2()),
     spage_size_pow2: u8!(cli.spage_size.ilog2()),
+    // We must enable versioning as some objects will have duplicate keys, and then their derived tasks won't work unless they were the last to commit.
+    versioning: true,
   });
   blobd.format().await;
   info!("formatted device");
@@ -390,6 +394,7 @@ async fn main() {
             let res = blobd
               .inspect_object(OpInspectObjectInput {
                 key: pool.get(key_offset, key_len),
+                id: Some(object_id),
               })
               .await
               .unwrap();
@@ -402,6 +407,7 @@ async fn main() {
                 data_len,
                 data_offset,
                 chunk_offset: 0,
+                object_id,
               })
               .unwrap();
           }
@@ -411,6 +417,7 @@ async fn main() {
             data_len,
             data_offset,
             mut chunk_offset,
+            object_id,
           } => {
             // Read a random amount to test various cases stochastically.
             let end = thread_rng().gen_range(chunk_offset + 1..=data_len);
@@ -420,6 +427,7 @@ async fn main() {
                 start: chunk_offset,
                 key: pool.get(key_offset, key_len),
                 stream_buffer_size: 1024 * 16,
+                id: Some(object_id),
               })
               .await
               .unwrap();
@@ -440,6 +448,7 @@ async fn main() {
                   data_len,
                   data_offset,
                   chunk_offset,
+                  object_id,
                 })
                 .unwrap();
             } else {
@@ -447,6 +456,7 @@ async fn main() {
                 .send(Task::Delete {
                   key_len,
                   key_offset,
+                  object_id,
                 })
                 .unwrap();
             };
@@ -454,10 +464,12 @@ async fn main() {
           Task::Delete {
             key_len,
             key_offset,
+            object_id,
           } => {
             blobd
               .delete_object(OpDeleteObjectInput {
                 key: pool.get(key_offset, key_len),
+                id: Some(object_id),
               })
               .await
               .unwrap();

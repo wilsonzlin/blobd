@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 pub struct OpInspectObjectInput {
   pub key: Vec<u8>,
+  // Only useful if versioning is enabled.
+  pub id: Option<u64>,
 }
 
 pub struct OpInspectObjectOutput {
@@ -18,7 +20,7 @@ pub(crate) async fn op_inspect_object(
   req: OpInspectObjectInput,
 ) -> OpResult<OpInspectObjectOutput> {
   let bkt = ctx.buckets.get_bucket_for_key(&req.key).await;
-  let Some(FoundObject { id, size, .. }) = bkt.find_object(None).await else {
+  let Some(FoundObject { id, size, .. }) = bkt.find_object(req.id).await else {
     return Err(OpError::ObjectNotFound);
   };
 

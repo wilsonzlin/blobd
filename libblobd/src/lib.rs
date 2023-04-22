@@ -85,6 +85,7 @@ pub struct BlobdLoader {
   lpage_size_pow2: u8,
   spage_size_pow2: u8,
   reap_objects_after_secs: u64,
+  versioning: bool,
 
   object_id_serial_dev_offset: u64,
   stream_dev_offset: u64,
@@ -104,6 +105,7 @@ pub struct BlobdInit {
   pub reap_objects_after_secs: u64,
   pub lpage_size_pow2: u8,
   pub spage_size_pow2: u8,
+  pub versioning: bool,
 }
 
 impl BlobdLoader {
@@ -116,6 +118,7 @@ impl BlobdLoader {
       lpage_size_pow2,
       reap_objects_after_secs,
       spage_size_pow2,
+      versioning,
     }: BlobdInit,
   ) -> Self {
     assert!(bucket_count_log2 >= 12 && bucket_count_log2 <= 48);
@@ -169,6 +172,7 @@ impl BlobdLoader {
       reap_objects_after_secs,
       spage_size_pow2,
       stream_dev_offset,
+      versioning,
     }
   }
 
@@ -214,6 +218,7 @@ impl BlobdLoader {
       reap_objects_after_secs: self.reap_objects_after_secs,
       journal: self.journal.clone(),
       pages: pages.clone(),
+      versioning: self.versioning,
       state: Mutex::new(State {
         allocator,
         deleted_list,
