@@ -157,11 +157,12 @@ pub(crate) async fn op_write_object<
       // We timed out, and need to check if the object is still valid.
       continue;
     };
-    let Some(chunk) = maybe_chunk else {
-      // Stream has ended.
+    if let Some(chunk) = maybe_chunk {
+      buf.append(&mut chunk.map_err(|err| OpError::DataStreamError(Box::from(err)))?);
+    } else if buf.is_empty() {
+      // Stream has ended and buffer has been fully consumed.
       break;
     };
-    buf.append(&mut chunk.map_err(|err| OpError::DataStreamError(Box::from(err)))?);
     let buf_len = u64!(buf.len());
     if written + buf_len > len {
       warn!(
