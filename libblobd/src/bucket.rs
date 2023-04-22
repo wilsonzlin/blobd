@@ -84,8 +84,8 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
         self.buckets.pages.read_page_header::<ObjectPageHeader>(dev_offset),
         self.buckets.dev.read_at(dev_offset, OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages()),
       };
-      assert_eq!(hdr.state, ObjectState::Committed);
-      let next_dev_offset = hdr.next;
+      debug_assert_eq!(hdr.state, ObjectState::Committed);
+      debug_assert_eq!(hdr.deleted_sec, None);
       let object_id = raw.read_u64_be_at(OBJECT_OFF.id());
       if (expected_id.is_none() || expected_id.unwrap() == object_id)
         && raw.read_u16_be_at(OBJECT_OFF.key_len()) == self.key_len
@@ -93,14 +93,14 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
       {
         return Some(FoundObject {
           dev_offset,
-          next_dev_offset: Some(next_dev_offset).filter(|o| *o > 0),
+          next_dev_offset: Some(hdr.next).filter(|o| *o > 0),
           id: object_id,
           prev_dev_offset,
           size: raw.read_u40_be_at(OBJECT_OFF.size()),
         });
       };
       prev_dev_offset = Some(dev_offset);
-      dev_offset = next_dev_offset;
+      dev_offset = hdr.next;
     }
     None
   }

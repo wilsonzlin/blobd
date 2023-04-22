@@ -36,7 +36,7 @@ pub(crate) async fn op_commit_object(
 
   let object_id = ctx
     .device
-    .read_u40_be_at(object_dev_offset + OBJECT_OFF.size())
+    .read_u64_be_at(object_dev_offset + OBJECT_OFF.id())
     .await;
   let key_len = ctx
     .device

@@ -120,7 +120,11 @@ impl DeletedList {
       .await;
 
     // SAFETY: Object must still exist because only this function reaps and we haven't processed this object yet.
-    let created_sec = self.dev.read_u48_be_at(OBJECT_OFF.created_ms()).await / 1000;
+    let created_sec = self
+      .dev
+      .read_u48_be_at(page_dev_offset + OBJECT_OFF.created_ms())
+      .await
+      / 1000;
 
     // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time.
     // Our token must always be able to read the object state, so we must not reap until well after token expires.

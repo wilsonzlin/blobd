@@ -47,10 +47,9 @@ pub(crate) async fn op_read_object(
   );
 
   // WARNING: Drop bucket lock immediately.
-  let Some(FoundObject { dev_offset: inode_dev_offset, id: object_id, .. }) = ctx.buckets.get_bucket_for_key(&req.key).await.find_object(None).await else {
+  let Some(FoundObject { dev_offset: object_dev_offset, id: object_id, size: object_size, .. }) = ctx.buckets.get_bucket_for_key(&req.key).await.find_object(None).await else {
     return Err(OpError::ObjectNotFound);
   };
-  let object_size = ctx.device.read_u40_be_at(OBJECT_OFF.size()).await;
   let start = req.start;
   // Exclusive.
   let end = req.end.unwrap_or(object_size);
@@ -60,7 +59,7 @@ pub(crate) async fn op_read_object(
   };
   trace!(
     key = key_debug_str(&req.key),
-    inode_dev_offset,
+    object_dev_offset,
     object_id,
     object_size,
     start,
@@ -85,8 +84,9 @@ pub(crate) async fn op_read_object(
         // Check that object is still valid.
         let hdr = ctx
           .pages
-          .read_page_header::<ObjectPageHeader>(inode_dev_offset)
+          .read_page_header::<ObjectPageHeader>(object_dev_offset)
           .await;
+        // We can't use `return Err(...)` in `try_stream!`.
         if hdr.state == ObjectState::Committed {
           Ok(())
         } else {
@@ -95,12 +95,12 @@ pub(crate) async fn op_read_object(
         last_checked_valid = now;
       }
       let (page_dev_offset, page_size_pow2) = if idx < alloc_cfg.lpage_count {
-        let dev_offset = ctx.device.read_u48_be_at(off.lpage(idx)).await;
+        let dev_offset = ctx.device.read_u48_be_at(object_dev_offset + off.lpage(idx)).await;
         let page_size_pow2 = ctx.pages.lpage_size_pow2;
         (dev_offset, page_size_pow2)
       } else {
         let tail_idx = u8!(idx - alloc_cfg.lpage_count);
-        let dev_offset = ctx.device.read_u48_be_at(off.tail_page(tail_idx)).await;
+        let dev_offset = ctx.device.read_u48_be_at(object_dev_offset + off.tail_page(tail_idx)).await;
         let page_size_pow2 = alloc_cfg.tail_page_sizes_pow2.get(tail_idx).unwrap();
         (dev_offset, page_size_pow2)
       };
@@ -113,6 +113,7 @@ pub(crate) async fn op_read_object(
         end - next,
         (1 << page_size_pow2) - offset_within_page,
       );
+      trace!(idx, page_size_pow2, page_dev_offset, offset_within_page, chunk_len, start, next, end, "reading chunk");
       let data = ctx.device.read_at(page_dev_offset + offset_within_page, chunk_len).await;
       idx += 1;
       next += chunk_len;

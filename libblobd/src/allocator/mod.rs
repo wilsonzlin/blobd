@@ -54,10 +54,9 @@ impl Allocator {
     let frontier_dev_offset = dev
       .read_u64_be_at(state_dev_offset + ALLOCSTATE_OFFSETOF_FRONTIER)
       .await;
-    let free_list_head = join_all(
-      (pages.spage_size_pow2..=pages.lpage_size_pow2)
-        .map(|i| dev.read_u64_be_at(ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(i))),
-    )
+    let free_list_head = join_all((pages.spage_size_pow2..=pages.lpage_size_pow2).map(|i| {
+      dev.read_u64_be_at(state_dev_offset + ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(i))
+    }))
     .await;
     debug!(frontier_dev_offset, "allocator loaded");
     Self {

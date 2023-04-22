@@ -120,12 +120,15 @@ pub(crate) async fn op_write_object<
     if idx < lpage_count {
       vec![(
         ctx.pages.lpage_size(),
-        Off64AsyncReadInt::read_u48_be_at(&ctx.device, off.lpage(idx)).await,
+        Off64AsyncReadInt::read_u48_be_at(&ctx.device, object_dev_offset + off.lpage(idx)).await,
       )]
     } else {
       let raw = ctx
         .device
-        .read_at(off.tail_pages(), 6 * u64!(tail_page_sizes_pow2.len()))
+        .read_at(
+          object_dev_offset + off.tail_pages(),
+          6 * u64!(tail_page_sizes_pow2.len()),
+        )
         .await;
       let mut offsets = tail_page_sizes_pow2
         .into_iter()

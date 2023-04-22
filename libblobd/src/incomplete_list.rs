@@ -153,7 +153,11 @@ impl IncompleteList {
     };
 
     // SAFETY: Object must still exist because only DeletedList::maybe_reap_next function reaps and we're holding the entire State lock right now so it cannot be running.
-    let created_sec = self.dev.read_u48_be_at(OBJECT_OFF.created_ms()).await / 1000;
+    let created_sec = self
+      .dev
+      .read_u48_be_at(page_dev_offset + OBJECT_OFF.created_ms())
+      .await
+      / 1000;
 
     // Our read and write streams check state every 60 seconds, so we must not reap anywhere near that time AFTER `reap_objects_after_secs`.
     if get_now_sec() - created_sec < self.reap_objects_after_secs + 3600 {
