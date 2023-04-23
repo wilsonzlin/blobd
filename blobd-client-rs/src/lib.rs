@@ -51,7 +51,6 @@ pub struct BatchCreatedObjects {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CreatedObject {
-  pub object_id: u64,
   pub upload_token: String,
 }
 
@@ -189,14 +188,6 @@ impl BlobdClient {
       .await?
       .error_for_status()?;
     Ok(CreatedObject {
-      object_id: res
-        .headers()
-        .get("x-blobd-object-id")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .parse()
-        .unwrap(),
       upload_token: res
         .headers()
         .get("x-blobd-upload-token")
@@ -218,12 +209,11 @@ impl BlobdClient {
       .client
       .put(self.build_url(key))
       .query(&[
-        ("object_id", creation.object_id.to_string()),
         ("upload_token", creation.upload_token.to_string()),
         ("write_receipts", write_receipts.into_iter().join(",")),
         self.generate_token_query_param(
           AuthTokenAction::CommitObject {
-            object_id: creation.object_id,
+            key: key.as_bytes().to_vec(),
           },
           300,
         ),
@@ -324,11 +314,10 @@ impl BlobdClient {
       .patch(self.build_url(key))
       .query(&[
         ("offset", offset.to_string()),
-        ("object_id", creation.object_id.to_string()),
         ("upload_token", creation.upload_token.to_string()),
         self.generate_token_query_param(
           AuthTokenAction::WriteObject {
-            object_id: creation.object_id,
+            key: key.as_bytes().to_vec(),
           },
           300,
         ),

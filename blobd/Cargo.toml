@@ -13,22 +13,21 @@ edition = "2021"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-aes-gcm = "0.10.1"
 axum = { version = "0.6", features = ["headers"] }
+blake3 = "1.3.3"
 blobd-token = { version = "0.2.0", path = "../blobd-token" }
 bytes = "1.4.0"
 clap = { version = "4.1", features = ["derive"] }
 data-encoding = "2.3"
 futures = "0.3"
-hmac = "0.12.1"
 itertools = "0.10"
 libblobd = { version = "0.1.1", path = "../libblobd" }
-off64 = "0.3"
+off64 = "0.6"
 percent-encoding = "2.2"
 rand = "0.8.5"
-seekable-async-file = "0.5.3"
+rmp-serde = "1.1.1"
+seekable-async-file = "0.8"
 serde = { version = "1.0", features = ["derive"] }
-sha2 = "0.10.6"
 tokio = { version = "1", features = ["full"] }
 toml = "0.7"
 tower-http = { version = "0.4.0", features = ["cors", "trace"] }

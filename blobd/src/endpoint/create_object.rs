@@ -38,15 +38,15 @@ pub async fn endpoint_create_object(
     .create_object(OpCreateObjectInput {
       key,
       size: req.size,
+      assoc_data: Vec::new(),
     })
     .await;
 
   match res {
     Ok(c) => {
-      let upload_token = ctx.generate_upload_token(c.object_id, c.incomplete_slot_id, req.size);
+      let upload_token = ctx.generate_upload_token(c.token, req.size);
 
       let mut headers = HeaderMap::new();
-      headers.insert("x-blobd-object-id", c.object_id.into());
       headers.insert(
         "x-blobd-upload-token",
         HeaderValue::from_str(&upload_token).unwrap(),

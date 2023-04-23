@@ -157,7 +157,7 @@ pub(crate) async fn maybe_reap_next_incomplete(
     return Err(3600);
   };
 
-  // SAFETY: Object must still exist because only DeletedList::maybe_reap_next function reaps and we're holding the entire State lock right now so it cannot be running.
+  // SAFETY: Object must still exist because only DeletedList::maybe_reap_next function reaps and we're holding the entire State lock right now so it cannot be running. We even handle the very rare chance that we're about to read an object that has just been created but has not yet been written to mmap; see create_object.
   let created_sec = state
     .incomplete_list
     .dev

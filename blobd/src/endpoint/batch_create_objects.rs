@@ -9,12 +9,11 @@ use futures::stream::once;
 use futures::AsyncReadExt;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use libblobd::op::commit_object::OpCommitObjectInput;
 use libblobd::op::create_object::OpCreateObjectInput;
 use libblobd::op::write_object::OpWriteObjectInput;
-use libblobd::tile::TILE_SIZE;
-use libblobd::tile::TILE_SIZE_U64;
+use off64::int::Off64ReadInt;
 use off64::usz;
-use off64::Off64Int;
 use serde::Deserialize;
 use serde::Serialize;
 use std::cmp::min;
@@ -65,27 +64,27 @@ pub async fn endpoint_batch_create_objects(
     let Ok(creation) = ctx.blobd.create_object(OpCreateObjectInput {
       key: key.clone(),
       size,
+      assoc_data: Vec::new(),
     }).await else {
       break;
     };
 
-    for offset in (0..size).step_by(usz!(TILE_SIZE)) {
-      let mut chunk = vec![0u8; usz!(min(TILE_SIZE_U64, size - offset))];
+    for offset in (0..size).step_by(usz!(ctx.blobd.cfg().lpage_size())) {
+      let mut chunk = vec![0u8; usz!(min(ctx.blobd.cfg().lpage_size(), size - offset))];
       let Ok(_) = body.read_exact(&mut chunk).await else {
         break 'outer;
       };
       let Ok(_) = ctx.blobd.write_object(OpWriteObjectInput {
         data_len: chunk.len().try_into().unwrap(),
         data_stream: once(async { Ok(chunk) }).boxed(),
-        incomplete_slot_id: creation.incomplete_slot_id,
-        object_id: creation.object_id,
+        incomplete_token: creation.token,
         offset,
       }).await else {
         break 'outer;
       };
     }
 
-    let Ok(_) = ctx.blobd.create_object(OpCreateObjectInput { key, size }).await else {
+    let Ok(_) = ctx.blobd.commit_object(OpCommitObjectInput{ incomplete_token: creation.token}).await else {
       break;
     };
 

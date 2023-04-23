@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
-  pub object_id: u64,
   pub upload_token: String,
   // Comma separated, in order.
   pub write_receipts: String,
@@ -28,33 +27,22 @@ pub async fn endpoint_commit_object(
   req: Query<InputQueryParams>,
 ) -> StatusCode {
   let key = parse_key(&uri);
-  if !ctx.verify_auth(&req.t, AuthTokenAction::CommitObject {
-    object_id: req.object_id,
-  }) {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::CommitObject { key: key.clone() }) {
     return StatusCode::UNAUTHORIZED;
   };
 
-  let Some((incomplete_slot_id, part_count)) = ctx.parse_and_verify_upload_token(req.object_id, &req.upload_token) else {
+  let Some((incomplete_token, object_size)) = ctx.parse_and_verify_upload_token(&req.upload_token) else {
     return StatusCode::NOT_FOUND;
   };
 
   let write_receipts = req.write_receipts.split(",").collect_vec();
-  if !ctx.verify_write_receipts(
-    &write_receipts,
-    req.object_id,
-    incomplete_slot_id,
-    part_count,
-  ) {
+  if ctx.verify_write_receipts(&write_receipts, incomplete_token, object_size) == None {
     return StatusCode::PRECONDITION_FAILED;
   };
 
   let res = ctx
     .blobd
-    .commit_object(OpCommitObjectInput {
-      incomplete_slot_id,
-      key,
-      object_id: req.object_id,
-    })
+    .commit_object(OpCommitObjectInput { incomplete_token })
     .await;
 
   match res {

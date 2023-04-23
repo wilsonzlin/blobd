@@ -1,12 +1,12 @@
 use crate::endpoint::HttpCtx;
 use crate::server::start_http_server_loop;
-use aes_gcm::Aes256Gcm;
-use aes_gcm::KeyInit;
 use blobd_token::BlobdTokens;
 use clap::Parser;
 use conf::Conf;
 use data_encoding::BASE64;
+use libblobd::BlobdCfg;
 use libblobd::BlobdLoader;
+use off64::u8;
 use seekable_async_file::get_file_len_via_seek;
 use seekable_async_file::SeekableAsyncFile;
 use seekable_async_file::SeekableAsyncFileMetrics;
@@ -72,11 +72,14 @@ async fn main() {
     .expect("configured token secret must have length of 32");
   let tokens = BlobdTokens::new(token_secret.clone());
 
-  let blobd = BlobdLoader::new(
-    dev.clone(),
-    dev_size,
-    conf.bucket_count.ilog2().try_into().unwrap(),
-  );
+  let blobd = BlobdLoader::new(dev.clone(), dev_size, BlobdCfg {
+    bucket_count_log2: u8!(conf.bucket_count.ilog2()),
+    bucket_lock_count_log2: conf.bucket_lock_count_log2,
+    lpage_size_pow2: conf.lpage_size_pow2,
+    spage_size_pow2: conf.spage_size_pow2,
+    reap_objects_after_secs: conf.reap_objects_after_secs,
+    versioning: conf.versioning,
+  });
 
   if cli.format {
     blobd.format().await;
@@ -90,7 +93,6 @@ async fn main() {
     authentication_is_enabled: !conf.disable_authentication,
     blobd: blobd.clone(),
     token_secret: token_secret.clone(),
-    token_secret_aes_gcm: Aes256Gcm::new(&token_secret.into()),
     tokens,
   });
 

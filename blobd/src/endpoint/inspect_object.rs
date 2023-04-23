@@ -29,7 +29,10 @@ pub async fn endpoint_inspect_object(
     return (StatusCode::UNAUTHORIZED, HeaderMap::new());
   };
 
-  let res = ctx.blobd.inspect_object(OpInspectObjectInput { key }).await;
+  let res = ctx
+    .blobd
+    .inspect_object(OpInspectObjectInput { key, id: None })
+    .await;
 
   match res {
     Ok(o) => {

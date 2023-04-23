@@ -27,7 +27,10 @@ pub async fn endpoint_delete_object(
     return StatusCode::UNAUTHORIZED;
   };
 
-  let res = ctx.blobd.delete_object(OpDeleteObjectInput { key }).await;
+  let res = ctx
+    .blobd
+    .delete_object(OpDeleteObjectInput { key, id: None })
+    .await;
 
   match res {
     Ok(_) => StatusCode::OK,

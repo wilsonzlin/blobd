@@ -78,16 +78,39 @@ heap
 
 **/
 
+#[derive(Clone, Debug)]
+pub struct BlobdCfg {
+  pub bucket_count_log2: u8,
+  pub bucket_lock_count_log2: u8,
+  pub reap_objects_after_secs: u64,
+  pub lpage_size_pow2: u8,
+  pub spage_size_pow2: u8,
+  pub versioning: bool,
+}
+
+impl BlobdCfg {
+  pub fn bucket_count(&self) -> u64 {
+    1 << self.bucket_count_log2
+  }
+
+  pub fn bucket_lock_count(&self) -> u64 {
+    1 << self.bucket_lock_count_log2
+  }
+
+  pub fn lpage_size(&self) -> u64 {
+    1 << self.lpage_size_pow2
+  }
+
+  pub fn spage_size(&self) -> u64 {
+    1 << self.spage_size_pow2
+  }
+}
+
 pub struct BlobdLoader {
   device: SeekableAsyncFile,
   device_size: Arc<AtomicU64>, // To allow online resizing, this must be atomically mutable at any time.
   journal: Arc<WriteJournal>,
-  bucket_count_log2: u8,
-  bucket_lock_count_log2: u8,
-  lpage_size_pow2: u8,
-  spage_size_pow2: u8,
-  reap_objects_after_secs: u64,
-  versioning: bool,
+  cfg: BlobdCfg,
 
   object_id_serial_dev_offset: u64,
   stream_dev_offset: u64,
@@ -99,32 +122,10 @@ pub struct BlobdLoader {
   heap_dev_offset: u64,
 }
 
-pub struct BlobdInit {
-  pub bucket_count_log2: u8,
-  pub bucket_lock_count_log2: u8,
-  pub device_size: u64,
-  pub device: SeekableAsyncFile,
-  pub reap_objects_after_secs: u64,
-  pub lpage_size_pow2: u8,
-  pub spage_size_pow2: u8,
-  pub versioning: bool,
-}
-
 impl BlobdLoader {
-  pub fn new(
-    BlobdInit {
-      bucket_count_log2,
-      bucket_lock_count_log2,
-      device_size,
-      device,
-      lpage_size_pow2,
-      reap_objects_after_secs,
-      spage_size_pow2,
-      versioning,
-    }: BlobdInit,
-  ) -> Self {
-    assert!(bucket_count_log2 >= 12 && bucket_count_log2 <= 48);
-    let bucket_count = 1u64 << bucket_count_log2;
+  pub fn new(device: SeekableAsyncFile, device_size: u64, cfg: BlobdCfg) -> Self {
+    assert!(cfg.bucket_count_log2 >= 12 && cfg.bucket_count_log2 <= 48);
+    let bucket_count = 1u64 << cfg.bucket_count_log2;
 
     const JOURNAL_SIZE_MIN: u64 = 1024 * 1024 * 32;
 
@@ -139,15 +140,15 @@ impl BlobdLoader {
     let min_reserved_space = journal_dev_offset + JOURNAL_SIZE_MIN;
 
     // `heap_dev_offset` is equivalent to the reserved size.
-    let heap_dev_offset = ceil_pow2(min_reserved_space, lpage_size_pow2);
+    let heap_dev_offset = ceil_pow2(min_reserved_space, cfg.lpage_size_pow2);
     let journal_size = heap_dev_offset - journal_dev_offset;
 
     info!(
       buckets_size,
       journal_size,
       heap_dev_offset,
-      lpage_size = 1 << lpage_size_pow2,
-      spage_size = 1 << spage_size_pow2,
+      lpage_size = 1 << cfg.lpage_size_pow2,
+      spage_size = 1 << cfg.spage_size_pow2,
       "init",
     );
 
@@ -160,21 +161,16 @@ impl BlobdLoader {
 
     Self {
       allocator_dev_offset,
-      bucket_count_log2,
-      bucket_lock_count_log2,
       buckets_dev_offset,
+      cfg,
       deleted_list_dev_offset,
       device_size: Arc::new(AtomicU64::new(device_size)),
       device,
       heap_dev_offset,
       incomplete_list_dev_offset,
       journal,
-      lpage_size_pow2,
       object_id_serial_dev_offset,
-      reap_objects_after_secs,
-      spage_size_pow2,
       stream_dev_offset,
-      versioning,
     }
   }
 
@@ -186,7 +182,7 @@ impl BlobdLoader {
       IncompleteList::format_device(dev, self.incomplete_list_dev_offset),
       DeletedList::format_device(dev, self.deleted_list_dev_offset),
       Allocator::format_device(dev, self.allocator_dev_offset, self.heap_dev_offset),
-      Buckets::format_device(dev, self.buckets_dev_offset, self.bucket_count_log2),
+      Buckets::format_device(dev, self.buckets_dev_offset, self.cfg.bucket_count_log2),
       self.journal.format_device(),
     };
     dev.sync_data().await;
@@ -200,27 +196,27 @@ impl BlobdLoader {
     let pages = Arc::new(Pages::new(
       self.journal.clone(),
       self.heap_dev_offset,
-      self.spage_size_pow2,
-      self.lpage_size_pow2,
+      self.cfg.spage_size_pow2,
+      self.cfg.lpage_size_pow2,
     ));
 
     // Ensure journal has been recovered first before loading any other data.
     let (object_id_serial, stream, incomplete_list, deleted_list, allocator, buckets) = join! {
       ObjectIdSerial::load_from_device(dev, self.object_id_serial_dev_offset),
       Stream::load_from_device(dev, self.stream_dev_offset),
-      IncompleteList::load_from_device(dev.clone(), self.incomplete_list_dev_offset, pages.clone(), self.reap_objects_after_secs),
-      DeletedList::load_from_device(dev.clone(), self.deleted_list_dev_offset, pages.clone(), self.reap_objects_after_secs),
+      IncompleteList::load_from_device(dev.clone(), self.incomplete_list_dev_offset, pages.clone(), self.cfg.reap_objects_after_secs),
+      DeletedList::load_from_device(dev.clone(), self.deleted_list_dev_offset, pages.clone(), self.cfg.reap_objects_after_secs),
       Allocator::load_from_device(dev, self.device_size.clone(), self.allocator_dev_offset, pages.clone(), self.heap_dev_offset),
-      Buckets::load_from_device(dev.clone(), self.journal.clone(), pages.clone(), self.buckets_dev_offset, self.bucket_lock_count_log2),
+      Buckets::load_from_device(dev.clone(), self.journal.clone(), pages.clone(), self.buckets_dev_offset, self.cfg.bucket_lock_count_log2),
     };
 
     let ctx = Arc::new(Ctx {
       buckets,
       device: dev.clone(),
-      reap_objects_after_secs: self.reap_objects_after_secs,
+      reap_objects_after_secs: self.cfg.reap_objects_after_secs,
       journal: self.journal.clone(),
       pages: pages.clone(),
-      versioning: self.versioning,
+      versioning: self.cfg.versioning,
       state: Mutex::new(State {
         allocator,
         deleted_list,
@@ -231,6 +227,7 @@ impl BlobdLoader {
     });
 
     Blobd {
+      cfg: self.cfg,
       ctx,
       journal: self.journal,
     }
@@ -239,11 +236,17 @@ impl BlobdLoader {
 
 #[derive(Clone)]
 pub struct Blobd {
+  cfg: BlobdCfg,
   ctx: Arc<Ctx>,
   journal: Arc<WriteJournal>,
 }
 
 impl Blobd {
+  // Provide getter to prevent mutating BlobdCfg.
+  pub fn cfg(&self) -> &BlobdCfg {
+    &self.cfg
+  }
+
   // WARNING: `device.start_delayed_data_sync_background_loop()` must also be running. Since `device` was provided, it's left up to the provider to run it.
   pub async fn start(&self) {
     join! {

@@ -72,6 +72,7 @@ pub async fn endpoint_read_object(
       key,
       start,
       stream_buffer_size: STREAM_BUFSIZE,
+      id: None,
     })
     .await;
 
@@ -96,9 +97,12 @@ pub async fn endpoint_read_object(
           format!("bytes {start}-{end}/{object_size}"),
         )
         .header("x-blobd-object-id", object_id.to_string())
-        .body(StreamBody::new(
-          data_stream.map(|chunk| Ok(Bytes::from(chunk))),
-        ))
+        .body(StreamBody::new(data_stream.map(|chunk| {
+          chunk
+            .map(|chunk| Bytes::from(chunk))
+            // The only error type is OpError::ObjectNotFound.
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::NotFound, err))
+        })))
         .unwrap(),
     ),
     Err(err) => Err(transform_op_error(err)),

@@ -9,7 +9,7 @@ use libblobd::op::delete_object::OpDeleteObjectInput;
 use libblobd::op::inspect_object::OpInspectObjectInput;
 use libblobd::op::read_object::OpReadObjectInput;
 use libblobd::op::write_object::OpWriteObjectInput;
-use libblobd::BlobdInit;
+use libblobd::BlobdCfg;
 use libblobd::BlobdLoader;
 use off64::u64;
 use off64::u8;
@@ -178,11 +178,9 @@ async fn main() {
   )
   .await;
 
-  let blobd = BlobdLoader::new(BlobdInit {
+  let blobd = BlobdLoader::new(device.clone(), device_size, BlobdCfg {
     bucket_count_log2,
     bucket_lock_count_log2: bucket_count_log2,
-    device_size,
-    device: device.clone(),
     reap_objects_after_secs: 60 * 60 * 24 * 7,
     lpage_size_pow2: u8!(cli.lpage_size.ilog2()),
     spage_size_pow2: u8!(cli.spage_size.ilog2()),

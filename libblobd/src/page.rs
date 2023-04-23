@@ -137,10 +137,12 @@ impl Pages {
     }
   }
 
+  #[allow(unused)]
   pub fn spage_size(&self) -> u64 {
     1 << self.spage_size_pow2
   }
 
+  #[allow(unused)]
   pub fn lpage_size(&self) -> u64 {
     1 << self.lpage_size_pow2
   }

@@ -1,3 +1,4 @@
+use super::parse_key;
 use super::transform_op_error;
 use super::HttpCtx;
 use axum::extract::BodyStream;
@@ -7,11 +8,11 @@ use axum::headers::ContentLength;
 use axum::http::HeaderMap;
 use axum::http::HeaderValue;
 use axum::http::StatusCode;
+use axum::http::Uri;
 use axum::TypedHeader;
 use blobd_token::AuthTokenAction;
 use futures::StreamExt;
 use libblobd::op::write_object::OpWriteObjectInput;
-use libblobd::tile::TILE_SIZE_U64;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
@@ -19,7 +20,6 @@ use std::sync::Arc;
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
   pub offset: u64,
-  pub object_id: u64,
   pub upload_token: String,
   #[serde(default)]
   pub t: String,
@@ -28,16 +28,16 @@ pub struct InputQueryParams {
 pub async fn endpoint_write_object(
   State(ctx): State<Arc<HttpCtx>>,
   TypedHeader(ContentLength(len)): TypedHeader<ContentLength>,
+  uri: Uri,
   req: Query<InputQueryParams>,
   body: BodyStream,
 ) -> (StatusCode, HeaderMap) {
-  if !ctx.verify_auth(&req.t, AuthTokenAction::WriteObject {
-    object_id: req.object_id,
-  }) {
+  let key = parse_key(&uri);
+  if !ctx.verify_auth(&req.t, AuthTokenAction::WriteObject { key: key.clone() }) {
     return (StatusCode::UNAUTHORIZED, HeaderMap::new());
   };
 
-  let Some((incomplete_slot_id, _)) = ctx.parse_and_verify_upload_token(req.object_id, &req.upload_token) else {
+  let Some((incomplete_token, _)) = ctx.parse_and_verify_upload_token(&req.upload_token) else {
     return (StatusCode::NOT_FOUND,  HeaderMap::new());
   };
 
@@ -45,8 +45,7 @@ pub async fn endpoint_write_object(
     .blobd
     .write_object(OpWriteObjectInput {
       data_len: len,
-      incomplete_slot_id,
-      object_id: req.object_id,
+      incomplete_token,
       offset: req.offset,
       data_stream: body.map(|chunk| {
         chunk
@@ -56,11 +55,8 @@ pub async fn endpoint_write_object(
     })
     .await;
 
-  let receipt = ctx.generate_write_receipt(
-    req.object_id,
-    incomplete_slot_id,
-    req.offset / TILE_SIZE_U64,
-  );
+  let receipt =
+    ctx.generate_write_receipt(incomplete_token, req.offset / ctx.blobd.cfg().lpage_size());
 
   match res {
     Ok(_) => {

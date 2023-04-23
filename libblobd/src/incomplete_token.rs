@@ -7,6 +7,7 @@ use serde::Serialize;
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct IncompleteToken {
   pub(crate) created_sec: u64,
+  // We don't need to track the object ID as we guarantee that the object exists for the entire lifetime of this token.
   pub(crate) object_dev_offset: u64,
 }
 

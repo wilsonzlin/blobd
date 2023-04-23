@@ -56,12 +56,14 @@ impl BlobdTokens {
 // WARNING: Order of fields is significant, as rmp_serde will serialise in this order without field names.
 pub enum AuthTokenAction {
   BatchCreateObjects {},
-  CommitObject { object_id: u64 },
+  // TODO Support incomplete_token.
+  CommitObject { key: Vec<u8> },
   CreateObject { key: Vec<u8>, size: u64 },
   DeleteObject { key: Vec<u8> },
   InspectObject { key: Vec<u8> },
   ReadObject { key: Vec<u8> },
-  WriteObject { object_id: u64 },
+  // TODO Support incomplete_token.
+  WriteObject { key: Vec<u8> },
 }
 
 #[derive(Serialize, Deserialize)]
