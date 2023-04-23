@@ -508,7 +508,6 @@ async fn main() {
           }
         };
       }
-      info!(thread_no, "thread complete");
     }));
   }
   drop(tasks_sender);

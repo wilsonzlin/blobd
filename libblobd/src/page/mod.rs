@@ -7,6 +7,7 @@ use off64::int::create_u64_be;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
 use off64::usz;
+use tracing::info;
 use std::sync::Arc;
 use write_journal::Transaction;
 use write_journal::WriteJournal;
@@ -126,6 +127,7 @@ impl Pages {
     let block_size_pow2 = data_lpages_max_pow2 + lpage_size_pow2;
     let block_size = 1 << block_size_pow2;
     let block_mask = block_size - 1;
+    info!(block_size, "page config");
     Pages {
       block_mask,
       block_size_pow2,
