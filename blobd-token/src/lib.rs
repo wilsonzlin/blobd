@@ -1,11 +1,7 @@
+use blake3::Hash;
 use data_encoding::BASE64URL_NOPAD;
-use hmac::digest::CtOutput;
-use hmac::digest::Output;
-use hmac::Hmac;
-use hmac::Mac;
 use serde::Deserialize;
 use serde::Serialize;
-use sha2::Sha256;
 use std::mem::size_of;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -14,37 +10,32 @@ pub struct BlobdTokens {
   secret: [u8; 32],
 }
 
-type BlobdTokenHmac = Hmac<Sha256>;
-
-const BLOBD_TOKEN_HMAC_LEN: usize = size_of::<Output<BlobdTokenHmac>>();
+const BLOBD_TOKEN_MAC_LEN: usize = 32;
 
 impl BlobdTokens {
-  pub fn new(secret: [u8; 32]) -> Self {
+  pub fn new(secret: [u8; BLOBD_TOKEN_MAC_LEN]) -> Self {
     Self { secret }
   }
 
-  fn calculate_mac<T: Serialize>(&self, token_data: &T) -> CtOutput<BlobdTokenHmac> {
+  fn calculate_mac<T: Serialize>(&self, token_data: &T) -> Hash {
     let mut raw = Vec::new();
     token_data
       .serialize(&mut rmp_serde::Serializer::new(&mut raw))
       .unwrap();
-    let mut mac = Hmac::<Sha256>::new_from_slice(self.secret.as_slice()).unwrap();
-    mac.update(&raw);
-    mac.finalize()
+    blake3::keyed_hash(&self.secret, &raw)
   }
 
   pub fn generate<T: Serialize>(&self, token_data: &T) -> Vec<u8> {
-    self.calculate_mac(token_data).into_bytes().to_vec()
+    self.calculate_mac(token_data).as_bytes().to_vec()
   }
 
   pub fn verify<T: Serialize>(&self, token: &[u8], expected_token_data: &T) -> bool {
-    if token.len() != BLOBD_TOKEN_HMAC_LEN {
+    if token.len() != BLOBD_TOKEN_MAC_LEN {
       return false;
     };
-    let mac: [u8; BLOBD_TOKEN_HMAC_LEN] = token.try_into().unwrap();
-    let mac: Output<Hmac<Sha256>> = mac.into();
-    // We must use CtOutput to avoid timing attacks that defeat HMAC security.
-    let mac = CtOutput::from(mac);
+    let mac: [u8; BLOBD_TOKEN_MAC_LEN] = token.try_into().unwrap();
+    // We must use Hash to avoid timing attacks that defeat MAC security.
+    let mac: Hash = mac.into();
     if self.calculate_mac(expected_token_data) != mac {
       return false;
     };
@@ -90,7 +81,7 @@ impl AuthToken {
     let Ok(raw) = BASE64URL_NOPAD.decode(token.as_bytes()) else {
       return false;
     };
-    if raw.len() != 8 + BLOBD_TOKEN_HMAC_LEN {
+    if raw.len() != 8 + BLOBD_TOKEN_MAC_LEN {
       return false;
     };
     let (expires_raw, token_raw) = raw.split_at(size_of::<u64>());
