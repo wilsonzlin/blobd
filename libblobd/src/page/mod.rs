@@ -7,6 +7,7 @@ use crate::test_util::journal::TestTransaction as Transaction;
 use crate::test_util::journal::TestWriteJournal as WriteJournal;
 use crate::util::div_mod_pow2;
 use crate::util::div_pow2;
+use crate::util::floor_pow2;
 use crate::util::mod_pow2;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -128,12 +129,12 @@ impl Pages {
     assert_eq!(mod_pow2(heap_dev_offset, lpage_size_pow2), 0);
     // `lpage` means a page of the largest size. `spage` means a page of the smallest size. A data lpage contains actual data, while a metadata lpage contains the free page bitmap for all pages in the following N data lpages (see following code for value of N). Both are lpages (i.e. pages of the largest page size). A data lpage can have X pages, where X is how many pages of all sizes and offsets it could have.
     // A metadata lpage and the following data lpages it covers constitute a block.
-    // The page count per lpage is equal to `2 * (2^lpage_size_pow2 / 2^spage_size_pow2)` which is identical to `2^(1 + lpage_size_pow2 - spage_size_pow2)`. It's equivalent to the count of nodes in a full binary tree, where leaf nodes are the spages and the root node is the sole lpage.
+    // The page count per lpage is equal to `2 * (2^lpage_size_pow2 / 2^spage_size_pow2) - 1`, which is identical to `2^(1 + lpage_size_pow2 - spage_size_pow2) - 1`, but we add one to keep it a power of two. It's equivalent to the count of nodes in a full binary tree, where leaf nodes are the spages and the root node is the sole lpage.
     let pages_per_lpage_pow2 = 1 + lpage_size_pow2 - spage_size_pow2;
     // Calculate how many data lpages we can track in one metadata lpage; we need one bit to track one page. This is equal to `2^lpage_size_pow2 * 8 / 2^pages_per_lpage_pow2`, which is identical to `2^(lpage_size_pow2 + 3 - pages_per_lpage_pow2)`.
-    let data_lpages_max_pow2 = lpage_size_pow2 + 3 - pages_per_lpage_pow2;
+    let lpages_per_block_pow2 = lpage_size_pow2 + 3 - pages_per_lpage_pow2;
     // To keep calculations fast, we only store for the next N data lpages where N is a power of two minus one. This way, any device offset in those data lpages can get the device offset of the start of their corresponding metadata lpage with a simple bitwise AND, and the size of a block is simply `2^data_lpages_max_pow2 * 2^lpage_size_pow2` since one data lpage is effectively replaced with a metadata lpage. However, this does mean that the metadata lpage wastes some space.
-    let block_size_pow2 = data_lpages_max_pow2 + lpage_size_pow2;
+    let block_size_pow2 = lpages_per_block_pow2 + lpage_size_pow2;
     let block_size = 1 << block_size_pow2;
     info!(block_size, "page config");
     Pages {
@@ -179,8 +180,8 @@ impl Pages {
   fn get_page_free_bit_offset(&self, page_dev_offset: u64, page_size_pow2: u8) -> (u64, u64) {
     self.assert_valid_page_dev_offset(page_dev_offset);
     // Heap is only aligned to lpage, not an entire block, so we must add/subtract the heap dev offset.
-    let block_dev_offset =
-      self.heap_dev_offset + div_pow2(page_dev_offset - self.heap_dev_offset, self.block_size_pow2);
+    let block_dev_offset = self.heap_dev_offset
+      + floor_pow2(page_dev_offset - self.heap_dev_offset, self.block_size_pow2);
     // We store our bitmap like a binary tree, where the root node is the lpage, and leaf nodes are spages.
     // Let's assume each bit is like an array element with a u64 index, and the array starts at index 1. Then, given `spage_pow2 == 2` and `lpage_pow2 == 16`:
     // Index 1  (0b0001) = page16_0 => page_pow2 == lpage_pow2 - (63 - lead_zeros) = 16 - (63 - 63) = 16
@@ -213,13 +214,7 @@ impl Pages {
       | (1 << (self.lpage_size_pow2 - page_size_pow2))
       | n;
     let (elem, bit) = div_mod_pow2(i - 1, 6);
-    let elem_dev_offset = block_dev_offset + elem * 8;
-
-    assert!(
-      div_pow2(elem_dev_offset - self.heap_dev_offset, self.block_size_pow2) < self.lpage_size()
-    );
-    assert_eq!(elem_dev_offset % 8, 0);
-    assert!(bit < 64);
+    let elem_dev_offset = block_dev_offset + (elem * 8);
 
     (elem_dev_offset, bit)
   }

@@ -43,6 +43,12 @@ pub(crate) fn ceil_pow2(val: u64, pow2: u8) -> u64 {
   div << pow2
 }
 
+// Round down to previous `2^pow2`.
+pub(crate) fn floor_pow2(val: u64, pow2: u8) -> u64 {
+  let (mut div, mod_) = div_mod_pow2(val, pow2);
+  div << pow2
+}
+
 pub(crate) fn is_multiple_of_pow2(val: u64, pow2: u8) -> bool {
   let (_, mod_) = div_mod_pow2(val, pow2);
   mod_ == 0
@@ -76,6 +82,8 @@ mod tests {
     assert_eq!(div_mod_pow2(1, 2), (0, 1));
     assert_eq!(div_mod_pow2(5, 2), (1, 1));
     assert_eq!(div_mod_pow2(10, 2), (2, 2));
+    assert_eq!(div_mod_pow2(16392, 6), (256, 8));
+    assert_eq!(div_mod_pow2(16393, 6), (256, 9));
   }
 
   #[test]
