@@ -129,6 +129,8 @@ impl BlobdLoader {
     assert!(cfg.bucket_count_log2 >= 12 && cfg.bucket_count_log2 <= 48);
     let bucket_count = 1u64 << cfg.bucket_count_log2;
 
+    assert!(cfg.reap_objects_after_secs > 0);
+
     const JOURNAL_SIZE_MIN: u64 = 1024 * 1024 * 32;
 
     let object_id_serial_dev_offset = 0;

@@ -26,7 +26,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use stochastic_queue::stochastic_channel;
-use stochastic_queue::StochasticMpmcRecvTimeoutError;
+use stochastic_queue::StochasticMpmcRecvError;
 use strum_macros::Display;
 use tokio::join;
 use tokio::spawn;
@@ -111,7 +111,7 @@ impl Pool {
   }
 }
 
-#[derive(Clone, PartialEq, Eq, Display)]
+#[derive(Clone, PartialEq, Eq, Display, Debug)]
 enum Task {
   Create {
     key_len: u64,
@@ -264,6 +264,7 @@ async fn main() {
         sleep(Duration::from_secs(10)).await;
         let completed = completed.load(Ordering::Relaxed);
         if completed == cli.objects {
+          info!("all objects have completed");
           break;
         };
         info!(completed, "progress");
@@ -279,6 +280,7 @@ async fn main() {
     let tasks_receiver = tasks_receiver.clone();
     threads.push(spawn(async move {
       let cur_task: Arc<RwLock<Option<(Instant, Task)>>> = Default::default();
+      // Detect long running tasks. Primary used to detect bugs related to locks and timers.
       spawn({
         let completed = completed.clone();
         let cur_task = cur_task.clone();
@@ -307,10 +309,14 @@ async fn main() {
           break;
         };
         // We must use a timeout and regularly check the completion count, as we hold a sender so the channel won't naturally end.
-        let t = match tasks_receiver.recv_timeout(Duration::from_secs(1)) {
-          Ok(t) => t,
-          Err(StochasticMpmcRecvTimeoutError::NoSenders) => break,
-          Err(StochasticMpmcRecvTimeoutError::Timeout) => {
+        // WARNING: We cannot use `recv_timeout` as it's blocking.
+        let t = match tasks_receiver.try_recv() {
+          Ok(Some(t)) => t,
+          Err(StochasticMpmcRecvError::NoSenders) => break,
+          Ok(None) => {
+            *cur_task.write().await = None;
+            // Keep this timeout small so that total execution time is accurate.
+            sleep(Duration::from_millis(100)).await;
             trace!(thread_no, "still waiting for task");
             continue;
           }
