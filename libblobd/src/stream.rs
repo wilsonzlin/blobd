@@ -179,7 +179,8 @@ impl Error for StreamEventExpiredError {}
 
 impl StreamInMemory {
   pub fn add_event_to_in_memory_list(&self, c: CreatedStreamEvent) {
-    if self.virtual_head.load(Ordering::Relaxed) > c.id {
+    let virtual_head = self.virtual_head.load(Ordering::Relaxed);
+    if virtual_head >= STREAM_EVENT_CAP && virtual_head - STREAM_EVENT_CAP > c.id {
       warn!("event stream is rotating too quickly, recently created event has already expired");
       return;
     };
@@ -189,7 +190,7 @@ impl StreamInMemory {
   }
 
   pub fn get_event(&self, id: u64) -> Result<Option<StreamEvent>, StreamEventExpiredError> {
-    if self.virtual_head.load(Ordering::Relaxed) > id - STREAM_EVENT_CAP {
+    if id >= STREAM_EVENT_CAP && self.virtual_head.load(Ordering::Relaxed) > id - STREAM_EVENT_CAP {
       return Err(StreamEventExpiredError);
     };
     Ok(self.events.get(&id).map(|e| e.clone()))

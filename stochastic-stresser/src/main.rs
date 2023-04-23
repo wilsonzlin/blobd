@@ -30,11 +30,13 @@ use stochastic_queue::StochasticMpmcRecvTimeoutError;
 use strum_macros::Display;
 use tokio::join;
 use tokio::spawn;
+use tokio::sync::RwLock;
 use tokio::task::spawn_blocking;
 use tokio::time::sleep;
 use tokio::time::Instant;
 use tracing::info;
 use tracing::trace;
+use tracing::warn;
 use twox_hash::xxh3::hash64_with_seed;
 
 /*
@@ -109,7 +111,7 @@ impl Pool {
   }
 }
 
-#[derive(Display)]
+#[derive(Clone, PartialEq, Eq, Display)]
 enum Task {
   Create {
     key_len: u64,
@@ -276,12 +278,36 @@ async fn main() {
     let tasks_sender = tasks_sender.clone();
     let tasks_receiver = tasks_receiver.clone();
     threads.push(spawn(async move {
-      // We must use a timeout and regularly check the completion count, as we hold a sender so the channel won't naturally end.
+      let cur_task: Arc<RwLock<Option<(Instant, Task)>>> = Default::default();
+      spawn({
+        let completed = completed.clone();
+        let cur_task = cur_task.clone();
+        let mut last_seen: Option<(Instant, Task)> = None;
+        async move {
+          loop {
+            sleep(Duration::from_secs(10)).await;
+            if completed.load(Ordering::Relaxed) == cli.objects {
+              break;
+            };
+            let cur = cur_task.read().await.clone();
+            if cur != last_seen {
+              last_seen = cur;
+            } else if let Some((last_time, t)) = &last_seen {
+              warn!(
+                task = t.to_string(),
+                duration_sec = last_time.elapsed().as_secs(),
+                "still processing task"
+              );
+            };
+          }
+        }
+      });
       loop {
         if completed.load(Ordering::Relaxed) == cli.objects {
           break;
         };
-        let t = match tasks_receiver.recv_timeout(std::time::Duration::from_secs(1)) {
+        // We must use a timeout and regularly check the completion count, as we hold a sender so the channel won't naturally end.
+        let t = match tasks_receiver.recv_timeout(Duration::from_secs(1)) {
           Ok(t) => t,
           Err(StochasticMpmcRecvTimeoutError::NoSenders) => break,
           Err(StochasticMpmcRecvTimeoutError::Timeout) => {
@@ -289,6 +315,7 @@ async fn main() {
             continue;
           }
         };
+        *cur_task.write().await = Some((Instant::now(), t.clone()));
         trace!(thread_no, task_type = t.to_string(), "received task");
         match t {
           Task::Create {
