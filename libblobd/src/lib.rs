@@ -42,6 +42,8 @@ use std::error::Error;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
+use stream::StreamEvent;
+use stream::StreamEventExpiredError;
 use tokio::sync::Mutex;
 use tracing::info;
 use write_journal::WriteJournal;
@@ -201,7 +203,14 @@ impl BlobdLoader {
     ));
 
     // Ensure journal has been recovered first before loading any other data.
-    let (object_id_serial, stream, incomplete_list, deleted_list, allocator, buckets) = join! {
+    let (
+      object_id_serial,
+      (stream, stream_in_memory),
+      incomplete_list,
+      deleted_list,
+      allocator,
+      buckets,
+    ) = join! {
       ObjectIdSerial::load_from_device(dev, self.object_id_serial_dev_offset),
       Stream::load_from_device(dev, self.stream_dev_offset),
       IncompleteList::load_from_device(dev.clone(), self.incomplete_list_dev_offset, pages.clone(), self.cfg.reap_objects_after_secs),
@@ -216,6 +225,7 @@ impl BlobdLoader {
       reap_objects_after_secs: self.cfg.reap_objects_after_secs,
       journal: self.journal.clone(),
       pages: pages.clone(),
+      stream_in_memory,
       versioning: self.cfg.versioning,
       state: Mutex::new(State {
         allocator,
@@ -255,6 +265,13 @@ impl Blobd {
       start_incomplete_list_reaper_background_loop(self.ctx.clone()),
       start_deleted_list_reaper_background_loop(self.ctx.clone()),
     };
+  }
+
+  pub async fn get_stream_event(
+    &self,
+    id: u64,
+  ) -> Result<Option<StreamEvent>, StreamEventExpiredError> {
+    self.ctx.stream_in_memory.get_event(id)
   }
 
   pub async fn commit_object(&self, input: OpCommitObjectInput) -> OpResult<OpCommitObjectOutput> {

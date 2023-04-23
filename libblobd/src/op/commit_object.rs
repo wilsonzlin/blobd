@@ -47,7 +47,7 @@ pub(crate) async fn op_commit_object(
     .read_at(object_dev_offset + OBJECT_OFF.key(), key_len.into())
     .await;
 
-  let txn = {
+  let (txn, event) = {
     let mut state = ctx.state.lock().await;
 
     let mut bkt = ctx.buckets.get_bucket_mut_for_key(&key).await;
@@ -101,16 +101,18 @@ pub(crate) async fn op_commit_object(
       .await;
 
     // Create stream event.
-    state.stream.create_event(&mut txn, StreamEvent {
+    let event = state.stream.create_event_on_device(&mut txn, StreamEvent {
       typ: StreamEventType::ObjectCommit,
       bucket_id: bkt.bucket_id(),
       object_id,
     });
 
-    txn
+    (txn, event)
   };
 
   ctx.journal.commit_transaction(txn).await;
+
+  ctx.stream_in_memory.add_event_to_in_memory_list(event);
 
   trace!(
     key = key_debug_str(&key),

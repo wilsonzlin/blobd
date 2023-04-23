@@ -5,6 +5,7 @@ use crate::page::ObjectPageHeader;
 use crate::page::ObjectState;
 use crate::page::Pages;
 use crate::page::MIN_PAGE_SIZE_POW2;
+use crate::stream::CreatedStreamEvent;
 use crate::stream::StreamEvent;
 use crate::stream::StreamEventType;
 use itertools::Itertools;
@@ -149,7 +150,7 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
     // TODO This is a workaround for the borrow checker, as it won't let us borrow both `deleted_list` and `stream` in `State` mutably.
     state: &mut State,
     id: Option<u64>,
-  ) -> Option<()> {
+  ) -> Option<CreatedStreamEvent> {
     let Some(FoundObject {
       prev_dev_offset: prev_obj,
       next_dev_offset: next_obj,
@@ -184,13 +185,13 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
     state.deleted_list.attach(txn, obj_dev_offset).await;
 
     // Create event.
-    state.stream.create_event(txn, StreamEvent {
+    let e = state.stream.create_event_on_device(txn, StreamEvent {
       typ: StreamEventType::ObjectDelete,
       bucket_id: self.state.bucket_id,
       object_id,
     });
 
-    Some(())
+    Some(e)
   }
 
   pub fn mutate_head(&mut self, txn: &mut Transaction, dev_offset: u64) {

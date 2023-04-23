@@ -25,6 +25,8 @@ rustc-hash = "1.1"
 seekable-async-file = "0.8" # NOTE: We must always use mmap, as we depend on ordered writes, and also want non-async writing capability.
 serde = { version = "1.0.160", features = ["derive"] }
 signal-future = "0.0.1"
+struct-name = "0.0.1"
+struct-name-macro = "0.0.2"
 strum = { version = "0.24", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "sync"] }
 tracing = { version = "0.1.37", features = ["release_max_level_info"] }

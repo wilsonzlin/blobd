@@ -5,6 +5,7 @@ use crate::incomplete_list::IncompleteList;
 use crate::object_id::ObjectIdSerial;
 use crate::page::Pages;
 use crate::stream::Stream;
+use crate::stream::StreamInMemory;
 use seekable_async_file::SeekableAsyncFile;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -31,5 +32,6 @@ pub(crate) struct Ctx {
   pub reap_objects_after_secs: u64,
   /// WARNING: Begin transaction AFTER acquiring lock, as otherwise state change data will be written out of order. The journal will always write transactions in order (even if committed out of order), which means transactions must be started in the order that state is changed, and that's not guaranteed if lock hasn't been acquired yet.
   pub state: Mutex<State>,
+  pub stream_in_memory: Arc<StreamInMemory>,
   pub versioning: bool,
 }

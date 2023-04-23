@@ -21,7 +21,7 @@ pub(crate) async fn op_delete_object(
     let mut txn = ctx.journal.begin_transaction();
 
     let mut bkt = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
-    // We must always commit the transaction (otherwise our journal will wait forever), so we cannot return directly here.
+    // We must always commit the transaction (otherwise our journal will wait forever), so we cannot return directly here if the object does not exist.
     let deleted = bkt
       .move_object_to_deleted_list_if_exists(&mut txn, &mut state, req.id)
       .await;
@@ -29,12 +29,13 @@ pub(crate) async fn op_delete_object(
     (txn, deleted)
   };
 
-  // We must always commit the transaction (otherwise our journal will wait forever), so we cannot return before this.
+  // We must always commit the transaction (otherwise our journal will wait forever), so we cannot return before this if the object does not exist.
   ctx.journal.commit_transaction(txn).await;
 
-  let Some(()) = deleted else {
+  let Some(e) = deleted else {
     return Err(OpError::ObjectNotFound);
   };
+  ctx.stream_in_memory.add_event_to_in_memory_list(e);
 
   Ok(OpDeleteObjectOutput {})
 }
