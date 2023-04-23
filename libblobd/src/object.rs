@@ -1,11 +1,17 @@
 use crate::allocator::Allocator;
 use crate::page::Pages;
 use crate::page::PAGE_HEADER_CAP;
+#[cfg(test)]
+use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
+#[cfg(test)]
+use crate::test_util::journal::TestTransaction as Transaction;
 use crate::util::ceil_pow2;
 use crate::util::div_mod_pow2;
 use off64::int::Off64ReadInt;
 use off64::u8;
+#[cfg(not(test))]
 use seekable_async_file::SeekableAsyncFile;
+#[cfg(not(test))]
 use write_journal::Transaction;
 
 /**

@@ -1,3 +1,10 @@
+#[cfg(test)]
+pub mod tests;
+
+#[cfg(test)]
+use crate::test_util::journal::TestTransaction as Transaction;
+#[cfg(test)]
+use crate::test_util::journal::TestWriteJournal as WriteJournal;
 use crate::util::div_mod_pow2;
 use crate::util::div_pow2;
 use crate::util::mod_pow2;
@@ -7,9 +14,11 @@ use off64::int::create_u64_be;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
 use off64::usz;
-use tracing::info;
 use std::sync::Arc;
+use tracing::info;
+#[cfg(not(test))]
 use write_journal::Transaction;
+#[cfg(not(test))]
 use write_journal::WriteJournal;
 
 pub(crate) const MIN_PAGE_SIZE_POW2: u8 = 8;
@@ -93,11 +102,11 @@ impl PageHeader for ObjectPageHeader {
 }
 
 pub(crate) struct Pages {
-  block_mask: u64,
   // To access the overlay.
   journal: Arc<WriteJournal>,
   heap_dev_offset: u64,
   block_size_pow2: u8,
+  pages_per_lpage_pow2: u8,
   /// WARNING: Do not modify after creation.
   pub block_size: u64,
   /// WARNING: Do not modify after creation.
@@ -126,15 +135,14 @@ impl Pages {
     // To keep calculations fast, we only store for the next N data lpages where N is a power of two minus one. This way, any device offset in those data lpages can get the device offset of the start of their corresponding metadata lpage with a simple bitwise AND, and the size of a block is simply `2^data_lpages_max_pow2 * 2^lpage_size_pow2` since one data lpage is effectively replaced with a metadata lpage. However, this does mean that the metadata lpage wastes some space.
     let block_size_pow2 = data_lpages_max_pow2 + lpage_size_pow2;
     let block_size = 1 << block_size_pow2;
-    let block_mask = block_size - 1;
     info!(block_size, "page config");
     Pages {
-      block_mask,
       block_size_pow2,
       block_size,
       heap_dev_offset,
       journal,
       lpage_size_pow2,
+      pages_per_lpage_pow2,
       spage_size_pow2,
     }
   }
@@ -170,7 +178,9 @@ impl Pages {
 
   fn get_page_free_bit_offset(&self, page_dev_offset: u64, page_size_pow2: u8) -> (u64, u64) {
     self.assert_valid_page_dev_offset(page_dev_offset);
-    let metadata_lpage_dev_offset = page_dev_offset & !self.block_mask;
+    // Heap is only aligned to lpage, not an entire block, so we must add/subtract the heap dev offset.
+    let block_dev_offset =
+      self.heap_dev_offset + div_pow2(page_dev_offset - self.heap_dev_offset, self.block_size_pow2);
     // We store our bitmap like a binary tree, where the root node is the lpage, and leaf nodes are spages.
     // Let's assume each bit is like an array element with a u64 index, and the array starts at index 1. Then, given `spage_pow2 == 2` and `lpage_pow2 == 16`:
     // Index 1  (0b0001) = page16_0 => page_pow2 == lpage_pow2 - (63 - lead_zeros) = 16 - (63 - 63) = 16
@@ -185,17 +195,32 @@ impl Pages {
     // Index 10 (0b1010) = page13_2
     // ...
     // Based on the above pattern, we can determine that the index for a page of size 2^S and zero-based position N,
-    // the 1-based index I is `(1 << (lpage_pow2 - S)) + N`, where `N = (page_dev_offset - block_offset) / 2^S`.
+    // the 1-based index I is `(1 << (lpage_pow2 - S)) | N`, where `N = (page_dev_offset - lpage_dev_offset) / 2^S`.
     // Now:
+    // - We have multiple lpages per block, not just one.
     // - We split our bitmaps into 64-bit integers to reduce load on overlay bucket.
     // - Indices are 0-based, not 1-based.
     // So:
+    // - Get the lpage number within the block.
+    // - Get the page number within the lpage (`N`).
     // - Get the u64 value at element `(I - 1) / 64`, which is at dev offset `metadata_lpage_dev_offset + ((I - 1) / 64) * 8`.
     // - Get the bit at position `(I - 1) % 64`.
-    let n = div_pow2(page_dev_offset - metadata_lpage_dev_offset, page_size_pow2);
-    let i = (1 << (self.lpage_size_pow2 - page_size_pow2)) + n;
+    let (lpage_n, offset_within_lpage) =
+      div_mod_pow2(page_dev_offset - block_dev_offset, self.lpage_size_pow2);
+    let lpage_dev_offset = page_dev_offset - offset_within_lpage;
+    let n = div_pow2(page_dev_offset - lpage_dev_offset, page_size_pow2);
+    let i = (lpage_n * (1 << self.pages_per_lpage_pow2))
+      | (1 << (self.lpage_size_pow2 - page_size_pow2))
+      | n;
     let (elem, bit) = div_mod_pow2(i - 1, 6);
-    let elem_dev_offset = metadata_lpage_dev_offset + elem * 8;
+    let elem_dev_offset = block_dev_offset + elem * 8;
+
+    assert!(
+      div_pow2(elem_dev_offset - self.heap_dev_offset, self.block_size_pow2) < self.lpage_size()
+    );
+    assert_eq!(elem_dev_offset % 8, 0);
+    assert!(bit < 64);
+
     (elem_dev_offset, bit)
   }
 

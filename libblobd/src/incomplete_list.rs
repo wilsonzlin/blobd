@@ -4,14 +4,20 @@ use crate::object::OBJECT_OFF;
 use crate::page::ObjectPageHeader;
 use crate::page::ObjectState;
 use crate::page::Pages;
+#[cfg(test)]
+use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
+#[cfg(test)]
+use crate::test_util::journal::TestTransaction as Transaction;
 use crate::util::get_now_sec;
 use off64::int::create_u48_be;
 use off64::int::Off64AsyncReadInt;
 use off64::usz;
+#[cfg(not(test))]
 use seekable_async_file::SeekableAsyncFile;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
+#[cfg(not(test))]
 use write_journal::Transaction;
 
 /*

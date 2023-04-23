@@ -212,6 +212,7 @@ pub(crate) async fn op_write_object<
   };
 
   // Optimisation: perform fdatasync in batches.
+  #[cfg(not(test))]
   ctx.device.write_at_with_delayed_sync(vec![]).await;
 
   Ok(OpWriteObjectOutput {})

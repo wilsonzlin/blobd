@@ -1,9 +1,15 @@
+#[cfg(test)]
+use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
+#[cfg(test)]
+use crate::test_util::journal::TestTransaction as Transaction;
 use off64::int::create_u64_be;
 use off64::int::Off64AsyncReadInt;
+#[cfg(not(test))]
 use seekable_async_file::SeekableAsyncFile;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use tracing::debug;
+#[cfg(not(test))]
 use write_journal::Transaction;
 
 pub(crate) struct ObjectIdSerial {

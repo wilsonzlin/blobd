@@ -12,6 +12,10 @@ use crate::incomplete_list::INCOMPLETE_LIST_STATE_SIZE;
 use crate::object_id::ObjectIdSerial;
 use crate::stream::Stream;
 use crate::stream::STREAM_SIZE;
+#[cfg(test)]
+use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
+#[cfg(test)]
+use crate::test_util::journal::TestWriteJournal as WriteJournal;
 use crate::util::ceil_pow2;
 use bucket::BUCKETS_SIZE;
 use ctx::Ctx;
@@ -37,15 +41,16 @@ use op::write_object::OpWriteObjectInput;
 use op::write_object::OpWriteObjectOutput;
 use op::OpResult;
 use page::Pages;
+#[cfg(not(test))]
 use seekable_async_file::SeekableAsyncFile;
 use std::error::Error;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::time::Duration;
 use stream::StreamEvent;
 use stream::StreamEventExpiredError;
 use tokio::sync::Mutex;
 use tracing::info;
+#[cfg(not(test))]
 use write_journal::WriteJournal;
 
 pub mod allocator;
@@ -59,6 +64,8 @@ pub mod object_id;
 pub mod op;
 pub mod page;
 pub mod stream;
+#[cfg(test)]
+pub mod test_util;
 pub mod util;
 
 /**
@@ -148,20 +155,24 @@ impl BlobdLoader {
     let journal_size = heap_dev_offset - journal_dev_offset;
 
     info!(
+      device_size,
       buckets_size,
       journal_size,
-      heap_dev_offset,
+      reserved_size = heap_dev_offset,
       lpage_size = 1 << cfg.lpage_size_pow2,
       spage_size = 1 << cfg.spage_size_pow2,
       "init",
     );
 
+    #[cfg(not(test))]
     let journal = Arc::new(WriteJournal::new(
       device.clone(),
       journal_dev_offset,
       journal_size,
       Duration::from_micros(200),
     ));
+    #[cfg(test)]
+    let journal = Arc::new(WriteJournal::new(device.clone()));
 
     Self {
       allocator_dev_offset,

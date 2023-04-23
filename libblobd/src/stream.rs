@@ -1,3 +1,7 @@
+#[cfg(test)]
+use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
+#[cfg(test)]
+use crate::test_util::journal::TestTransaction as Transaction;
 use dashmap::DashMap;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -7,6 +11,7 @@ use off64::int::Off64WriteMutInt;
 use off64::usz;
 use off64::Off64Read;
 use rustc_hash::FxHasher;
+#[cfg(not(test))]
 use seekable_async_file::SeekableAsyncFile;
 use std::error::Error;
 use std::fmt;
@@ -19,6 +24,7 @@ use struct_name::StructName;
 use struct_name_macro::StructName;
 use tracing::debug;
 use tracing::warn;
+#[cfg(not(test))]
 use write_journal::Transaction;
 
 /**

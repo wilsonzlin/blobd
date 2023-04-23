@@ -8,12 +8,19 @@ use crate::page::MIN_PAGE_SIZE_POW2;
 use crate::stream::CreatedStreamEvent;
 use crate::stream::StreamEvent;
 use crate::stream::StreamEventType;
+#[cfg(test)]
+use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
+#[cfg(test)]
+use crate::test_util::journal::TestTransaction as Transaction;
+#[cfg(test)]
+use crate::test_util::journal::TestWriteJournal as WriteJournal;
 use itertools::Itertools;
 use off64::int::create_u40_be;
 use off64::int::Off64ReadInt;
 use off64::u16;
 use off64::usz;
 use off64::Off64Read;
+#[cfg(not(test))]
 use seekable_async_file::SeekableAsyncFile;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -23,7 +30,9 @@ use tokio::sync::RwLockReadGuard;
 use tokio::sync::RwLockWriteGuard;
 use tracing::debug;
 use twox_hash::xxh3::hash64;
+#[cfg(not(test))]
 use write_journal::Transaction;
+#[cfg(not(test))]
 use write_journal::WriteJournal;
 
 /**

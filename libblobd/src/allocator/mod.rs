@@ -5,6 +5,10 @@ use crate::page::FreePagePageHeader;
 use crate::page::Pages;
 use crate::page::MAX_PAGE_SIZE_POW2;
 use crate::page::MIN_PAGE_SIZE_POW2;
+#[cfg(test)]
+use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
+#[cfg(test)]
+use crate::test_util::journal::TestTransaction as Transaction;
 use crate::util::mod_pow2;
 use async_recursion::async_recursion;
 use futures::future::join_all;
@@ -13,6 +17,7 @@ use off64::int::create_u64_be;
 use off64::int::Off64AsyncReadInt;
 use off64::int::Off64WriteMutInt;
 use off64::usz;
+#[cfg(not(test))]
 use seekable_async_file::SeekableAsyncFile;
 use std::cmp::max;
 use std::sync::atomic::AtomicU64;
@@ -21,6 +26,7 @@ use std::sync::Arc;
 use tracing::debug;
 use tracing::info;
 use tracing::trace;
+#[cfg(not(test))]
 use write_journal::Transaction;
 
 const ALLOCSTATE_OFFSETOF_FRONTIER: u64 = 0;
