@@ -71,7 +71,6 @@ pub(crate) async fn op_create_object(
     let object_id = state.object_id_serial.next(&mut txn);
     raw.write_u64_be_at(off.id(), object_id);
 
-    // TODO Parallelise all awaits and loops.
     trace!(
       key = key_debug_str(&req.key),
       "allocating metadata for object"
