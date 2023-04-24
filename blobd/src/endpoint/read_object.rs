@@ -37,7 +37,7 @@ pub async fn endpoint_read_object(
   req: Query<InputQueryParams>,
 ) -> Result<Response<StreamBody<impl Stream<Item = Result<Bytes, io::Error>>>>, StatusCode> {
   let key = parse_key(&uri);
-  if !ctx.verify_auth(&req.t, AuthTokenAction::ReadObject { key: key.clone() }) {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::ReadObject { key: key.to_vec() }) {
     return Err(StatusCode::UNAUTHORIZED);
   };
 

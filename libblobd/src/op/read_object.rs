@@ -21,7 +21,7 @@ use tokio::time::Instant;
 use tracing::trace;
 
 pub struct OpReadObjectInput {
-  pub key: Vec<u8>,
+  pub key: TinyBuf,
   // Only useful if versioning is enabled.
   pub id: Option<u64>,
   pub start: u64,

@@ -25,7 +25,7 @@ pub async fn endpoint_inspect_object(
   req: Query<InputQueryParams>,
 ) -> (StatusCode, HeaderMap) {
   let key = parse_key(&uri);
-  if !ctx.verify_auth(&req.t, AuthTokenAction::InspectObject { key: key.clone() }) {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::InspectObject { key: key.to_vec() }) {
     return (StatusCode::UNAUTHORIZED, HeaderMap::new());
   };
 

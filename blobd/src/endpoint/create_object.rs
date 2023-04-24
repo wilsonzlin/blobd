@@ -12,6 +12,7 @@ use libblobd::op::create_object::OpCreateObjectInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
+use tinybuf::TinyBuf;
 
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
@@ -27,7 +28,7 @@ pub async fn endpoint_create_object(
 ) -> (StatusCode, HeaderMap) {
   let key = parse_key(&uri);
   if !ctx.verify_auth(&req.t, AuthTokenAction::CreateObject {
-    key: key.clone(),
+    key: key.to_vec(),
     size: req.size,
   }) {
     return (StatusCode::UNAUTHORIZED, HeaderMap::new());
@@ -38,7 +39,7 @@ pub async fn endpoint_create_object(
     .create_object(OpCreateObjectInput {
       key,
       size: req.size,
-      assoc_data: Vec::new(),
+      assoc_data: TinyBuf::empty(),
     })
     .await;
 

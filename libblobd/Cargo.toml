@@ -29,7 +29,7 @@ signal-future = "0.0.1"
 struct-name = "0.0.1"
 struct-name-macro = "0.0.2"
 strum = { version = "0.24", features = ["derive"] }
-tinybuf = "0.2.1"
+tinybuf = "0.2.3"
 tokio = { version = "1", features = ["macros", "sync"] }
 tracing = { version = "0.1.37", features = ["release_max_level_info"] }
 tracing-test = "0.2.4"

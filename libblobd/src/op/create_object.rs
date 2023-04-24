@@ -13,12 +13,13 @@ use off64::u16;
 use off64::usz;
 use off64::Off64WriteMut;
 use std::sync::Arc;
+use tinybuf::TinyBuf;
 use tracing::trace;
 
 pub struct OpCreateObjectInput {
-  pub key: Vec<u8>,
+  pub key: TinyBuf,
   pub size: u64,
-  pub assoc_data: Vec<u8>,
+  pub assoc_data: TinyBuf,
 }
 
 pub struct OpCreateObjectOutput {

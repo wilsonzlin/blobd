@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "benchmarker",
   "blobc",
   "blobd-client-rs",
   "blobd-token",

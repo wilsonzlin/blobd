@@ -33,7 +33,7 @@ pub async fn endpoint_write_object(
   body: BodyStream,
 ) -> (StatusCode, HeaderMap) {
   let key = parse_key(&uri);
-  if !ctx.verify_auth(&req.t, AuthTokenAction::WriteObject { key: key.clone() }) {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::WriteObject { key: key.to_vec() }) {
     return (StatusCode::UNAUTHORIZED, HeaderMap::new());
   };
 

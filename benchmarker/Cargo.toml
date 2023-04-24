@@ -1,25 +1,18 @@
 [package]
-name = "blobd-stochastic-stresser"
+name = "blobd-benchmarker"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
-[features]
-default = []
-instrumentation = ["dep:console-subscriber", "tokio/tracing"] # https://github.com/tokio-rs/console/blob/main/console-subscriber/README.md#enabling-tokio-instrumentation
-
 [dependencies]
 clap = { version = "4.1.14", features = ["derive"] }
-console-subscriber = { version = "0.1.8", optional = true }
 futures = "0.3.27"
 libblobd = { version = "0.1.1", path = "../libblobd" }
 off64 = "0.6.0"
+parking_lot = "0.12.1"
 rand = "0.8.5"
 seekable-async-file = "0.11.1"
-stochastic-queue = "0.1.1"
-strum_macros = "0.24.3"
 tinybuf = "0.2.3"
 tokio = { version = "1.27.0", features = ["full"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
-twox-hash = "1.6.3"

@@ -19,6 +19,7 @@ use serde::Serialize;
 use std::cmp::min;
 use std::io::ErrorKind;
 use std::sync::Arc;
+use tinybuf::TinyBuf;
 
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
@@ -62,9 +63,9 @@ pub async fn endpoint_batch_create_objects(
     let size = size_raw.read_u40_be_at(0);
 
     let Ok(creation) = ctx.blobd.create_object(OpCreateObjectInput {
-      key: key.clone(),
+      key: key.into(),
       size,
-      assoc_data: Vec::new(),
+      assoc_data: TinyBuf::empty(),
     }).await else {
       break;
     };

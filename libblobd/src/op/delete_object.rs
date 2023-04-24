@@ -2,9 +2,10 @@ use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
 use std::sync::Arc;
+use tinybuf::TinyBuf;
 
 pub struct OpDeleteObjectInput {
-  pub key: Vec<u8>,
+  pub key: TinyBuf,
   // Only useful if versioning is enabled.
   pub id: Option<u64>,
 }

@@ -46,7 +46,7 @@ impl Display for OpError {
 impl Error for OpError {}
 
 pub(crate) fn key_debug_str(key: &[u8]) -> String {
-  String::from_utf8(key.to_vec())
+  std::str::from_utf8(key)
     .map(|k| format!("lit:{k}"))
     .unwrap_or_else(|_| {
       let mut nice = "hex:".to_string();

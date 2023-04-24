@@ -27,7 +27,7 @@ pub async fn endpoint_commit_object(
   req: Query<InputQueryParams>,
 ) -> StatusCode {
   let key = parse_key(&uri);
-  if !ctx.verify_auth(&req.t, AuthTokenAction::CommitObject { key: key.clone() }) {
+  if !ctx.verify_auth(&req.t, AuthTokenAction::CommitObject { key: key.to_vec() }) {
     return StatusCode::UNAUTHORIZED;
   };
 

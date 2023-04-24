@@ -28,6 +28,7 @@ use std::time::Duration;
 use stochastic_queue::stochastic_channel;
 use stochastic_queue::StochasticMpmcRecvError;
 use strum_macros::Display;
+use tinybuf::TinyBuf;
 use tokio::join;
 use tokio::spawn;
 use tokio::sync::RwLock;
@@ -46,7 +47,6 @@ use twox_hash::xxh3::hash64_with_seed;
 Run this program with this env var for logging: RUST_LOG=<log level>,runtime=info,tokio=info
 This will prevent the [Tokio Instrumentation](https://github.com/tokio-rs/console/tree/main/console-subscriber) events from being printed.
 Use [tokio-console](https://github.com/tokio-rs/console#running-the-console) to debug Tokio tasks (e.g. deadlocks).
-
 
 - We should not have to generate and/or store much data in memory, as that will hit performance.
 - Inputs should vary in length and content.
@@ -343,9 +343,9 @@ async fn main() {
           } => {
             let res = blobd
               .create_object(OpCreateObjectInput {
-                key: pool.get(key_offset, key_len).to_vec(),
+                key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 size: data_len,
-                assoc_data: Vec::new(),
+                assoc_data: TinyBuf::empty(),
               })
               .await
               .unwrap();
@@ -435,7 +435,7 @@ async fn main() {
           } => {
             let res = blobd
               .inspect_object(OpInspectObjectInput {
-                key: pool.get(key_offset, key_len).to_vec(),
+                key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 id: Some(object_id),
               })
               .await
@@ -467,7 +467,7 @@ async fn main() {
               .read_object(OpReadObjectInput {
                 end: Some(end),
                 start: chunk_offset,
-                key: pool.get(key_offset, key_len).to_vec(),
+                key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 stream_buffer_size: 1024 * 16,
                 id: Some(object_id),
               })
@@ -510,7 +510,7 @@ async fn main() {
           } => {
             blobd
               .delete_object(OpDeleteObjectInput {
-                key: pool.get(key_offset, key_len).to_vec(),
+                key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 id: Some(object_id),
               })
               .await
