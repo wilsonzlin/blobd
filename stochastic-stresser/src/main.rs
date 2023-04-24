@@ -262,12 +262,8 @@ async fn main() {
     let completed = completed.clone();
     async move {
       loop {
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(5)).await;
         let completed = completed.load(Ordering::Relaxed);
-        if completed == cli.objects {
-          info!("all objects have completed");
-          break;
-        };
         info!(
           completed,
           allocated_block_count = blobd.metrics().allocated_block_count(),
@@ -280,6 +276,9 @@ async fn main() {
           used_bytes = blobd.metrics().used_bytes(),
           "progress",
         );
+        if completed == cli.objects {
+          break;
+        };
       }
     }
   });

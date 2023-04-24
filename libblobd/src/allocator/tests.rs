@@ -95,4 +95,32 @@ async fn test_allocation() {
   free_list_heads[11 - 8] = blk0_lpage1 + 4096 + 2048;
   free_list_heads[10 - 8] = blk0_lpage1 + 4096 + 1024;
   assert_eq!(alloc.free_list_head, free_list_heads);
+
+  // Fourth allocation: page size 256 (log2 = 8).
+  let mut txn = journal.begin_transaction();
+  let page_dev_offset = alloc.allocate(&mut txn, 256).await;
+  assert_eq!(alloc.frontier_dev_offset, blk1);
+  assert_eq!(page_dev_offset, blk0_lpage1 + 1 * 256);
+  free_list_heads[8 - 8] = 0;
+  assert_eq!(alloc.free_list_head, free_list_heads);
+
+  // Fifth allocation: page size 256 (log2 = 8).
+  // There are no 2^8 pages available, so split 2^9 and use left page.
+  let mut txn = journal.begin_transaction();
+  let page_dev_offset = alloc.allocate(&mut txn, 0).await;
+  assert_eq!(alloc.frontier_dev_offset, blk1);
+  assert_eq!(page_dev_offset, blk0_lpage1 + 1 * 512);
+  free_list_heads[9 - 8] = 0;
+  free_list_heads[8 - 8] = blk0_lpage1 + 512 + 256;
+  assert_eq!(alloc.free_list_head, free_list_heads);
+
+  // Sixth allocation: page size 256 (log2 = 8).
+  let mut txn = journal.begin_transaction();
+  let page_dev_offset = alloc.allocate(&mut txn, 0).await;
+  assert_eq!(alloc.frontier_dev_offset, blk1);
+  assert_eq!(page_dev_offset, blk0_lpage1 + 3 * 256);
+  free_list_heads[8 - 8] = 0;
+  assert_eq!(alloc.free_list_head, free_list_heads);
+
+  // TODO Test at least 2 more block allocations, then test out of space panic (ensure device size only fits 3.5 block sizes).
 }

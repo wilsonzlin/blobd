@@ -223,31 +223,22 @@ impl Allocator {
       txn.write_with_overlay(block_dev_offset + i, create_u64_be(u64::MAX));
     }
 
-    // This code is subtle:
     // - The first lpage of a block is always reserved for the metadata lpage, so we should not mark that as a free page.
     // - The first data lpage (second lpage) will be immediately returned for usage, so we should not mark that as a free page.
-    // - The first free data lpage (third lpage) needs to be inserted into the free list.
-    // - The last data lpage (last lpage) needs to have a `next` of zero.
-    // - All other lpages are also free, but can simply link to their phsyical previous and next lpages instead of repeatedly inserting into the free list. This way, only the first free data lpage needs to be inserted into the free list.
-    for (left, lpage_dev_offset, right) in (block_dev_offset..=new_frontier)
+    // - We insert in reverse order so that lpages with a lower offset are used first. This isn't necessary for correctness but may offer some performance benefit due to sequential I/O, and makes testing easier too.
+    // It may seem inefficient to build a Vec and insert every lpage in a loop, instead of just building a list and then inserting the head only, but:
+    // - We only do this every new block, which should not be very often, so the cost is amortised.
+    // - We're only talking about a few thousand elements, so the Vec allocation is small and the loop execution is still blisteringly fast (each iteration just reads and writes from a cached mmap page and DashMap). There shouldn't be any noticeable system pause/delay.
+    // - We previously used an optimised loop that was subtle and confusing, which lead to some subtle bugs not being discovered. The complexity is not worth the intangible performance gain.
+    let lpage_dev_offsets = (block_dev_offset..new_frontier)
       .step_by(usz!(lpage_size))
-      .skip(1)
-      .tuple_windows()
-    {
+      .skip(2)
+      .collect_vec();
+    for lpage_dev_offset in lpage_dev_offsets.into_iter().rev() {
       self
-        .pages
-        .write_page_header(txn, lpage_dev_offset, FreePagePageHeader {
-          prev: if left == block_dev_offset { 0 } else { left },
-          next: if right == new_frontier { 0 } else { right },
-        });
+        .insert_page_into_free_list(txn, lpage_dev_offset, self.pages.lpage_size_pow2)
+        .await;
     }
-    self
-      .insert_page_into_free_list(
-        txn,
-        block_dev_offset + 2 * lpage_size,
-        self.pages.lpage_size_pow2,
-      )
-      .await;
     // Mark metadata lpage as used space.
     self.metrics.incr_used_bytes(txn, self.pages.lpage_size());
 

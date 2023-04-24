@@ -275,8 +275,8 @@ impl Blobd {
     &self.cfg
   }
 
-  pub fn metrics(&self) -> Arc<BlobdMetrics> {
-    self.ctx.metrics.clone()
+  pub fn metrics(&self) -> &Arc<BlobdMetrics> {
+    &self.ctx.metrics
   }
 
   // WARNING: `device.start_delayed_data_sync_background_loop()` must also be running. Since `device` was provided, it's left up to the provider to run it.
