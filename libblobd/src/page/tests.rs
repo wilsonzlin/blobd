@@ -46,7 +46,7 @@ fn test_get_page_free_bit_offset() {
         assert_eq!(res.0, block_dev_offset + (expected_id / 64 * 8), "64-bit bitmap element dev offset for page {page_no_in_lpage} of size {page_size} in lpage {lpage_no_in_block}");
         assert_eq!(res.1, expected_id % 64);
 
-        // Extra character checks: element dev offset should be in bitmap, be a multiple of a 64-bit element address, etc.
+        // Extra offset checks: element dev offset should be in bitmap, be a multiple of a 64-bit element address, etc.
         assert!((res.0 - heap_dev_offset) % block_size < lpage_size);
         assert_eq!((res.0 - block_dev_offset) % 8, 0);
         assert!(res.1 < 64);

@@ -8,15 +8,16 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
+use write_journal::tinybuf::TinyBuf;
 
 pub struct TestOverlayEntry {
-  pub data: Vec<u8>,
+  pub data: TinyBuf,
   pub serial_no: u64,
 }
 
 pub struct TestTransactionWrite {
   pub offset: u64,
-  pub data: Vec<u8>,
+  pub data: TinyBuf,
   pub is_overlay: bool,
 }
 
@@ -27,7 +28,8 @@ pub struct TestTransaction {
 }
 
 impl TestTransaction {
-  pub fn write(&mut self, offset: u64, data: Vec<u8>) -> &mut Self {
+  pub fn write<D: Into<TinyBuf>>(&mut self, offset: u64, data: D) -> &mut Self {
+    let data = data.into();
     self.writes.push(TestTransactionWrite {
       offset,
       data,
@@ -37,7 +39,8 @@ impl TestTransaction {
   }
 
   /// WARNING: Use this function with caution, it's up to the caller to avoid the potential issues with misuse, including logic incorrectness, cache incoherency, and memory leaking. Carefully read notes/Overlay.md before using the overlay.
-  pub fn write_with_overlay(&mut self, offset: u64, data: Vec<u8>) -> &mut Self {
+  pub fn write_with_overlay<D: Into<TinyBuf>>(&mut self, offset: u64, data: D) -> &mut Self {
+    let data = data.into();
     self.overlay.insert(offset, TestOverlayEntry {
       data: data.clone(),
       serial_no: self.serial_no,
@@ -93,12 +96,12 @@ impl TestWriteJournal {
     };
   }
 
-  pub async fn read_with_overlay(&self, offset: u64, len: u64) -> Vec<u8> {
+  pub async fn read_with_overlay(&self, offset: u64, len: u64) -> TinyBuf {
     if let Some(e) = self.overlay.get(&offset) {
       assert_eq!(e.value().data.len(), usz!(len));
       e.value().data.clone()
     } else {
-      self.device.read_at(offset, len).await
+      self.device.read_at(offset, len).await.into()
     }
   }
 }

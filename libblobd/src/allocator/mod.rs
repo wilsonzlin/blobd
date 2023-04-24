@@ -1,6 +1,7 @@
 #[cfg(test)]
 pub mod tests;
 
+use crate::metrics::BlobdMetrics;
 use crate::page::FreePagePageHeader;
 use crate::page::Pages;
 use crate::page::MAX_PAGE_SIZE_POW2;
@@ -39,6 +40,7 @@ pub(crate) const ALLOCSTATE_SIZE: u64 =
 pub(crate) struct Allocator {
   state_dev_offset: u64,
   pages: Arc<Pages>,
+  metrics: Arc<BlobdMetrics>,
   // To avoid needing to write to the entire device at format time to set up linked list of free lpages, we simply record where the next block would be if there's no free lpage available.
   frontier_dev_offset: u64,
   // This could change during online resizing.
@@ -53,6 +55,7 @@ impl Allocator {
     device_size: Arc<AtomicU64>,
     state_dev_offset: u64,
     pages: Arc<Pages>,
+    metrics: Arc<BlobdMetrics>,
     heap_dev_offset: u64,
   ) -> Self {
     // Getting the buddy of a page using only XOR requires that the heap starts at an address aligned to the lpage size.
@@ -69,6 +72,7 @@ impl Allocator {
       device_size,
       free_list_head,
       frontier_dev_offset,
+      metrics,
       pages,
       state_dev_offset,
     }
@@ -95,7 +99,7 @@ impl Allocator {
     // We don't need to use overlay as we have our own copy in `self.free_list_head`.
     txn.write(
       self.state_dev_offset + ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(page_size_pow2),
-      create_u64_be(new_head_page_dev_offset).to_vec(),
+      create_u64_be(new_head_page_dev_offset),
     );
     self.free_list_head[pow2_idx] = new_head_page_dev_offset;
     trace!(
@@ -205,16 +209,17 @@ impl Allocator {
     if new_frontier > self.device_size.load(Ordering::Relaxed) {
       panic!("out of space");
     };
+    self.metrics.incr_allocated_block_count(txn, 1);
     // We don't need to use overlay as we have our own copy in `self.frontier_dev_offset`.
     txn.write(
       self.state_dev_offset + ALLOCSTATE_OFFSETOF_FRONTIER,
-      create_u64_be(new_frontier).to_vec(),
+      create_u64_be(new_frontier),
     );
     self.frontier_dev_offset = new_frontier;
 
     // Write bitmap of free pages in metadata lpage for block. We must use overlay.
     for i in (0..self.pages.lpage_size()).step_by(8) {
-      txn.write_with_overlay(block_dev_offset + i, create_u64_be(u64::MAX).to_vec());
+      txn.write_with_overlay(block_dev_offset + i, create_u64_be(u64::MAX));
     }
 
     // This code is subtle:
@@ -242,6 +247,8 @@ impl Allocator {
         self.pages.lpage_size_pow2,
       )
       .await;
+    // Mark metadata lpage as used space.
+    self.metrics.incr_used_bytes(txn, self.pages.lpage_size());
     info!(block_dev_offset, new_frontier, "allocated new block");
 
     let first_data_lpage_dev_offset = block_dev_offset + lpage_size;
@@ -297,6 +304,9 @@ impl Allocator {
       size.next_power_of_two().ilog2().try_into().unwrap(),
     );
     assert!(pow2 <= self.pages.lpage_size_pow2);
+    // We increment these metrics here instead of in `Pages::*`, `Allocator::insert_into_free_list`, `Allocator::allocate_page`, etc. as many of those are called during intermediate states, like merging/splitting pages, which aren't actual allocations.
+    self.metrics.incr_allocated_page_count(txn, 1);
+    self.metrics.incr_used_bytes(txn, 1 << pow2);
     (self.allocate_page(txn, pow2).await, pow2)
   }
 
@@ -305,7 +315,12 @@ impl Allocator {
   }
 
   #[async_recursion]
-  pub async fn release(&mut self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
+  async fn release_internal(
+    &mut self,
+    txn: &mut Transaction,
+    page_dev_offset: u64,
+    page_size_pow2: u8,
+  ) {
     // Check if buddy is also free so we can recompact. This doesn't apply to lpages as they don't have buddies (they aren't split).
     if page_size_pow2 < self.pages.lpage_size_pow2 {
       let buddy_page_dev_offset = page_dev_offset ^ (1 << page_size_pow2);
@@ -321,7 +336,7 @@ impl Allocator {
         // Merge by freeing parent larger page.
         let parent_page_dev_offset = page_dev_offset & !((1 << (page_size_pow2 + 1)) - 1);
         self
-          .release(txn, parent_page_dev_offset, page_size_pow2 + 1)
+          .release_internal(txn, parent_page_dev_offset, page_size_pow2 + 1)
           .await;
         return;
       };
@@ -334,5 +349,14 @@ impl Allocator {
     self
       .insert_page_into_free_list(txn, page_dev_offset, page_size_pow2)
       .await;
+  }
+
+  pub async fn release(&mut self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
+    // Similar to `allocate_and_ret_with_size`, we need to change metrics here and use an internal function. See `allocate_and_ret_with_size` for comment explaining why.
+    self.metrics.decr_allocated_page_count(txn, 1);
+    self.metrics.decr_used_bytes(txn, 1 << page_size_pow2);
+    self
+      .release_internal(txn, page_dev_offset, page_size_pow2)
+      .await
   }
 }

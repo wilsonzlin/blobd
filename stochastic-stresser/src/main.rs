@@ -104,10 +104,10 @@ impl Pool {
     }
   }
 
-  fn get(&self, offset: u64, len: u64) -> Vec<u8> {
+  fn get(&self, offset: u64, len: u64) -> &[u8] {
     let start = usz!(offset);
     let end = usz!(offset + len);
-    self.data[start..end].to_vec()
+    &self.data[start..end]
   }
 }
 
@@ -332,7 +332,7 @@ async fn main() {
           } => {
             let res = blobd
               .create_object(OpCreateObjectInput {
-                key: pool.get(key_offset, key_len),
+                key: pool.get(key_offset, key_len).to_vec(),
                 size: data_len,
                 assoc_data: Vec::new(),
               })
@@ -424,7 +424,7 @@ async fn main() {
           } => {
             let res = blobd
               .inspect_object(OpInspectObjectInput {
-                key: pool.get(key_offset, key_len),
+                key: pool.get(key_offset, key_len).to_vec(),
                 id: Some(object_id),
               })
               .await
@@ -456,7 +456,7 @@ async fn main() {
               .read_object(OpReadObjectInput {
                 end: Some(end),
                 start: chunk_offset,
-                key: pool.get(key_offset, key_len),
+                key: pool.get(key_offset, key_len).to_vec(),
                 stream_buffer_size: 1024 * 16,
                 id: Some(object_id),
               })
@@ -466,7 +466,7 @@ async fn main() {
               let chunk = chunk.unwrap();
               let chunk_len = u64!(chunk.len());
               // Don't use assert_eq! as it will print a lot of raw bytes.
-              assert!(chunk == pool.get(data_offset + chunk_offset, chunk_len));
+              assert!(chunk.as_slice() == pool.get(data_offset + chunk_offset, chunk_len));
               chunk_offset += chunk_len;
               assert!(chunk_offset <= end);
             }
@@ -499,7 +499,7 @@ async fn main() {
           } => {
             blobd
               .delete_object(OpDeleteObjectInput {
-                key: pool.get(key_offset, key_len),
+                key: pool.get(key_offset, key_len).to_vec(),
                 id: Some(object_id),
               })
               .await

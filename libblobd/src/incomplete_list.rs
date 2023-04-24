@@ -1,5 +1,6 @@
 use crate::ctx::Ctx;
 use crate::ctx::State;
+use crate::metrics::BlobdMetrics;
 use crate::object::OBJECT_OFF;
 use crate::page::ObjectPageHeader;
 use crate::page::ObjectState;
@@ -47,6 +48,7 @@ pub(crate) struct IncompleteList {
   dev_offset: u64,
   dev: SeekableAsyncFile,
   head: u64,
+  metrics: Arc<BlobdMetrics>,
   pages: Arc<Pages>,
   reap_objects_after_secs: u64,
   tail: u64,
@@ -57,6 +59,7 @@ impl IncompleteList {
     dev: SeekableAsyncFile,
     dev_offset: u64,
     pages: Arc<Pages>,
+    metrics: Arc<BlobdMetrics>,
     reap_objects_after_secs: u64,
   ) -> Self {
     let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD).await;
@@ -65,6 +68,7 @@ impl IncompleteList {
       dev_offset,
       dev,
       head,
+      metrics,
       pages,
       reap_objects_after_secs,
       tail,
@@ -79,7 +83,7 @@ impl IncompleteList {
   fn update_head(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
     txn.write(
       self.dev_offset + OFFSETOF_HEAD,
-      create_u48_be(page_dev_offset).to_vec(),
+      create_u48_be(page_dev_offset),
     );
     self.head = page_dev_offset;
   }
@@ -87,13 +91,14 @@ impl IncompleteList {
   fn update_tail(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
     txn.write(
       self.dev_offset + OFFSETOF_TAIL,
-      create_u48_be(page_dev_offset).to_vec(),
+      create_u48_be(page_dev_offset),
     );
     self.tail = page_dev_offset;
   }
 
   /// WARNING: This will overwrite the page header.
   pub async fn attach(&mut self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
+    self.metrics.incr_incomplete_object_count(txn, 1);
     self
       .pages
       .write_page_header(txn, page_dev_offset, ObjectPageHeader {
@@ -121,6 +126,7 @@ impl IncompleteList {
 
   /// WARNING: This does not update, overwrite, or clear the page header.
   pub async fn detach(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
+    self.metrics.decr_incomplete_object_count(txn, 1);
     let hdr = self
       .pages
       .read_page_header::<ObjectPageHeader>(page_dev_offset)

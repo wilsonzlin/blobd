@@ -9,6 +9,7 @@ use crate::deleted_list::DELETED_LIST_STATE_SIZE;
 use crate::incomplete_list::start_incomplete_list_reaper_background_loop;
 use crate::incomplete_list::IncompleteList;
 use crate::incomplete_list::INCOMPLETE_LIST_STATE_SIZE;
+use crate::metrics::METRICS_STATE_SIZE;
 use crate::object_id::ObjectIdSerial;
 use crate::stream::Stream;
 use crate::stream::STREAM_SIZE;
@@ -21,6 +22,7 @@ use bucket::BUCKETS_SIZE;
 use ctx::Ctx;
 use ctx::State;
 use futures::join;
+use metrics::BlobdMetrics;
 use op::commit_object::op_commit_object;
 use op::commit_object::OpCommitObjectInput;
 use op::commit_object::OpCommitObjectOutput;
@@ -60,6 +62,7 @@ pub mod ctx;
 pub mod deleted_list;
 pub mod incomplete_list;
 pub mod incomplete_token;
+pub mod metrics;
 pub mod object;
 pub mod object_id;
 pub mod op;
@@ -77,6 +80,7 @@ DEVICE
 Structure
 ---------
 
+metrics
 object_id_serial
 stream
 incomplete_list_state
@@ -122,6 +126,7 @@ pub struct BlobdLoader {
   journal: Arc<WriteJournal>,
   cfg: BlobdCfg,
 
+  metrics_dev_offset: u64,
   object_id_serial_dev_offset: u64,
   stream_dev_offset: u64,
   incomplete_list_dev_offset: u64,
@@ -141,7 +146,8 @@ impl BlobdLoader {
 
     const JOURNAL_SIZE_MIN: u64 = 1024 * 1024 * 32;
 
-    let object_id_serial_dev_offset = 0;
+    let metrics_dev_offset = 0;
+    let object_id_serial_dev_offset = metrics_dev_offset + METRICS_STATE_SIZE;
     let stream_dev_offset = object_id_serial_dev_offset + 8;
     let incomplete_list_dev_offset = stream_dev_offset + STREAM_SIZE;
     let deleted_list_dev_offset = incomplete_list_dev_offset + INCOMPLETE_LIST_STATE_SIZE;
@@ -185,6 +191,7 @@ impl BlobdLoader {
       heap_dev_offset,
       incomplete_list_dev_offset,
       journal,
+      metrics_dev_offset,
       object_id_serial_dev_offset,
       stream_dev_offset,
     }
@@ -193,6 +200,7 @@ impl BlobdLoader {
   pub async fn format(&self) {
     let dev = &self.device;
     join! {
+      BlobdMetrics::format_device(dev, self.metrics_dev_offset),
       ObjectIdSerial::format_device(dev, self.object_id_serial_dev_offset),
       Stream::format_device(dev, self.stream_dev_offset),
       IncompleteList::format_device(dev, self.incomplete_list_dev_offset),
@@ -217,6 +225,7 @@ impl BlobdLoader {
     ));
 
     // Ensure journal has been recovered first before loading any other data.
+    let metrics = Arc::new(BlobdMetrics::load_from_device(dev, self.metrics_dev_offset).await);
     let (
       object_id_serial,
       (stream, stream_in_memory),
@@ -227,18 +236,19 @@ impl BlobdLoader {
     ) = join! {
       ObjectIdSerial::load_from_device(dev, self.object_id_serial_dev_offset),
       Stream::load_from_device(dev, self.stream_dev_offset),
-      IncompleteList::load_from_device(dev.clone(), self.incomplete_list_dev_offset, pages.clone(), self.cfg.reap_objects_after_secs),
-      DeletedList::load_from_device(dev.clone(), self.deleted_list_dev_offset, pages.clone(), self.cfg.reap_objects_after_secs),
-      Allocator::load_from_device(dev, self.device_size.clone(), self.allocator_dev_offset, pages.clone(), self.heap_dev_offset),
+      IncompleteList::load_from_device(dev.clone(), self.incomplete_list_dev_offset, pages.clone(), metrics.clone(), self.cfg.reap_objects_after_secs),
+      DeletedList::load_from_device(dev.clone(), self.deleted_list_dev_offset, pages.clone(), metrics.clone(), self.cfg.reap_objects_after_secs),
+      Allocator::load_from_device(dev, self.device_size.clone(), self.allocator_dev_offset, pages.clone(), metrics.clone(), self.heap_dev_offset),
       Buckets::load_from_device(dev.clone(), self.journal.clone(), pages.clone(), self.buckets_dev_offset, self.cfg.bucket_lock_count_log2),
     };
 
     let ctx = Arc::new(Ctx {
       buckets,
       device: dev.clone(),
-      reap_objects_after_secs: self.cfg.reap_objects_after_secs,
       journal: self.journal.clone(),
+      metrics: metrics.clone(),
       pages: pages.clone(),
+      reap_objects_after_secs: self.cfg.reap_objects_after_secs,
       stream_in_memory,
       versioning: self.cfg.versioning,
       state: Mutex::new(State {
@@ -250,11 +260,7 @@ impl BlobdLoader {
       }),
     });
 
-    Blobd {
-      cfg: self.cfg,
-      ctx,
-      journal: self.journal,
-    }
+    Blobd { cfg: self.cfg, ctx }
   }
 }
 
@@ -262,7 +268,6 @@ impl BlobdLoader {
 pub struct Blobd {
   cfg: BlobdCfg,
   ctx: Arc<Ctx>,
-  journal: Arc<WriteJournal>,
 }
 
 impl Blobd {
@@ -271,11 +276,14 @@ impl Blobd {
     &self.cfg
   }
 
+  pub fn metrics(&self) -> Arc<BlobdMetrics> {
+    self.ctx.metrics.clone()
+  }
+
   // WARNING: `device.start_delayed_data_sync_background_loop()` must also be running. Since `device` was provided, it's left up to the provider to run it.
   pub async fn start(&self) {
     join! {
       self.ctx.journal.start_commit_background_loop(),
-      self.journal.start_commit_background_loop(),
       start_incomplete_list_reaper_background_loop(self.ctx.clone()),
       start_deleted_list_reaper_background_loop(self.ctx.clone()),
     };
@@ -312,10 +320,11 @@ impl Blobd {
   }
 
   pub async fn write_object<
-    S: Unpin + futures::Stream<Item = Result<Vec<u8>, Box<dyn Error + Send + Sync>>>,
+    D: AsRef<[u8]>,
+    S: Unpin + futures::Stream<Item = Result<D, Box<dyn Error + Send + Sync>>>,
   >(
     &self,
-    input: OpWriteObjectInput<S>,
+    input: OpWriteObjectInput<D, S>,
   ) -> OpResult<OpWriteObjectOutput> {
     op_write_object(self.ctx.clone(), input).await
   }

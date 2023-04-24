@@ -260,6 +260,12 @@ pub(crate) fn calc_object_layout(pages: &Pages, object_size: u64) -> ObjectLayou
   }
 }
 
+#[must_use]
+pub(crate) struct ReleasedObject {
+  pub object_metadata_size: u64,
+  pub object_data_size: u64,
+}
+
 /// WARNING: This does not verify the page type, nor detach the inode from whatever list it's on, but will clear the page header via `alloc.release`.
 pub(crate) async fn release_object(
   txn: &mut Transaction,
@@ -268,7 +274,7 @@ pub(crate) async fn release_object(
   alloc: &mut Allocator,
   page_dev_offset: u64,
   page_size_pow2: u8,
-) {
+) -> ReleasedObject {
   let raw = dev.read_at(page_dev_offset, 1 << page_size_pow2).await;
   let object_size = raw.read_u40_be_at(OBJECT_OFF.size());
   let key_len = raw.read_u16_be_at(OBJECT_OFF.key_len());
@@ -294,4 +300,8 @@ pub(crate) async fn release_object(
       .await;
   }
   alloc.release(txn, page_dev_offset, page_size_pow2).await;
+  ReleasedObject {
+    object_data_size: object_size,
+    object_metadata_size: off._total_size(),
+  }
 }

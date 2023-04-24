@@ -51,10 +51,10 @@ impl TestSeekableAsyncFile {
     data
   }
 
-  pub async fn write_at(&self, start: u64, data: Vec<u8>) {
-    let mut cur = &data[..];
+  pub async fn write_at<D: AsRef<[u8]>>(&self, start: u64, data: D) {
+    let mut cur = &data.as_ref()[..];
 
-    let end = start + u64!(data.len());
+    let end = start + u64!(cur.len());
     let mut next = start;
     while next < end {
       let (page, offset_within_page) = div_mod_pow2(next, PAGE_SIZE_POW2);
@@ -102,7 +102,7 @@ impl<'a> Off64AsyncReadInt<'a, Vec<u8>> for TestSeekableAsyncFile {}
 #[async_trait]
 impl Off64AsyncWrite for TestSeekableAsyncFile {
   async fn write_at(&self, offset: u64, value: &[u8]) {
-    TestSeekableAsyncFile::write_at(self, offset, value.to_vec()).await
+    TestSeekableAsyncFile::write_at(self, offset, value).await
   }
 }
 impl Off64AsyncWriteChrono for TestSeekableAsyncFile {}

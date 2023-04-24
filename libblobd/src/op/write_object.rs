@@ -25,7 +25,8 @@ use tracing::trace;
 use tracing::warn;
 
 pub struct OpWriteObjectInput<
-  S: Unpin + Stream<Item = Result<Vec<u8>, Box<dyn Error + Send + Sync>>>,
+  D: AsRef<[u8]>,
+  S: Unpin + Stream<Item = Result<D, Box<dyn Error + Send + Sync>>>,
 > {
   pub offset: u64,
   pub incomplete_token: IncompleteToken,
@@ -35,12 +36,12 @@ pub struct OpWriteObjectInput<
 
 pub struct OpWriteObjectOutput {}
 
-// TODO We currently don't verify that the key is correct.
 pub(crate) async fn op_write_object<
-  S: Unpin + Stream<Item = Result<Vec<u8>, Box<dyn Error + Send + Sync>>>,
+  D: AsRef<[u8]>,
+  S: Unpin + Stream<Item = Result<D, Box<dyn Error + Send + Sync>>>,
 >(
   ctx: Arc<Ctx>,
-  mut req: OpWriteObjectInput<S>,
+  mut req: OpWriteObjectInput<D, S>,
 ) -> OpResult<OpWriteObjectOutput> {
   let len = req.data_len;
   let object_dev_offset = req.incomplete_token.object_dev_offset;
@@ -158,7 +159,11 @@ pub(crate) async fn op_write_object<
       continue;
     };
     if let Some(chunk) = maybe_chunk {
-      buf.append(&mut chunk.map_err(|err| OpError::DataStreamError(Box::from(err)))?);
+      buf.extend_from_slice(
+        chunk
+          .map_err(|err| OpError::DataStreamError(Box::from(err)))?
+          .as_ref(),
+      );
     } else if buf.is_empty() {
       // Stream has ended and buffer has been fully consumed.
       break;
@@ -213,7 +218,10 @@ pub(crate) async fn op_write_object<
 
   // Optimisation: perform fdatasync in batches.
   #[cfg(not(test))]
-  ctx.device.write_at_with_delayed_sync(vec![]).await;
+  ctx
+    .device
+    .write_at_with_delayed_sync::<&'static [u8]>(vec![])
+    .await;
 
   Ok(OpWriteObjectOutput {})
 }

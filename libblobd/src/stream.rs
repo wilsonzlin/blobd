@@ -156,7 +156,7 @@ impl Stream {
     // New head.
     txn.write(
       self.dev_offset + STREAM_OFFSETOF_VIRTUAL_HEAD,
-      create_u64_be(event_id + 1).to_vec(),
+      create_u64_be(event_id + 1),
     );
     // New event.
     let mut raw = vec![0u8; usz!(STREVT_SIZE)];

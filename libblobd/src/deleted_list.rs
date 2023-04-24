@@ -1,5 +1,6 @@
 use crate::ctx::Ctx;
 use crate::ctx::State;
+use crate::metrics::BlobdMetrics;
 use crate::object::release_object;
 use crate::object::OBJECT_OFF;
 use crate::page::ObjectPageHeader;
@@ -47,6 +48,7 @@ pub(crate) struct DeletedList {
   dev_offset: u64,
   dev: SeekableAsyncFile,
   head: u64,
+  metrics: Arc<BlobdMetrics>,
   pages: Arc<Pages>,
   reap_objects_after_secs: u64,
   tail: u64,
@@ -57,6 +59,7 @@ impl DeletedList {
     dev: SeekableAsyncFile,
     dev_offset: u64,
     pages: Arc<Pages>,
+    metrics: Arc<BlobdMetrics>,
     reap_objects_after_secs: u64,
   ) -> Self {
     let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD).await;
@@ -65,6 +68,7 @@ impl DeletedList {
       dev_offset,
       dev,
       head,
+      metrics,
       pages,
       reap_objects_after_secs,
       tail,
@@ -79,7 +83,7 @@ impl DeletedList {
   fn update_head(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
     txn.write(
       self.dev_offset + OFFSETOF_HEAD,
-      create_u48_be(page_dev_offset).to_vec(),
+      create_u48_be(page_dev_offset),
     );
     self.head = page_dev_offset;
   }
@@ -87,13 +91,14 @@ impl DeletedList {
   fn update_tail(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
     txn.write(
       self.dev_offset + OFFSETOF_TAIL,
-      create_u48_be(page_dev_offset).to_vec(),
+      create_u48_be(page_dev_offset),
     );
     self.tail = page_dev_offset;
   }
 
   /// WARNING: This will overwrite the page header.
   pub async fn attach(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
+    self.metrics.incr_deleted_object_count(txn, 1);
     self
       .pages
       .update_page_header::<ObjectPageHeader>(txn, page_dev_offset, |o| {
@@ -125,6 +130,7 @@ impl DeletedList {
 /// TODO This is currently a free function to work around the fact that Rust won't let us call a mut method on `state.deleted_list` with `&mut state.allocator` even though they are different fields.
 pub(crate) async fn maybe_reap_next_deleted(
   state: &mut State,
+  metrics: &BlobdMetrics,
   txn: &mut Transaction,
 ) -> Result<(), u64> {
   let page_dev_offset = state.deleted_list.head;
@@ -155,8 +161,8 @@ pub(crate) async fn maybe_reap_next_deleted(
   if now < reap_time {
     return Err(reap_time - now);
   };
-  // `alloc.release` will clear page header.
-  release_object(
+  // `alloc.release` called by `release_object` will clear the page header.
+  let obj = release_object(
     txn,
     &state.deleted_list.dev,
     &state.deleted_list.pages,
@@ -165,6 +171,10 @@ pub(crate) async fn maybe_reap_next_deleted(
     hdr.metadata_size_pow2,
   )
   .await;
+  metrics.decr_deleted_object_count(txn, 1);
+  metrics.decr_object_count(txn, 1);
+  metrics.decr_object_data_bytes(txn, obj.object_data_size);
+  metrics.decr_object_metadata_bytes(txn, obj.object_metadata_size);
   state.deleted_list.update_head(txn, hdr.next);
   if hdr.next == 0 {
     state.deleted_list.update_tail(txn, 0);
@@ -177,7 +187,7 @@ pub(crate) async fn start_deleted_list_reaper_background_loop(ctx: Arc<Ctx>) {
     let (txn, sleep_sec) = {
       let mut state = ctx.state.lock().await;
       let mut txn = ctx.journal.begin_transaction();
-      let sleep_sec = maybe_reap_next_deleted(&mut state, &mut txn)
+      let sleep_sec = maybe_reap_next_deleted(&mut state, &ctx.metrics, &mut txn)
         .await
         .err()
         .unwrap_or(0);

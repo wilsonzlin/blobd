@@ -16,6 +16,7 @@ use off64::u8;
 use std::cmp::min;
 use std::pin::Pin;
 use std::sync::Arc;
+use tinybuf::TinyBuf;
 use tokio::time::Instant;
 use tracing::trace;
 
@@ -30,7 +31,7 @@ pub struct OpReadObjectInput {
 }
 
 pub struct OpReadObjectOutput {
-  pub data_stream: Pin<Box<dyn Stream<Item = OpResult<Vec<u8>>> + Send>>,
+  pub data_stream: Pin<Box<dyn Stream<Item = OpResult<TinyBuf>> + Send>>,
   pub start: u64,
   pub end: u64,
   pub object_size: u64,

@@ -116,6 +116,10 @@ pub(crate) async fn op_create_object(
       .attach(&mut txn, dev_offset, meta_size_pow2)
       .await;
 
+    ctx.metrics.incr_object_count(&mut txn, 1);
+    ctx.metrics.incr_object_data_bytes(&mut txn, req.size);
+    ctx.metrics.incr_object_metadata_bytes(&mut txn, meta_size);
+
     (txn, dev_offset, object_id)
   };
 

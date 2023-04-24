@@ -206,7 +206,7 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
   pub fn mutate_head(&mut self, txn: &mut Transaction, dev_offset: u64) {
     txn.write_with_overlay(
       self.buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id),
-      create_u40_be(dev_offset >> MIN_PAGE_SIZE_POW2).to_vec(),
+      create_u40_be(dev_offset >> MIN_PAGE_SIZE_POW2),
     );
   }
 }

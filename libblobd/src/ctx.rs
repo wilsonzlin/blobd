@@ -2,6 +2,7 @@ use crate::allocator::Allocator;
 use crate::bucket::Buckets;
 use crate::deleted_list::DeletedList;
 use crate::incomplete_list::IncompleteList;
+use crate::metrics::BlobdMetrics;
 use crate::object_id::ObjectIdSerial;
 use crate::page::Pages;
 use crate::stream::Stream;
@@ -30,6 +31,7 @@ pub(crate) struct Ctx {
   pub buckets: Buckets,
   pub device: SeekableAsyncFile,
   pub journal: Arc<WriteJournal>,
+  pub metrics: Arc<BlobdMetrics>,
   /// WARNING: Do not call methods that mutate data on the device from outside a transactionand locked `State`. This isn't enforced via `&mut self` methods to save some hassle with the Rust borrow checker.
   pub pages: Arc<Pages>,
   // This value controls:

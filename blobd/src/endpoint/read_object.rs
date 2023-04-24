@@ -18,6 +18,7 @@ use libblobd::op::read_object::OpReadObjectInput;
 use libblobd::op::read_object::OpReadObjectOutput;
 use serde::Deserialize;
 use serde::Serialize;
+use std::io;
 use std::ops::Bound;
 use std::sync::Arc;
 
@@ -34,7 +35,7 @@ pub async fn endpoint_read_object(
   ranges: Option<TypedHeader<Range>>,
   uri: Uri,
   req: Query<InputQueryParams>,
-) -> Result<Response<StreamBody<impl Stream<Item = Result<Bytes, std::io::Error>>>>, StatusCode> {
+) -> Result<Response<StreamBody<impl Stream<Item = Result<Bytes, io::Error>>>>, StatusCode> {
   let key = parse_key(&uri);
   if !ctx.verify_auth(&req.t, AuthTokenAction::ReadObject { key: key.clone() }) {
     return Err(StatusCode::UNAUTHORIZED);
@@ -99,9 +100,9 @@ pub async fn endpoint_read_object(
         .header("x-blobd-object-id", object_id.to_string())
         .body(StreamBody::new(data_stream.map(|chunk| {
           chunk
-            .map(|chunk| Bytes::from(chunk))
+            .map(|chunk| Bytes::from(chunk.to_vec()))
             // The only error type is OpError::ObjectNotFound.
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::NotFound, err))
+            .map_err(|err| io::Error::new(io::ErrorKind::NotFound, err))
         })))
         .unwrap(),
     ),

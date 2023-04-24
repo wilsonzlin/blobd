@@ -241,7 +241,7 @@ impl Pages {
       .read_with_overlay(elem_dev_offset, 8)
       .await
       .read_u64_be_at(0);
-    txn.write_with_overlay(elem_dev_offset, create_u64_be(bitmap | (1 << bit)).to_vec());
+    txn.write_with_overlay(elem_dev_offset, create_u64_be(bitmap | (1 << bit)));
   }
 
   pub async fn mark_page_as_not_free(
@@ -256,10 +256,7 @@ impl Pages {
       .read_with_overlay(elem_dev_offset, 8)
       .await
       .read_u64_be_at(0);
-    txn.write_with_overlay(
-      elem_dev_offset,
-      create_u64_be(bitmap & !(1 << bit)).to_vec(),
-    );
+    txn.write_with_overlay(elem_dev_offset, create_u64_be(bitmap & !(1 << bit)));
   }
 
   pub async fn read_page_header<H: PageHeader>(&self, page_dev_offset: u64) -> H {
