@@ -46,6 +46,21 @@ pub struct BlobdMetrics {
 
 #[rustfmt::skip]
 impl BlobdMetrics {
+  #[cfg(test)]
+  pub(crate) fn for_testing(dev_offset: u64) -> Self {
+    Self {
+      dev_offset,
+      allocated_block_count: AtomicU64::new(0),
+      allocated_page_count: AtomicU64::new(0),
+      deleted_object_count: AtomicU64::new(0),
+      incomplete_object_count: AtomicU64::new(0),
+      object_count: AtomicU64::new(0),
+      object_data_bytes: AtomicU64::new(0),
+      object_metadata_bytes: AtomicU64::new(0),
+      used_bytes: AtomicU64::new(0),
+    }
+  }
+
   pub(crate) async fn load_from_device(dev: &SeekableAsyncFile, dev_offset: u64) -> Self {
     Self {
       dev_offset,

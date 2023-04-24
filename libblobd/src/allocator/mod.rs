@@ -32,7 +32,7 @@ use write_journal::Transaction;
 
 const ALLOCSTATE_OFFSETOF_FRONTIER: u64 = 0;
 const fn ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(page_size_pow2: u8) -> u64 {
-  ALLOCSTATE_OFFSETOF_FRONTIER + 8 * ((page_size_pow2 - MIN_PAGE_SIZE_POW2) as u64)
+  ALLOCSTATE_OFFSETOF_FRONTIER + 8 + 8 * ((page_size_pow2 - MIN_PAGE_SIZE_POW2) as u64)
 }
 pub(crate) const ALLOCSTATE_SIZE: u64 =
   ALLOCSTATE_OFFSETOF_PAGE_SIZE_FREE_LIST_HEAD(MAX_PAGE_SIZE_POW2 + 1);
@@ -206,6 +206,7 @@ impl Allocator {
     let lpage_size = 1 << self.pages.lpage_size_pow2;
     let block_dev_offset = self.frontier_dev_offset;
     let new_frontier = block_dev_offset + self.pages.block_size;
+    info!(block_dev_offset, new_frontier, "allocating new block");
     if new_frontier > self.device_size.load(Ordering::Relaxed) {
       panic!("out of space");
     };
@@ -249,7 +250,6 @@ impl Allocator {
       .await;
     // Mark metadata lpage as used space.
     self.metrics.incr_used_bytes(txn, self.pages.lpage_size());
-    info!(block_dev_offset, new_frontier, "allocated new block");
 
     let first_data_lpage_dev_offset = block_dev_offset + lpage_size;
     self
