@@ -58,4 +58,6 @@ fn test_get_page_free_bit_offset() {
       }
     }
   }
+  // It's bit 62 and not 63 because one bit is unused every bitmap for a data lpage.
+  assert_eq!(highest_seen, (block_dev_offset + lpage_size - 8, 62));
 }
