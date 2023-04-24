@@ -7,6 +7,7 @@ use off64::int::Off64AsyncReadInt;
 use off64::usz;
 #[cfg(not(test))]
 use seekable_async_file::SeekableAsyncFile;
+use serde::Serialize;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Relaxed;
 #[cfg(not(test))]
@@ -24,7 +25,9 @@ const OFFSETOF_USED_BYTES: u64 = OFFSETOF_OBJECT_METADATA_BYTES + 8;
 // Reserve more space for future proofing.
 pub(crate) const METRICS_STATE_SIZE: u64 = 1024 * 1024 * 4;
 
+#[derive(Serialize)]
 pub struct BlobdMetrics {
+  #[serde(skip_serializing)]
   dev_offset: u64,
   // This can only increase.
   allocated_block_count: AtomicU64,
