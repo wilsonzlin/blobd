@@ -182,7 +182,9 @@ async fn main() {
   let write_exec_secs = now.elapsed().as_secs_f64();
   info!(
     write_exec_secs,
-    write_ops_per_second = (cli.objects as f64) / write_exec_secs,
+    write_ops_per_second = cli.objects as f64 / write_exec_secs,
+    write_mib_per_second =
+      (cli.objects * cli.object_size) as f64 / write_exec_secs / 1024.0 / 1024.0,
     "completed all write ops",
   );
 
@@ -235,7 +237,7 @@ async fn main() {
       let blobd = blobd.clone();
       async move {
         for start in (0..cli.object_size).step_by(usz!(cli.read_size)) {
-          blobd
+          let res = blobd
             .read_object(OpReadObjectInput {
               key: create_u64_be(i).into(),
               id: None,
@@ -245,6 +247,9 @@ async fn main() {
             })
             .await
             .unwrap();
+          let page_count = res.data_stream.count().await;
+          // Do something with `page_count` so that the compiler doesn't just drop it, and then possibly drop the stream too.
+          assert!(page_count > 0);
         }
       }
     })
