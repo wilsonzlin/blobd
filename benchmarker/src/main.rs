@@ -26,6 +26,25 @@ use tokio::spawn;
 use tokio::time::Instant;
 use tracing::info;
 
+/*
+
+# Benchmarker
+
+This is both similar and almost the opposite of the stochastic stress tester: this is designed to try and find the maximum possible performance, leveraging any advantage possible. When reviewing the output results, keep in mind:
+
+- The reads may be extremely fast, because the writes caused all the mmap pages to be cached.
+- The compiler may be optimising away reads because the returned data isn't being used.
+- It's not a realistic workload:
+  - All ops of the same type are performed at once instead of being interspersed.
+  - Objects are created, written, committed, inspected, read, and deleted in the exact same order for every op.
+  - The object size is identical for all objects.
+  - The data being written/read is full of zeros.
+- No correctness checks are done.
+
+Despite these limitations, the benchmarker can be useful to find hotspots and slow code (when profiling), high-level op performance, and upper limit of possible performance.
+
+*/
+
 const EMPTY_POOL: [u8; 16_777_216] = [0u8; 16_777_216];
 
 #[derive(Debug, Parser)]
@@ -233,7 +252,8 @@ async fn main() {
   let read_exec_secs = now.elapsed().as_secs_f64();
   info!(
     read_exec_secs,
-    read_ops_per_second = (cli.objects as f64) / read_exec_secs,
+    read_ops_per_second = cli.objects as f64 / read_exec_secs,
+    read_mib_per_second = (cli.objects * cli.object_size) as f64 / read_exec_secs / 1024.0 / 1024.0,
     "completed all read ops",
   );
 
