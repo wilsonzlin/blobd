@@ -14,6 +14,7 @@ use rustc_hash::FxHashSet;
 use rustc_hash::FxHasher;
 use std::cmp::min;
 use std::hash::BuildHasherDefault;
+use tinybuf::TinyBuf;
 
 const PAGE_SIZE_POW2: u8 = 12;
 const PAGE_SIZE: u64 = 1 << PAGE_SIZE_POW2;
@@ -31,7 +32,7 @@ impl TestSeekableAsyncFile {
     }
   }
 
-  pub async fn read_at(&self, start: u64, len: u64) -> Vec<u8> {
+  pub async fn read_at(&self, start: u64, len: u64) -> TinyBuf {
     let mut data = Vec::with_capacity(usz!(len));
 
     let end = start + len;
@@ -48,7 +49,7 @@ impl TestSeekableAsyncFile {
       );
       next += n;
     }
-    data
+    data.into()
   }
 
   pub async fn write_at<D: AsRef<[u8]>>(&self, start: u64, data: D) {
@@ -91,13 +92,13 @@ impl PartialEq for TestSeekableAsyncFile {
 impl Eq for TestSeekableAsyncFile {}
 
 #[async_trait]
-impl<'a> Off64AsyncRead<'a, Vec<u8>> for TestSeekableAsyncFile {
-  async fn read_at(&self, offset: u64, len: u64) -> Vec<u8> {
+impl<'a> Off64AsyncRead<'a, TinyBuf> for TestSeekableAsyncFile {
+  async fn read_at(&self, offset: u64, len: u64) -> TinyBuf {
     TestSeekableAsyncFile::read_at(self, offset, len).await
   }
 }
-impl<'a> Off64AsyncReadChrono<'a, Vec<u8>> for TestSeekableAsyncFile {}
-impl<'a> Off64AsyncReadInt<'a, Vec<u8>> for TestSeekableAsyncFile {}
+impl<'a> Off64AsyncReadChrono<'a, TinyBuf> for TestSeekableAsyncFile {}
+impl<'a> Off64AsyncReadInt<'a, TinyBuf> for TestSeekableAsyncFile {}
 
 #[async_trait]
 impl Off64AsyncWrite for TestSeekableAsyncFile {

@@ -48,7 +48,6 @@ use seekable_async_file::SeekableAsyncFile;
 use std::error::Error;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::time::Duration;
 use stream::StreamEvent;
 use stream::StreamEventExpiredError;
 use tokio::sync::Mutex;
@@ -176,7 +175,7 @@ impl BlobdLoader {
       device.clone(),
       journal_dev_offset,
       journal_size,
-      Duration::from_micros(200),
+      std::time::Duration::from_micros(200),
     ));
     #[cfg(test)]
     let journal = Arc::new(WriteJournal::new(device.clone()));

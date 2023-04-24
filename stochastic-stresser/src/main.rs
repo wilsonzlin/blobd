@@ -258,6 +258,7 @@ async fn main() {
   .await
   .unwrap();
   spawn({
+    let blobd = blobd.clone();
     let completed = completed.clone();
     async move {
       loop {
@@ -267,7 +268,18 @@ async fn main() {
           info!("all objects have completed");
           break;
         };
-        info!(completed, "progress");
+        info!(
+          completed,
+          allocated_block_count = blobd.metrics().allocated_block_count(),
+          allocated_page_count = blobd.metrics().allocated_page_count(),
+          deleted_object_count = blobd.metrics().deleted_object_count(),
+          incomplete_object_count = blobd.metrics().incomplete_object_count(),
+          object_count = blobd.metrics().object_count(),
+          object_data_bytes = blobd.metrics().object_data_bytes(),
+          object_metadata_bytes = blobd.metrics().object_metadata_bytes(),
+          used_bytes = blobd.metrics().used_bytes(),
+          "progress",
+        );
       }
     }
   });
