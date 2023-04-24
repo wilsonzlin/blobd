@@ -14,17 +14,13 @@ async-stream = "0.3.4"
 async-trait = "0.1.68"
 chrono = "0.4.24"
 dashmap = "5.4.0"
-flume = "0.10.14"
 futures = "0.3"
 itertools = "0.10"
 num-derive = "0.3"
 num-traits = "0.2"
 off64 = "0.6"
-parking_lot = "0.12.1"
-rand = "0.8.5"
-roaring = "0.10"
 rustc-hash = "1.1"
-seekable-async-file = "0.11.1" # NOTE: We must always use mmap, as we depend on ordered writes, and also want non-async writing capability.
+seekable-async-file = "0.11.1"
 serde = { version = "1.0.160", features = ["derive"] }
 signal-future = "0.0.1"
 struct-name = "0.0.1"
@@ -33,6 +29,9 @@ strum = { version = "0.24", features = ["derive"] }
 tinybuf = "0.2.3"
 tokio = { version = "1", features = ["macros", "sync"] }
 tracing = { version = "0.1.37", features = ["release_max_level_info"] }
-tracing-test = "0.2.4"
 twox-hash = "=1.6.3" # Pin the version as the docs mention that outputs could change in future versions, which would be fatal: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
 write-journal = "0.10.1"
+
+[dev-dependencies]
+rand = "0.8.5"
+tracing-test = "0.2.4"
