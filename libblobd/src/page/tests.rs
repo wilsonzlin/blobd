@@ -23,8 +23,6 @@ fn test_get_page_free_bit_offset() {
   // `37` is an arbitrary value. For testing, don't choose a power of 2, and prefer a prime number.
   let block_dev_offset = heap_dev_offset + (block_size * 37);
 
-  dbg!(block_size, heap_dev_offset, block_dev_offset);
-
   let dev = TestSeekableAsyncFile::new();
   let journal = Arc::new(TestWriteJournal::new(dev));
   let pages = Pages::new(journal, heap_dev_offset, spage_size_pow2, lpage_size_pow2);

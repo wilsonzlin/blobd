@@ -10,10 +10,10 @@ use crate::page::MIN_PAGE_SIZE_POW2;
 use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
 #[cfg(test)]
 use crate::test_util::journal::TestTransaction as Transaction;
+use crate::util::floor_pow2;
 use crate::util::mod_pow2;
 use async_recursion::async_recursion;
 use futures::future::join_all;
-use itertools::Itertools;
 use off64::int::create_u64_be;
 use off64::int::Off64AsyncReadInt;
 use off64::int::Off64WriteMutInt;
@@ -89,6 +89,14 @@ impl Allocator {
     self.free_list_head[pow2_idx]
   }
 
+  /// - Updates allocator state in memory: ✓
+  /// - Updates allocator state on device: ✓
+  /// - Updates bitmap: **NO**
+  /// - Updates header of sibling page: **NO**
+  /// - Updates header of target page: **NO**
+  /// - Updates metrics: **NO**
+  ///
+  /// Updates page pointed to by list head. Doesn't touch the page or anything else.
   fn update_free_list_head(
     &mut self,
     txn: &mut Transaction,
@@ -109,6 +117,14 @@ impl Allocator {
     );
   }
 
+  /// - Updates allocator state in memory: ✓
+  /// - Updates allocator state on device: ✓
+  /// - Updates bitmap: **NO**
+  /// - Updates header of sibling page: ✓
+  /// - Updates header of target page: **NO**
+  /// - Updates metrics: **NO**
+  ///
+  /// Updates page pointed to by list head or sibling, whichever is adjacent. Doesn't touch the page or anything else.
   async fn detach_page_from_free_list(
     &mut self,
     txn: &mut Transaction,
@@ -143,7 +159,14 @@ impl Allocator {
     );
   }
 
-  // Returns the dev offset of the page pointed to at the head of the free list for the page size. If it's not zero, it will be detached from the list (updating the head). The page will be marked as used. The new head page's prev pointer will be updated.
+  /// - Updates allocator state in memory: ✓ (via `update_free_list_head`)
+  /// - Updates allocator state on device: ✓ (via `update_free_list_head`)
+  /// - Updates bitmap: **NO**
+  /// - Updates header of sibling page: ✓
+  /// - Updates header of target page: **NO**
+  /// - Updates metrics: **NO**
+  ///
+  /// Detaches page at head from list and marks it as used.
   async fn try_consume_page_at_free_list_head(
     &mut self,
     txn: &mut Transaction,
@@ -154,10 +177,7 @@ impl Allocator {
       return None;
     };
     trace!(page_size_pow2, page_dev_offset, "found free page");
-    self
-      .pages
-      .mark_page_as_not_free(txn, page_dev_offset, page_size_pow2)
-      .await;
+    // We don't need to mark as not free as `allocate_page` will do that.
     let new_free_page = self
       .pages
       .read_page_header::<FreePagePageHeader>(page_dev_offset)
@@ -173,7 +193,14 @@ impl Allocator {
     Some(page_dev_offset)
   }
 
-  /// Sets the page's header to FreePagePageHeader with correct prev and next pointers, overwriting any existing header. Updates the free list's head.
+  /// - Updates allocator state in memory: ✓ (via `update_free_list_head`)
+  /// - Updates allocator state on device: ✓ (via `update_free_list_head`)
+  /// - Updates bitmap: **NO**
+  /// - Updates header of sibling page: ✓
+  /// - Updates header of target page: ✓
+  /// - Updates metrics: **NO**
+  ///
+  /// Attaches page to list, overwriting any existing header. **Does not mark as free.**
   async fn insert_page_into_free_list(
     &mut self,
     txn: &mut Transaction,
@@ -226,31 +253,27 @@ impl Allocator {
     // - The first lpage of a block is always reserved for the metadata lpage, so we should not mark that as a free page.
     // - The first data lpage (second lpage) will be immediately returned for usage, so we should not mark that as a free page.
     // - We insert in reverse order so that lpages with a lower offset are used first. This isn't necessary for correctness but may offer some performance benefit due to sequential I/O, and makes testing easier too.
-    // It may seem inefficient to build a Vec and insert every lpage in a loop, instead of just building a list and then inserting the head only, but:
+    // It may seem inefficient to insert every lpage in a loop, instead of just building a list and then inserting the head only, but:
     // - We only do this every new block, which should not be very often, so the cost is amortised.
-    // - We're only talking about a few thousand elements, so the Vec allocation is small and the loop execution is still blisteringly fast (each iteration just reads and writes from a cached mmap page and DashMap). There shouldn't be any noticeable system pause/delay.
+    // - We're only talking about a few thousand elements, so the loop execution is still blisteringly fast (each iteration just reads and writes from a cached mmap page and DashMap). There shouldn't be any noticeable system pause/delay.
     // - We previously used an optimised loop that was subtle and confusing, which lead to some subtle bugs not being discovered. The complexity is not worth the intangible performance gain.
-    let lpage_dev_offsets = (block_dev_offset..new_frontier)
-      .step_by(usz!(lpage_size))
-      .skip(2)
-      .collect_vec();
-    for lpage_dev_offset in lpage_dev_offsets.into_iter().rev() {
-      self
-        .insert_page_into_free_list(txn, lpage_dev_offset, self.pages.lpage_size_pow2)
-        .await;
-    }
+    {
+      let mut lpage_dev_offset = new_frontier - lpage_size;
+      while lpage_dev_offset >= block_dev_offset + 2 * lpage_size {
+        self
+          .insert_page_into_free_list(txn, lpage_dev_offset, self.pages.lpage_size_pow2)
+          .await;
+        lpage_dev_offset -= lpage_size;
+      }
+    };
     // Mark metadata lpage as used space.
     self.metrics.incr_used_bytes(txn, self.pages.lpage_size());
 
+    // We don't need to mark as not free as `allocate_page` will do that.
     let first_data_lpage_dev_offset = block_dev_offset + lpage_size;
-    self
-      .pages
-      .mark_page_as_not_free(txn, first_data_lpage_dev_offset, self.pages.lpage_size_pow2)
-      .await;
     first_data_lpage_dev_offset
   }
 
-  /// This function will write the FreePagePageHeader to all split pages that aren't returned for the requested allocation, and VoidPageHeader to the returned allocated page, so all page headers will remain in a consistent state.
   #[async_recursion]
   async fn allocate_page(&mut self, txn: &mut Transaction, page_size_pow2: u8) -> u64 {
     assert!(
@@ -278,9 +301,18 @@ impl Allocator {
         self
           .insert_page_into_free_list(txn, right_page_dev_offset, page_size_pow2)
           .await;
+        self
+          .pages
+          .mark_page_as_free(txn, right_page_dev_offset, page_size_pow2)
+          .await;
         larger_page_dev_offset
       }
     };
+    // We must always mark an allocated page as not free, including split pages which definitely cannot be released/merged.
+    self
+      .pages
+      .mark_page_as_not_free(txn, page_dev_offset, page_size_pow2)
+      .await;
     trace!(page_size_pow2, page_dev_offset, "allocated page");
     page_dev_offset
   }
@@ -320,25 +352,39 @@ impl Allocator {
         .is_page_free(buddy_page_dev_offset, page_size_pow2)
         .await
       {
-        // Buddy is also free. We could mark both these pages as free in the bitmap but we don't need to.
+        // Buddy is also free.
+        trace!(
+          page_dev_offset,
+          page_size_pow2,
+          buddy_page_dev_offset,
+          "buddy is also free"
+        );
         self
           .detach_page_from_free_list(txn, buddy_page_dev_offset, page_size_pow2)
           .await;
+        self
+          .pages
+          .mark_page_as_not_free(txn, page_dev_offset, page_size_pow2)
+          .await;
+        self
+          .pages
+          .mark_page_as_not_free(txn, buddy_page_dev_offset, page_size_pow2)
+          .await;
         // Merge by freeing parent larger page.
-        let parent_page_dev_offset = page_dev_offset & !((1 << (page_size_pow2 + 1)) - 1);
+        let parent_page_dev_offset = floor_pow2(page_dev_offset, page_size_pow2 + 1);
         self
           .release_internal(txn, parent_page_dev_offset, page_size_pow2 + 1)
           .await;
         return;
       };
     };
-    self
-      .pages
-      .mark_page_as_free(txn, page_dev_offset, page_size_pow2)
-      .await;
     // This will overwrite the page's header.
     self
       .insert_page_into_free_list(txn, page_dev_offset, page_size_pow2)
+      .await;
+    self
+      .pages
+      .mark_page_as_free(txn, page_dev_offset, page_size_pow2)
       .await;
   }
 
