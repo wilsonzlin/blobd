@@ -1,7 +1,7 @@
 [package]
-name = "libblobd"
+name = "libblobd-direct"
 version = "0.1.1"
-description = "Library for blobd"
+description = "Library for blobd, direct variant"
 license = "SSPL-1.0"
 homepage = "https://github.com/wilsonzlin/blobd"
 repository = "https://github.com/wilsonzlin/blobd.git"
@@ -9,19 +9,24 @@ authors = ["Wilson Lin <code@wilsonl.in>"]
 edition = "2021"
 
 [dependencies]
-async-recursion = "1.0.4"
 async-stream = "0.3.4"
 async-trait = "0.1.68"
+blake3 = "1.3.3"
+bufpool = "0.1.2"
+byteorder = "1.4.3"
 chrono = "0.4.24"
+crossbeam-channel = "0.5.8"
 dashmap = "5.4.0"
 futures = "0.3"
+io-uring = "0.6.0"
 itertools = "0.10"
+num = "0.4.0"
 num-derive = "0.3"
 num-traits = "0.2"
 off64 = "0.6"
+once_cell = "1.17.1"
 parking_lot = "0.12.1"
 rustc-hash = "1.1"
-seekable-async-file = "0.11.1"
 serde = { version = "1.0.160", features = ["derive"] }
 signal-future = "0.1.1"
 struct-name = "0.0.1"
@@ -31,7 +36,6 @@ tinybuf = "0.2.3"
 tokio = { version = "1", features = ["macros", "sync"] }
 tracing = { version = "0.1.37", features = ["release_max_level_info"] }
 twox-hash = "=1.6.3" # Pin the version as the docs mention that outputs could change in future versions, which would be fatal: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
-write-journal = "0.10.1"
 
 [dev-dependencies]
 rand = "0.8.5"

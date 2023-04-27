@@ -57,7 +57,6 @@ use write_journal::WriteJournal;
 
 pub mod allocator;
 pub mod bucket;
-pub mod bufpool;
 pub mod ctx;
 pub mod deleted_list;
 pub mod incomplete_list;
@@ -70,7 +69,6 @@ pub mod page;
 pub mod stream;
 #[cfg(test)]
 pub mod test_util;
-pub mod uring;
 pub mod util;
 
 /**
