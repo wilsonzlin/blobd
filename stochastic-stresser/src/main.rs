@@ -80,7 +80,7 @@ struct Cli {
 
   /// Concurrency level. Defaults to 64.
   #[arg(long, default_value_t = 64)]
-  threads: u64,
+  concurrency: u64,
 
   /// Size of random bytes pool. Defaults to 1 GiB.
   #[arg(long, default_value_t = 1024 * 1024 * 1024)]
@@ -238,7 +238,7 @@ async fn main() {
   .await
   .unwrap();
   let mut threads = Vec::new();
-  for thread_no in 0..cli.threads {
+  for worker_no in 0..cli.concurrency {
     let target = target.clone();
     let pool = pool.clone();
     let completed = completed.clone();
@@ -257,11 +257,11 @@ async fn main() {
           Ok(None) => {
             // Keep this timeout small so that total execution time is accurate.
             sleep(Duration::from_millis(100)).await;
-            trace!(thread_no, "still waiting for task");
+            trace!(worker_no, "still waiting for task");
             continue;
           }
         };
-        trace!(thread_no, task_type = t.to_string(), "received task");
+        trace!(worker_no, task_type = t.to_string(), "received task");
         match t {
           Task::Create {
             key_len,
