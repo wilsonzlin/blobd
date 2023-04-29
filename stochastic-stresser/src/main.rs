@@ -395,9 +395,9 @@ async fn main() {
               })
               .await;
             while let Some(chunk) = res.data_stream.next().await {
-              let chunk_len = u64!(chunk.len());
+              let chunk_len = u64!(chunk.as_ref().as_ref().len());
               // Don't use assert_eq! as it will print a lot of raw bytes.
-              assert!(chunk.as_slice() == pool.get(data_offset + chunk_offset, chunk_len));
+              assert!(chunk.as_ref().as_ref() == pool.get(data_offset + chunk_offset, chunk_len));
               chunk_offset += chunk_len;
               assert!(chunk_offset <= end);
             }

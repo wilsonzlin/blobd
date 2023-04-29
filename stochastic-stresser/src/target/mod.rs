@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
 
+pub mod direct;
 pub mod vanilla;
 
 pub struct InitCfg {
@@ -63,7 +64,7 @@ pub struct TargetReadObjectInput {
 }
 
 pub struct TargetReadObjectOutput {
-  pub data_stream: Pin<Box<dyn Stream<Item = TinyBuf> + Send>>,
+  pub data_stream: Pin<Box<dyn Stream<Item = Box<dyn AsRef<[u8]>>> + Send>>,
 }
 
 pub struct TargetDeleteObjectInput {

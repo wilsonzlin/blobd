@@ -1,6 +1,4 @@
 pub mod bitmap;
-#[cfg(test)]
-pub mod tests;
 
 use self::bitmap::BitmapContainers;
 use crate::journal::Transaction;

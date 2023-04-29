@@ -13,74 +13,57 @@ use super::TargetWriteObjectInput;
 use async_trait::async_trait;
 use futures::stream::once;
 use futures::StreamExt;
-use libblobd::incomplete_token::IncompleteToken;
-use libblobd::op::commit_object::OpCommitObjectInput;
-use libblobd::op::create_object::OpCreateObjectInput;
-use libblobd::op::delete_object::OpDeleteObjectInput;
-use libblobd::op::inspect_object::OpInspectObjectInput;
-use libblobd::op::read_object::OpReadObjectInput;
-use libblobd::op::write_object::OpWriteObjectInput;
-use libblobd::Blobd;
-use libblobd::BlobdCfg;
-use libblobd::BlobdLoader;
+use libblobd_direct::incomplete_token::IncompleteToken;
+use libblobd_direct::op::commit_object::OpCommitObjectInput;
+use libblobd_direct::op::create_object::OpCreateObjectInput;
+use libblobd_direct::op::delete_object::OpDeleteObjectInput;
+use libblobd_direct::op::inspect_object::OpInspectObjectInput;
+use libblobd_direct::op::read_object::OpReadObjectInput;
+use libblobd_direct::op::write_object::OpWriteObjectInput;
+use libblobd_direct::Blobd;
+use libblobd_direct::BlobdCfg;
+use libblobd_direct::BlobdLoader;
 use off64::u64;
 use off64::u8;
-use seekable_async_file::SeekableAsyncFile;
-use seekable_async_file::SeekableAsyncFileMetrics;
+use std::fs::OpenOptions;
+use std::os::unix::prelude::OpenOptionsExt;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::join;
 use tokio::spawn;
 use tokio::time::sleep;
 use tracing::info;
 
 #[derive(Clone)]
-pub struct Vanilla {
+pub struct Direct {
   blobd: Blobd,
 }
 
 #[async_trait]
-impl Target for Vanilla {
+impl Target for Direct {
   async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self {
-    assert!(cfg.bucket_count.is_power_of_two());
-    let bucket_count_log2: u8 = cfg.bucket_count.ilog2().try_into().unwrap();
-
-    let io_metrics = Arc::new(SeekableAsyncFileMetrics::default());
-    let device = SeekableAsyncFile::open(
-      &cfg.device,
+    let blobd = BlobdLoader::new(
+      OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(&cfg.device)
+        .unwrap(),
       cfg.device_size,
-      io_metrics,
-      Duration::from_micros(200),
-      0,
-    )
-    .await;
-
-    let blobd = BlobdLoader::new(device.clone(), cfg.device_size, BlobdCfg {
-      bucket_count_log2,
-      bucket_lock_count_log2: bucket_count_log2,
-      reap_objects_after_secs: 60 * 60 * 24 * 7,
-      lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
-      spage_size_pow2: u8!(cfg.spage_size.ilog2()),
-      // We must enable versioning as some objects will have duplicate keys, and then their derived tasks won't work unless they were the last to commit.
-      versioning: true,
-    });
+      BlobdCfg {
+        event_stream_spage_capacity: 2097152,
+        reap_objects_after_secs: 60 * 60 * 24 * 7,
+        lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
+        spage_size_pow2: u8!(cfg.spage_size.ilog2()),
+        // We must enable versioning as some objects will have duplicate keys, and then their derived tasks won't work unless they were the last to commit.
+        versioning: true,
+      },
+    );
     blobd.format().await;
     info!("formatted device");
     let blobd = blobd.load().await;
     info!("loaded device");
-
-    spawn({
-      let blobd = blobd.clone();
-      let device = device.clone();
-      async move {
-        join! {
-          blobd.start(),
-          device.start_delayed_data_sync_background_loop(),
-        };
-      }
-    });
 
     // Background loop to regularly prinit out metrics and progress.
     spawn({
@@ -92,10 +75,6 @@ impl Target for Vanilla {
           let completed = completed.load(Ordering::Relaxed);
           info!(
             completed,
-            allocated_block_count = blobd.metrics().allocated_block_count(),
-            allocated_page_count = blobd.metrics().allocated_page_count(),
-            deleted_object_count = blobd.metrics().deleted_object_count(),
-            incomplete_object_count = blobd.metrics().incomplete_object_count(),
             object_count = blobd.metrics().object_count(),
             object_data_bytes = blobd.metrics().object_data_bytes(),
             object_metadata_bytes = blobd.metrics().object_metadata_bytes(),
@@ -182,7 +161,6 @@ impl Target for Vanilla {
         id: input.id,
         key: input.key,
         start: input.start,
-        stream_buffer_size: input.stream_buffer_size,
       })
       .await
       .unwrap();
