@@ -17,6 +17,7 @@ use byteorder::WriteBytesExt;
 use futures::Stream;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
+use off64::u32;
 use off64::u64;
 use off64::usz;
 use off64::Off64Read;
@@ -133,7 +134,7 @@ fn serialise_entry<K: Serialisable, V: Serialisable>(spage_size: u64, k: K, v: &
 struct Page<K: Eq + Hash> {
   entries: FxHashSet<K>,
   free: u64,
-  next_dev_offset: Option<u64>,
+  next_dev_offset: u64, // Could be zero.
 }
 
 /// For performance, when entries are inserted/updated/removed, their key is simply marked as dirty, delaying the page shuffles until commit time. This is faster because it coalesces updates, and opportunistically performs calculations during slack time (which is probably when commits happen).
@@ -196,7 +197,7 @@ impl<K: Copy + Eq + Hash + Serialisable, V: Serialisable> CollectionState<K, V> 
         let mut page = Page {
           entries: Default::default(),
           free: self.spage_size - PAGE_RESERVED_BYTES - len,
-          next_dev_offset: Some(next_dev_offset).filter(|o| *o != 0),
+          next_dev_offset,
         };
         self.by_free_space.insert((page.free, dev_offset));
 
@@ -268,13 +269,39 @@ impl<K: Copy + Eq + Hash + Serialisable, V: Serialisable> CollectionState<K, V> 
         }
       }
 
-      fn write_next_dev_offset(&mut self, next_dev_offset: u64) {
+      /// Writes `len` and `next_dev_offset`, records it in the transaction, and updates `CollectionState.{key_to_page,pages}`.
+      fn commit(
+        mut self,
+        next_dev_offset: u64,
+        txn: &mut Transaction,
+        state: &mut CollectionState<K, V>,
+      ) {
+        let free = self.free();
+        self
+          .raw
+          .write_u24_le_at(PAGE_OFFSETOF_LEN, u32!(self.entries.len()));
         self
           .raw
           .write_u40_le_at(PAGE_OFFSETOF_NEXT_DEV_OFFSET_RSHIFT8, next_dev_offset << 8);
+        txn.record(self.dev_offset, self.raw);
+        for k in self.entries.iter() {
+          state.key_to_page.insert(*k, self.dev_offset);
+        }
+        // `self` might be a new page.
+        state
+          .pages
+          .entry(self.dev_offset)
+          .or_insert_with(|| Page {
+            entries: Default::default(),
+            free,
+            next_dev_offset,
+          })
+          .entries = self.entries;
       }
 
-      fn maybe_write_raw(&mut self, serialised_entry: &[u8]) -> Option<()> {
+      /// `k` is still required for `self.entries`.
+      fn maybe_write_raw(&mut self, k: K, serialised_entry: &[u8]) -> Option<()> {
+        assert!(self.entries.insert(k));
         if self.raw.capacity() - self.raw.len() >= serialised_entry.len() {
           self.raw.extend_from_slice(&serialised_entry);
           Some(())
@@ -284,8 +311,7 @@ impl<K: Copy + Eq + Hash + Serialisable, V: Serialisable> CollectionState<K, V> 
       }
 
       fn maybe_write(&mut self, k: K, v: &V) -> Option<()> {
-        assert!(self.entries.insert(k));
-        self.maybe_write_raw(&serialise_entry(u64!(self.raw.capacity()), k, v))
+        self.maybe_write_raw(k, &serialise_entry(u64!(self.raw.capacity()), k, v))
       }
     }
     impl<K, V> PartialEq for PageData<K, V> {
@@ -333,6 +359,7 @@ impl<K: Copy + Eq + Hash + Serialisable, V: Serialisable> CollectionState<K, V> 
     for page_dev_offset in dirty_page_dev_offsets.iter() {
       dirty_page_replacements.push(PageData::new(self.spage_size, *page_dev_offset));
     }
+    // (key, serialised_entry_bytes).
     let mut overflow = Vec::new();
     for &k in keys_to_write.iter() {
       let Some(v) = getter(k) else {
@@ -355,24 +382,24 @@ impl<K: Copy + Eq + Hash + Serialisable, V: Serialisable> CollectionState<K, V> 
         dirty_page_replacements.push(page_data);
       } else {
         // This cannot fit in any dirty page.
-        overflow.push(serialise_entry(self.spage_size, k, v.deref()));
+        overflow.push((k, serialise_entry(self.spage_size, k, v.deref())));
       };
     }
 
     // These entries couldn't fit on any dirty page.
     // We'll try to fit some on existing non-dirty pages if optimal. We can't just try and cram into as many existing pages as possible as that would significantly increase writes and CPU usage.
     // We fill from smallest to biggest, as otherwise we could be blocked unable to fill a large entry despite plenty of room for the other remaining smaller ones.
-    overflow.sort_unstable_by_key(|o| o.len());
-    let mut overflow_rem_len: u64 = overflow.iter().map(|o| u64!(o.len())).sum();
+    overflow.sort_unstable_by_key(|o| o.1.len());
+    let mut overflow_rem_len: u64 = overflow.iter().map(|o| u64!(o.1.len())).sum();
     let mut overflow = VecDeque::from(overflow);
     // (page_data, original_free_space).
     let mut overflow_page_replacements = Vec::new();
     for &(free, page_dev_offset) in self.by_free_space.iter().rev() {
-      let Some(o) = overflow.front() else {
+      let Some((_, first_serialised_entry)) = overflow.front() else {
         break;
       };
       // This page doesn't have enough to fit `o`, and all following `o` values are even larger, so we've reached the end condition.
-      if free < u64!(o.len()) {
+      if free < u64!(first_serialised_entry.len()) {
         break;
       };
       // If we still have more than one page amount of remaining bytes: we'll use any existing page that is less than 50% used, to improve space efficiency. If we have less than one page amount of remaining bytes: we'll keep using existing pages so long as there is enough space for at least 50% of the remaining bytes. This way, there are at most log(n) allocations while reducing existing free space waste.
@@ -390,12 +417,12 @@ impl<K: Copy + Eq + Hash + Serialisable, V: Serialisable> CollectionState<K, V> 
           .unwrap();
       }
       // Insert as many overflow entries as possible.
-      while let Some(o) = overflow.pop_front() {
-        if page_data.maybe_write_raw(&o).is_none() {
-          overflow.push_front(o);
+      while let Some((k, serialised_entry)) = overflow.pop_front() {
+        if page_data.maybe_write_raw(k, &serialised_entry).is_none() {
+          overflow.push_front((k, serialised_entry));
           break;
         };
-        overflow_rem_len -= u64!(o.len());
+        overflow_rem_len -= u64!(serialised_entry.len());
       }
       overflow_page_replacements.push((page_data, free));
     }
@@ -407,13 +434,15 @@ impl<K: Copy + Eq + Hash + Serialisable, V: Serialisable> CollectionState<K, V> 
 
     // For the remaining overflow entries, allocate new pages.
     let mut new_overflow_pages = VecDeque::new();
-    while let Some(o) = overflow.pop_front() {
+    while let Some((first_k, first_serialised_entry)) = overflow.pop_front() {
       let page_dev_offset = alloc.allocate(self.spage_size);
       let mut page_data = PageData::<K, V>::new(self.spage_size, page_dev_offset);
-      page_data.maybe_write_raw(&o).unwrap();
-      while let Some(o) = overflow.pop_front() {
-        if page_data.maybe_write_raw(&o).is_none() {
-          overflow.push_front(o);
+      page_data
+        .maybe_write_raw(first_k, &first_serialised_entry)
+        .unwrap();
+      while let Some((k, serialised_entry)) = overflow.pop_front() {
+        if page_data.maybe_write_raw(k, &serialised_entry).is_none() {
+          overflow.push_front((k, serialised_entry));
           break;
         };
       }
@@ -426,41 +455,34 @@ impl<K: Copy + Eq + Hash + Serialisable, V: Serialisable> CollectionState<K, V> 
     // - We have allocated some new pages and built their data in `new_overflow_pages`. We need to append these into the linked list of pages somewhere (anywhere is fine).
     // - We have updated `self.{by_free_space,dirty}` but not `self.{key_to_page,pages}`.
     // - Only keys in `keys_to_write` may have updated pages; `overflow` only contains a subset of keys in `keys_to_write`. All other keys (including existing ones in `overflow_page_replacements`) are unchanged.
+    // - We never free pages, so there's always one `PageData` for each dirty page, even if now empty.
 
     // We will append new overflow pages after the first dirty page. For all other dirty pages, and the existing non-dirty overflow pages, retrieve their existing `next_dev_offset` value from `self.pages`, write it in the `PageData`, and then write back to the same page device offset.
-    let (mut first_dirty_page, other_dirty_pages) = (
+    let (first_dirty_page, other_dirty_pages) = (
       dirty_page_replacements.pop().unwrap(),
       dirty_page_replacements,
     );
-    let first_dirty_page_next_dev_offset = self.pages[&first_dirty_page.dev_offset]
-      .next_dev_offset
-      .unwrap_or(0);
+    let first_dirty_page_next_dev_offset = self.pages[&first_dirty_page.dev_offset].next_dev_offset;
     if new_overflow_pages.is_empty() {
-      first_dirty_page.write_next_dev_offset(first_dirty_page_next_dev_offset);
-      txn.record(first_dirty_page.dev_offset, first_dirty_page.raw);
+      first_dirty_page.commit(first_dirty_page_next_dev_offset, txn, self);
     } else {
       let first_new_overflow_page_dev_offset = new_overflow_pages.front().unwrap().dev_offset;
-      while let Some(mut p) = new_overflow_pages.pop_front() {
+      while let Some(p) = new_overflow_pages.pop_front() {
         let next_dev_offset = new_overflow_pages
           .front()
           .map(|p| p.dev_offset)
           .unwrap_or(first_dirty_page_next_dev_offset);
-        p.write_next_dev_offset(next_dev_offset);
-        txn.record(p.dev_offset, p.raw);
+        p.commit(next_dev_offset, txn, self);
       }
-      first_dirty_page.write_next_dev_offset(first_new_overflow_page_dev_offset);
-      txn.record(first_dirty_page.dev_offset, first_dirty_page.raw);
+      first_dirty_page.commit(first_new_overflow_page_dev_offset, txn, self);
     };
-    for mut p in other_dirty_pages {
-      p.write_next_dev_offset(self.pages[&p.dev_offset].next_dev_offset.unwrap_or(0));
-      txn.record(p.dev_offset, p.raw);
+    for p in other_dirty_pages {
+      let next_dev_offset = self.pages[&p.dev_offset].next_dev_offset;
+      p.commit(next_dev_offset, txn, self);
     }
-    for (mut p, _) in overflow_page_replacements {
-      p.write_next_dev_offset(self.pages[&p.dev_offset].next_dev_offset.unwrap_or(0));
-      txn.record(p.dev_offset, p.raw);
+    for (p, _) in overflow_page_replacements {
+      let next_dev_offset = self.pages[&p.dev_offset].next_dev_offset;
+      p.commit(next_dev_offset, txn, self);
     }
-
-    // Update self.
-    todo!();
   }
 }
