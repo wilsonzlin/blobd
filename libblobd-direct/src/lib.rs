@@ -80,6 +80,7 @@ pub struct BlobdCfg {
   pub event_stream_spage_capacity: u64,
   pub lpage_size_pow2: u8,
   pub reap_objects_after_secs: u64,
+  /// It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
   pub spage_size_pow2: u8,
   pub versioning: bool,
 }

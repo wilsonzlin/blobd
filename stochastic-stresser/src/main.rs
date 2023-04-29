@@ -1,25 +1,24 @@
+pub mod target;
+
+use crate::target::vanilla::Vanilla;
+use crate::target::InitCfg;
+use crate::target::Target;
+use crate::target::TargetCommitObjectInput;
+use crate::target::TargetCreateObjectInput;
+use crate::target::TargetDeleteObjectInput;
+use crate::target::TargetInspectObjectInput;
+use crate::target::TargetReadObjectInput;
+use crate::target::TargetWriteObjectInput;
 use clap::Parser;
-use futures::stream::once;
+use clap::ValueEnum;
 use futures::StreamExt;
-use libblobd::incomplete_token::IncompleteToken;
 use libblobd::object::OBJECT_KEY_LEN_MAX;
-use libblobd::op::commit_object::OpCommitObjectInput;
-use libblobd::op::create_object::OpCreateObjectInput;
-use libblobd::op::delete_object::OpDeleteObjectInput;
-use libblobd::op::inspect_object::OpInspectObjectInput;
-use libblobd::op::read_object::OpReadObjectInput;
-use libblobd::op::write_object::OpWriteObjectInput;
-use libblobd::BlobdCfg;
-use libblobd::BlobdLoader;
 use off64::u64;
-use off64::u8;
 use off64::usz;
 use rand::thread_rng;
 use rand::Rng;
 use rand::RngCore;
 use seekable_async_file::get_file_len_via_seek;
-use seekable_async_file::SeekableAsyncFile;
-use seekable_async_file::SeekableAsyncFileMetrics;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -28,16 +27,14 @@ use std::time::Duration;
 use stochastic_queue::stochastic_channel;
 use stochastic_queue::StochasticMpmcRecvError;
 use strum_macros::Display;
+use target::TargetIncompleteToken;
 use tinybuf::TinyBuf;
-use tokio::join;
 use tokio::spawn;
-use tokio::sync::RwLock;
 use tokio::task::spawn_blocking;
 use tokio::time::sleep;
 use tokio::time::Instant;
 use tracing::info;
 use tracing::trace;
-use tracing::warn;
 use twox_hash::xxh3::hash64_with_seed;
 
 /*
@@ -54,9 +51,17 @@ Use [tokio-console](https://github.com/tokio-rs/console#running-the-console) to 
 
 */
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, ValueEnum)]
+enum TargetType {
+  Vanilla,
+}
+
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
 struct Cli {
+  #[arg(long)]
+  target: TargetType,
+
   /// Path to the device or regular file to use as the underlying storage.
   #[arg(long)]
   device: PathBuf,
@@ -111,7 +116,7 @@ impl Pool {
   }
 }
 
-#[derive(Clone, PartialEq, Eq, Display, Debug)]
+#[derive(Display)]
 enum Task {
   Create {
     key_len: u64,
@@ -124,7 +129,7 @@ enum Task {
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
-    incomplete_token: IncompleteToken,
+    incomplete_token: TargetIncompleteToken,
     chunk_offset: u64,
   },
   Commit {
@@ -132,7 +137,7 @@ enum Task {
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
-    incomplete_token: IncompleteToken,
+    incomplete_token: TargetIncompleteToken,
   },
   Inspect {
     key_len: u64,
@@ -165,45 +170,21 @@ async fn main() {
 
   let cli = Cli::parse();
 
-  assert!(cli.buckets.is_power_of_two());
-  let bucket_count_log2: u8 = cli.buckets.ilog2().try_into().unwrap();
-
   let device_size = get_file_len_via_seek(&cli.device).await.unwrap();
 
-  let io_metrics = Arc::new(SeekableAsyncFileMetrics::default());
-  let device = SeekableAsyncFile::open(
-    &cli.device,
+  let completed = Arc::new(AtomicU64::new(0));
+
+  let init_cfg = InitCfg {
+    bucket_count: cli.buckets,
     device_size,
-    io_metrics,
-    Duration::from_micros(200),
-    0,
-  )
-  .await;
-
-  let blobd = BlobdLoader::new(device.clone(), device_size, BlobdCfg {
-    bucket_count_log2,
-    bucket_lock_count_log2: bucket_count_log2,
-    reap_objects_after_secs: 60 * 60 * 24 * 7,
-    lpage_size_pow2: u8!(cli.lpage_size.ilog2()),
-    spage_size_pow2: u8!(cli.spage_size.ilog2()),
-    // We must enable versioning as some objects will have duplicate keys, and then their derived tasks won't work unless they were the last to commit.
-    versioning: true,
-  });
-  blobd.format().await;
-  info!("formatted device");
-  let blobd = blobd.load().await;
-  info!("loaded device");
-
-  spawn({
-    let blobd = blobd.clone();
-    let device = device.clone();
-    async move {
-      join! {
-        blobd.start(),
-        device.start_delayed_data_sync_background_loop(),
-      };
-    }
-  });
+    device: cli.device,
+    lpage_size: cli.lpage_size,
+    object_count: cli.objects,
+    spage_size: cli.spage_size,
+  };
+  let target = match cli.target {
+    TargetType::Vanilla => Vanilla::start(init_cfg, completed.clone()).await,
+  };
 
   info!(
     "initialising pool of size {} MiB, this may take a while",
@@ -219,7 +200,6 @@ async fn main() {
   // Progress bars would look nice and fancy, but we are more likely to want logs/traces than in-flight animations, and a summary of performance metrics at the end will be enough. Using progress bars will clash with the logger.
 
   let started = Instant::now();
-  let completed = Arc::new(AtomicU64::new(0));
 
   let (tasks_sender, tasks_receiver) = stochastic_channel::<Task>();
   let total_data_bytes = spawn_blocking({
@@ -257,64 +237,14 @@ async fn main() {
   })
   .await
   .unwrap();
-  spawn({
-    let blobd = blobd.clone();
-    let completed = completed.clone();
-    async move {
-      loop {
-        sleep(Duration::from_secs(5)).await;
-        let completed = completed.load(Ordering::Relaxed);
-        info!(
-          completed,
-          allocated_block_count = blobd.metrics().allocated_block_count(),
-          allocated_page_count = blobd.metrics().allocated_page_count(),
-          deleted_object_count = blobd.metrics().deleted_object_count(),
-          incomplete_object_count = blobd.metrics().incomplete_object_count(),
-          object_count = blobd.metrics().object_count(),
-          object_data_bytes = blobd.metrics().object_data_bytes(),
-          object_metadata_bytes = blobd.metrics().object_metadata_bytes(),
-          used_bytes = blobd.metrics().used_bytes(),
-          "progress",
-        );
-        if completed == cli.objects {
-          break;
-        };
-      }
-    }
-  });
   let mut threads = Vec::new();
   for thread_no in 0..cli.threads {
-    let blobd = blobd.clone();
+    let target = target.clone();
     let pool = pool.clone();
     let completed = completed.clone();
     let tasks_sender = tasks_sender.clone();
     let tasks_receiver = tasks_receiver.clone();
     threads.push(spawn(async move {
-      let cur_task: Arc<RwLock<Option<(Instant, Task)>>> = Default::default();
-      // Detect long running tasks. Primary used to detect bugs related to locks and timers.
-      spawn({
-        let completed = completed.clone();
-        let cur_task = cur_task.clone();
-        let mut last_seen: Option<(Instant, Task)> = None;
-        async move {
-          loop {
-            sleep(Duration::from_secs(10)).await;
-            if completed.load(Ordering::Relaxed) == cli.objects {
-              break;
-            };
-            let cur = cur_task.read().await.clone();
-            if cur != last_seen {
-              last_seen = cur;
-            } else if let Some((last_time, t)) = &last_seen {
-              warn!(
-                task = t.to_string(),
-                duration_sec = last_time.elapsed().as_secs(),
-                "still processing task"
-              );
-            };
-          }
-        }
-      });
       loop {
         if completed.load(Ordering::Relaxed) == cli.objects {
           break;
@@ -325,14 +255,12 @@ async fn main() {
           Ok(Some(t)) => t,
           Err(StochasticMpmcRecvError::NoSenders) => break,
           Ok(None) => {
-            *cur_task.write().await = None;
             // Keep this timeout small so that total execution time is accurate.
             sleep(Duration::from_millis(100)).await;
             trace!(thread_no, "still waiting for task");
             continue;
           }
         };
-        *cur_task.write().await = Some((Instant::now(), t.clone()));
         trace!(thread_no, task_type = t.to_string(), "received task");
         match t {
           Task::Create {
@@ -341,14 +269,13 @@ async fn main() {
             data_len,
             data_offset,
           } => {
-            let res = blobd
-              .create_object(OpCreateObjectInput {
+            let res = target
+              .create_object(TargetCreateObjectInput {
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 size: data_len,
                 assoc_data: TinyBuf::empty(),
               })
-              .await
-              .unwrap();
+              .await;
             tasks_sender
               .send(Task::Write {
                 key_len,
@@ -374,16 +301,13 @@ async fn main() {
             } else {
               data_len - chunk_offset
             };
-            blobd
-              .write_object(OpWriteObjectInput {
-                data_len: chunk_len,
-                data_stream: once(async { Ok(pool.get(data_offset + chunk_offset, chunk_len)) })
-                  .boxed(),
-                incomplete_token,
+            target
+              .write_object(TargetWriteObjectInput {
+                data: pool.get(data_offset + chunk_offset, chunk_len),
+                incomplete_token: incomplete_token.clone(),
                 offset: chunk_offset,
               })
-              .await
-              .unwrap();
+              .await;
             tasks_sender
               .send(if next_chunk_offset < data_len {
                 Task::Write {
@@ -412,10 +336,9 @@ async fn main() {
             data_offset,
             incomplete_token,
           } => {
-            let res = blobd
-              .commit_object(OpCommitObjectInput { incomplete_token })
-              .await
-              .unwrap();
+            let res = target
+              .commit_object(TargetCommitObjectInput { incomplete_token })
+              .await;
             tasks_sender
               .send(Task::Inspect {
                 key_len,
@@ -433,13 +356,12 @@ async fn main() {
             data_offset,
             object_id,
           } => {
-            let res = blobd
-              .inspect_object(OpInspectObjectInput {
+            let res = target
+              .inspect_object(TargetInspectObjectInput {
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 id: Some(object_id),
               })
-              .await
-              .unwrap();
+              .await;
             assert_eq!(res.id, object_id);
             assert_eq!(res.size, data_len);
             tasks_sender
@@ -463,18 +385,16 @@ async fn main() {
           } => {
             // Read a random amount to test various cases stochastically.
             let end = thread_rng().gen_range(chunk_offset + 1..=data_len);
-            let mut res = blobd
-              .read_object(OpReadObjectInput {
+            let mut res = target
+              .read_object(TargetReadObjectInput {
                 end: Some(end),
                 start: chunk_offset,
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 stream_buffer_size: 1024 * 16,
                 id: Some(object_id),
               })
-              .await
-              .unwrap();
+              .await;
             while let Some(chunk) = res.data_stream.next().await {
-              let chunk = chunk.unwrap();
               let chunk_len = u64!(chunk.len());
               // Don't use assert_eq! as it will print a lot of raw bytes.
               assert!(chunk.as_slice() == pool.get(data_offset + chunk_offset, chunk_len));
@@ -508,13 +428,12 @@ async fn main() {
             key_offset,
             object_id,
           } => {
-            blobd
-              .delete_object(OpDeleteObjectInput {
+            target
+              .delete_object(TargetDeleteObjectInput {
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 id: Some(object_id),
               })
-              .await
-              .unwrap();
+              .await;
             completed.fetch_add(1, Ordering::Relaxed);
           }
         };

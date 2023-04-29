@@ -9,10 +9,12 @@ default = []
 instrumentation = ["dep:console-subscriber", "tokio/tracing"] # https://github.com/tokio-rs/console/blob/main/console-subscriber/README.md#enabling-tokio-instrumentation
 
 [dependencies]
+async-trait = "0.1.68"
 clap = { version = "4.1.14", features = ["derive"] }
 console-subscriber = { version = "0.1.8", optional = true }
 futures = "0.3.27"
 libblobd = { version = "0.1.1", path = "../libblobd" }
+libblobd-direct = { version = "0.1.1", path = "../libblobd-direct" }
 off64 = "0.6.0"
 rand = "0.8.5"
 seekable-async-file = "0.11.1"
