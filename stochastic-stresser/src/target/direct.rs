@@ -35,14 +35,12 @@ use tokio::spawn;
 use tokio::time::sleep;
 use tracing::info;
 
-#[derive(Clone)]
 pub struct Direct {
   blobd: Blobd,
 }
 
-#[async_trait]
-impl Target for Direct {
-  async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self {
+impl Direct {
+  pub async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self {
     let blobd = BlobdLoader::new(
       OpenOptions::new()
         .read(true)
@@ -90,7 +88,10 @@ impl Target for Direct {
 
     Self { blobd }
   }
+}
 
+#[async_trait]
+impl Target for Direct {
   async fn create_object(&self, input: TargetCreateObjectInput) -> TargetCreateObjectOutput {
     let res = self
       .blobd

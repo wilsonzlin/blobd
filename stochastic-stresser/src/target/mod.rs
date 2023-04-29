@@ -3,7 +3,6 @@ use futures::Stream;
 use std::any::Any;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
 
@@ -73,8 +72,7 @@ pub struct TargetDeleteObjectInput {
 }
 
 #[async_trait]
-pub trait Target: Clone {
-  async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self;
+pub trait Target: Send + Sync {
   async fn create_object(&self, input: TargetCreateObjectInput) -> TargetCreateObjectOutput;
   async fn write_object<'a>(&'a self, input: TargetWriteObjectInput<'a>);
   async fn commit_object(&self, input: TargetCommitObjectInput) -> TargetCommitObjectOutput;

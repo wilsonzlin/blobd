@@ -1,5 +1,6 @@
 pub mod target;
 
+use crate::target::direct::Direct;
 use crate::target::vanilla::Vanilla;
 use crate::target::InitCfg;
 use crate::target::Target;
@@ -53,6 +54,7 @@ Use [tokio-console](https://github.com/tokio-rs/console#running-the-console) to 
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, ValueEnum)]
 enum TargetType {
+  Direct,
   Vanilla,
 }
 
@@ -182,8 +184,9 @@ async fn main() {
     object_count: cli.objects,
     spage_size: cli.spage_size,
   };
-  let target = match cli.target {
-    TargetType::Vanilla => Vanilla::start(init_cfg, completed.clone()).await,
+  let target: Arc<dyn Target> = match cli.target {
+    TargetType::Direct => Arc::new(Direct::start(init_cfg, completed.clone()).await),
+    TargetType::Vanilla => Arc::new(Vanilla::start(init_cfg, completed.clone()).await),
   };
 
   info!(

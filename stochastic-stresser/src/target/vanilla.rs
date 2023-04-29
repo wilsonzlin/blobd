@@ -36,14 +36,12 @@ use tokio::spawn;
 use tokio::time::sleep;
 use tracing::info;
 
-#[derive(Clone)]
 pub struct Vanilla {
   blobd: Blobd,
 }
 
-#[async_trait]
-impl Target for Vanilla {
-  async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self {
+impl Vanilla {
+  pub async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self {
     assert!(cfg.bucket_count.is_power_of_two());
     let bucket_count_log2: u8 = cfg.bucket_count.ilog2().try_into().unwrap();
 
@@ -111,7 +109,10 @@ impl Target for Vanilla {
 
     Self { blobd }
   }
+}
 
+#[async_trait]
+impl Target for Vanilla {
   async fn create_object(&self, input: TargetCreateObjectInput) -> TargetCreateObjectOutput {
     let res = self
       .blobd
