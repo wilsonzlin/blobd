@@ -3,16 +3,18 @@ use crate::util::floor_pow2;
 use async_trait::async_trait;
 use bufpool::buf::Buf;
 use bufpool::BUFPOOL;
+use dashmap::DashMap;
 use off64::int::Off64AsyncReadInt;
 use off64::usz;
 use off64::Off64AsyncRead;
 use off64::Off64Read;
-use rustc_hash::FxHashMap;
+use rustc_hash::FxHasher;
 use std::cmp::min;
-use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::fmt::Display;
 use std::fmt::Write;
+use std::hash::BuildHasherDefault;
+use std::sync::Arc;
 
 pub mod commit_object;
 pub mod create_object;
@@ -79,7 +81,7 @@ pub(crate) fn key_debug_str(key: &[u8]) -> String {
 struct UnalignedReader {
   dev: Uring,
   page_size_pow2: u8,
-  cache: tokio::sync::Mutex<FxHashMap<u64, Buf>>,
+  cache: DashMap<u64, Arc<tokio::sync::Mutex<Option<Buf>>>, BuildHasherDefault<FxHasher>>,
 }
 
 impl UnalignedReader {
@@ -100,18 +102,18 @@ impl UnalignedReader {
       let page_dev_offset = floor_pow2(offset, self.page_size_pow2);
       let start_within_page = next - page_dev_offset;
       let len_within_page = min(1 << self.page_size_pow2, end - next);
-      match self.cache.lock().await.entry(page_dev_offset) {
-        Entry::Occupied(o) => {
-          out.extend_from_slice(o.get().read_at(start_within_page, len_within_page));
-        }
-        Entry::Vacant(v) => {
-          let page = self
-            .dev
-            .read(page_dev_offset, 1 << self.page_size_pow2)
-            .await;
-          out.extend_from_slice(page.read_at(start_within_page, len_within_page));
-          v.insert(page);
-        }
+      // WARNING: We must `Arc::clone` as otherwise we'll actually hold the DashMap lock, which will very likely deadlock if held across `await`.
+      let container = self.cache.entry(page_dev_offset).or_default().clone();
+      let mut map_entry = container.lock().await;
+      if let Some(o) = map_entry.as_ref() {
+        out.extend_from_slice(o.read_at(start_within_page, len_within_page));
+      } else {
+        let page = self
+          .dev
+          .read(page_dev_offset, 1 << self.page_size_pow2)
+          .await;
+        out.extend_from_slice(page.read_at(start_within_page, len_within_page));
+        *map_entry = Some(page);
       };
       next += len_within_page;
     }

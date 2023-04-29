@@ -56,18 +56,18 @@ pub(crate) fn action_create_object(
   let dev_offset = state.allocator.allocate(meta_size);
 
   let mut raw = BUFPOOL.allocate_with_zeros(usz!(meta_size));
-  raw.write_u16_be_at(off.key_len(), key_len);
+  raw.write_u16_le_at(off.key_len(), key_len);
   raw.write_at(off.key(), &req.key);
-  raw.write_u16_be_at(off.assoc_data_len(), u16!(req.assoc_data.len()));
+  raw.write_u16_le_at(off.assoc_data_len(), u16!(req.assoc_data.len()));
   raw.write_at(off.assoc_data(), &req.assoc_data);
 
   for i in 0..lpage_count {
     let lpage_dev_offset = state.allocator.allocate(state.cfg.lpage_size());
-    raw.write_u48_be_at(off.lpage(i), lpage_dev_offset);
+    raw.write_u48_le_at(off.lpage(i), lpage_dev_offset);
   }
   for (i, tail_page_size_pow2) in tail_page_sizes_pow2 {
     let page_dev_offset = state.allocator.allocate(1 << tail_page_size_pow2);
-    raw.write_u48_be_at(off.tail_page(i), page_dev_offset);
+    raw.write_u48_le_at(off.tail_page(i), page_dev_offset);
   }
 
   state.incomplete_list.insert(ObjectMetadata {

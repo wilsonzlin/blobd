@@ -90,7 +90,7 @@ impl Bucket {
           OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages(),
         )
         .await;
-      if raw.read_u16_be_at(OBJECT_OFF.key_len()) == u16!(key.len())
+      if raw.read_u16_le_at(OBJECT_OFF.key_len()) == u16!(key.len())
         && raw.read_at(OBJECT_OFF.key(), u64!(key.len())) == key
       {
         return Some(o.clone());
@@ -108,7 +108,7 @@ impl Bucket {
         OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages(),
       )
       .await;
-    let key_len = raw.read_u16_be_at(OBJECT_OFF.key_len());
+    let key_len = raw.read_u16_le_at(OBJECT_OFF.key_len());
     // TODO Avoid heap allocation.
     let key = raw.read_at(OBJECT_OFF.key(), u64!(key_len)).to_vec();
     Some(key)

@@ -92,7 +92,7 @@ pub(crate) async fn op_write_object<
       vec![(
         (1 << ctx.lpage_size_pow2),
         unaligned_reader
-          .read_u48_be_at(object_dev_offset + off.lpage(idx))
+          .read_u48_le_at(object_dev_offset + off.lpage(idx))
           .await,
       )]
     } else {
@@ -104,7 +104,7 @@ pub(crate) async fn op_write_object<
         .await;
       let mut offsets = tail_page_sizes_pow2
         .into_iter()
-        .map(|(i, sz)| (1 << sz, raw.read_u48_be_at(u64!(i) * 6)))
+        .map(|(i, sz)| (1 << sz, raw.read_u48_le_at(u64!(i) * 6)))
         .collect_vec();
       // For the very last tail page, we don't write a full page amount of bytes, unless the object just happens to be a multiple of that page's size. Use `.map` as there may not even be any tail pages at all.
       offsets.last_mut().map(|(page_size, _page_dev_offset)| {

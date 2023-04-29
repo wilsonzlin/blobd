@@ -20,7 +20,7 @@ pub(crate) fn reap_object(
   page_dev_offset: u64,
   page_size_pow2: u8,
 ) -> ReapedObject {
-  let key_len = raw.read_u16_be_at(OBJECT_OFF.key_len());
+  let key_len = raw.read_u16_le_at(OBJECT_OFF.key_len());
   let ObjectLayout {
     lpage_count,
     tail_page_sizes_pow2,
@@ -31,11 +31,11 @@ pub(crate) fn reap_object(
     .with_lpages(lpage_count)
     .with_tail_pages(tail_page_sizes_pow2.len());
   for i in 0..lpage_count {
-    let page_dev_offset = raw.read_u48_be_at(off.lpage(i));
+    let page_dev_offset = raw.read_u48_le_at(off.lpage(i));
     alloc.release(page_dev_offset, lpage_size_pow2);
   }
   for (i, tail_page_size_pow2) in tail_page_sizes_pow2 {
-    let page_dev_offset = raw.read_u48_be_at(off.tail_page(i));
+    let page_dev_offset = raw.read_u48_le_at(off.tail_page(i));
     alloc.release(page_dev_offset, tail_page_size_pow2);
   }
   alloc.release(page_dev_offset, page_size_pow2);

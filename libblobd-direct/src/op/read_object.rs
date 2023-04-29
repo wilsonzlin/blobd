@@ -89,13 +89,13 @@ pub(crate) async fn op_read_object(
       let (page_dev_offset, page_size_pow2) = {
         let _lock = obj.lock_if_still_valid(ObjectState::Committed)?;
         if idx < alloc_cfg.lpage_count {
-          let dev_offset = unaligned_reader.read_u48_be_at(object_dev_offset + off.lpage(idx)).await;
+          let dev_offset = unaligned_reader.read_u48_le_at(object_dev_offset + off.lpage(idx)).await;
           let page_size_pow2 = ctx.lpage_size_pow2;
           (dev_offset, page_size_pow2)
         } else {
           let tail_idx = u8!(idx - alloc_cfg.lpage_count);
           debug_assert!(tail_idx < alloc_cfg.tail_page_sizes_pow2.len());
-          let dev_offset = unaligned_reader.read_u48_be_at(object_dev_offset + off.tail_page(tail_idx)).await;
+          let dev_offset = unaligned_reader.read_u48_le_at(object_dev_offset + off.tail_page(tail_idx)).await;
           let page_size_pow2 = alloc_cfg.tail_page_sizes_pow2.get(tail_idx).unwrap();
           (dev_offset, page_size_pow2)
         }

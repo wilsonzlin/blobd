@@ -25,9 +25,8 @@ use bufpool::buf::Buf;
 use dashmap::DashMap;
 use rustc_hash::FxHasher;
 use signal_future::SignalFutureController;
-use std::collections::VecDeque;
+use std::fmt;
 use std::fmt::Debug;
-use std::fmt::{self};
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 use std::time::Duration;
@@ -119,7 +118,7 @@ impl StateWorker {
     objects_pending_drop: Arc<ObjectsPendingDrop>,
   ) -> Self {
     let (txn_sender, mut txn_receiver) = tokio::sync::mpsc::unbounded_channel::<(
-      VecDeque<(u64, Buf)>,
+      Vec<(u64, Buf)>,
       CommittedEvents,
       Vec<SignalReadyToFire>,
     )>();
