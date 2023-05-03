@@ -225,9 +225,19 @@ impl UringBounded {
     }
   }
 
+  fn assert_in_bounds(&self, offset: u64, len: u64) {
+    assert!(
+      offset + len <= self.len,
+      "attempted to read/write at {} with length {}, but device only has length {}",
+      self.offset + offset,
+      len,
+      self.offset + self.len
+    );
+  }
+
   /// `offset` and `len` must be multiples of the underlying device's sector size.
   pub async fn read(&self, offset: u64, len: u64) -> Buf {
-    assert!(offset + len <= self.len);
+    self.assert_in_bounds(offset, len);
     let (fut, fut_ctl) = SignalFuture::new();
     self
       .sender
@@ -245,7 +255,7 @@ impl UringBounded {
   /// `offset` and `data.len()` must be multiples of the underlying device's sector size.
   /// Returns the original `data` so that it can be reused, if desired.
   pub async fn write(&self, offset: u64, data: Buf) -> Buf {
-    assert!(offset + u64!(data.len()) <= self.len);
+    self.assert_in_bounds(offset, u64!(data.len()));
     let (fut, fut_ctl) = SignalFuture::new();
     self
       .sender
@@ -261,7 +271,7 @@ impl UringBounded {
   }
 
   pub fn record_in_transaction(&self, txn: &mut Transaction, offset: u64, data: Buf) {
-    assert!(offset + u64!(data.len()) <= self.len);
+    self.assert_in_bounds(offset, u64!(data.len()));
     txn.record(self.offset + offset, data);
   }
 

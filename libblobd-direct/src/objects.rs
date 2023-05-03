@@ -64,7 +64,8 @@ pub(crate) async fn load_objects_from_device(
   );
 
   let mut dev_offset = heap_dev_offset;
-  'outer: loop {
+  // This condition handles the edge case where the entire metadata heap is used.
+  'outer: while dev_offset < heap_dev_offset + metadata_space {
     let raw = meta_dev.read(dev_offset, pages.lpage_size()).await;
     let mut cur = &raw[..];
     while !cur.is_empty() {

@@ -83,6 +83,9 @@ impl PartitionLoader {
 
     let journal = Journal::new(dev.clone(), journal_dev_offset, journal_size, pages.clone());
 
+    let metadata_heap_size = cfg.object_metadata_reserved_space;
+    let data_heap_size = heap_end - heap_dev_offset - metadata_heap_size;
+
     info!(
       partition_number = partition_idx,
       partition_file = part.path.to_string_lossy().to_string(),
@@ -90,17 +93,20 @@ impl PartitionLoader {
       partition_size = part.len,
       journal_size,
       reserved_size = heap_dev_offset,
-      lpage_size = pages.lpage_size(),
+      metadata_heap_size,
+      data_heap_size,
+      heap_end,
       spage_size = pages.spage_size(),
+      lpage_size = pages.lpage_size(),
       "init partition",
     );
 
     Self {
-      data_heap_size: heap_end - cfg.object_metadata_reserved_space,
+      data_heap_size,
       dev,
       heap_dev_offset,
       journal,
-      metadata_heap_size: cfg.object_metadata_reserved_space,
+      metadata_heap_size,
       metrics,
       object_id_serial_dev_offset,
       object_id_serial_size,

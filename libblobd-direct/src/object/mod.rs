@@ -7,7 +7,6 @@ use bufpool::buf::Buf;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use off64::int::Off64ReadInt;
-use off64::u8;
 use off64::usz;
 use off64::Off64Read;
 use std::cmp::min;
@@ -86,7 +85,8 @@ impl ObjectMetadata {
 
   pub fn build_raw_data_with_new_object_state(&self, pages: &Pages, new_state: ObjectState) -> Buf {
     let mut buf = pages.allocate_with_zeros(pages.spage_size());
-    buf.copy_from_slice(&self.raw[..usz!(pages.spage_size())]);
+    let len = min(self.raw.len(), usz!(pages.spage_size()));
+    buf[..len].copy_from_slice(&self.raw[..len]);
     buf[usz!(self.off.state())] = new_state as u8;
     buf
   }

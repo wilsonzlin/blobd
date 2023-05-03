@@ -35,6 +35,7 @@ impl Allocator {
     dir: AllocDir,
     metrics: Arc<BlobdMetrics>,
   ) -> Self {
+    assert_eq!(mod_pow2(heap_dev_offset, pages.lpage_size_pow2), 0);
     assert_eq!(mod_pow2(heap_size, pages.lpage_size_pow2), 0);
     Self {
       base_dev_offset: heap_dev_offset,
