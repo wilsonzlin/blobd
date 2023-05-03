@@ -1,6 +1,9 @@
 use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
+use chrono::DateTime;
+use chrono::TimeZone;
+use chrono::Utc;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
 
@@ -13,20 +16,21 @@ pub struct OpInspectObjectInput {
 pub struct OpInspectObjectOutput {
   pub id: u64,
   pub size: u64,
+  pub created: DateTime<Utc>,
 }
 
 pub(crate) async fn op_inspect_object(
   ctx: Arc<Ctx>,
   req: OpInspectObjectInput,
 ) -> OpResult<OpInspectObjectOutput> {
-  let Some(bkt) = ctx.buckets.get_bucket_for_key(&req.key) else {
-    return Err(OpError::ObjectNotFound);
-  };
-  let Some(obj) = bkt.find_object(ctx.device.clone(), &req.key, req.id).await else {
+  let Some(obj) = ctx.committed_objects.get(&req.key).filter(|o| req.id.is_none() || Some(o.id()) == req.id).map(|e| e.value().clone()) else {
     return Err(OpError::ObjectNotFound);
   };
   Ok(OpInspectObjectOutput {
-    id: obj.id,
-    size: obj.size,
+    id: obj.id(),
+    size: obj.size(),
+    created: Utc
+      .timestamp_opt(obj.created_sec().try_into().unwrap(), 0)
+      .unwrap(),
   })
 }

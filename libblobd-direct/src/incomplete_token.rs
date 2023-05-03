@@ -7,9 +7,7 @@ use std::fmt::Debug;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IncompleteToken {
   pub(crate) object_id: u64,
-  pub(crate) bucket_id: u64,
-  // Required for writing; saves a device read.
-  pub(crate) key_len: u16,
+  pub(crate) partition_idx: usize,
 }
 
 impl Debug for IncompleteToken {

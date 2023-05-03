@@ -22,11 +22,10 @@ use libblobd_direct::op::read_object::OpReadObjectInput;
 use libblobd_direct::op::write_object::OpWriteObjectInput;
 use libblobd_direct::Blobd;
 use libblobd_direct::BlobdCfg;
+use libblobd_direct::BlobdCfgPartition;
 use libblobd_direct::BlobdLoader;
 use off64::u64;
 use off64::u8;
-use std::fs::OpenOptions;
-use std::os::unix::prelude::OpenOptionsExt;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -41,23 +40,19 @@ pub struct Direct {
 
 impl Direct {
   pub async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self {
-    let blobd = BlobdLoader::new(
-      OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(&cfg.device)
-        .unwrap(),
-      cfg.device_size,
-      BlobdCfg {
-        event_stream_spage_capacity: 2097152,
-        reap_objects_after_secs: 60 * 60 * 24 * 7,
-        lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
-        spage_size_pow2: u8!(cfg.spage_size.ilog2()),
-        // We must enable versioning as some objects will have duplicate keys, and then their derived tasks won't work unless they were the last to commit.
-        versioning: true,
-      },
-    );
+    let blobd = BlobdLoader::new(BlobdCfg {
+      journal_size_min: 1024 * 1024 * 512,
+      object_metadata_reserved_space: 1024 * 1024 * 1024 * 4,
+      partitions: vec![BlobdCfgPartition {
+        path: cfg.device,
+        len: cfg.device_size,
+        offset: 0,
+      }],
+      event_stream_spage_capacity: 2097152,
+      reap_objects_after_secs: 60 * 60 * 24 * 7,
+      lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
+      spage_size_pow2: u8!(cfg.spage_size.ilog2()),
+    });
     blobd.format().await;
     info!("formatted device");
     let blobd = blobd.load().await;
@@ -73,7 +68,6 @@ impl Direct {
           let completed = completed.load(Ordering::Relaxed);
           info!(
             completed,
-            object_count = blobd.metrics().object_count(),
             object_data_bytes = blobd.metrics().object_data_bytes(),
             object_metadata_bytes = blobd.metrics().object_metadata_bytes(),
             used_bytes = blobd.metrics().used_bytes(),

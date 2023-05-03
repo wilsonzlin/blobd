@@ -1,56 +1,49 @@
-use crate::incomplete_token::IncompleteToken;
+use super::delete_object::action_delete_object;
+use super::delete_object::ActionDeleteObjectInput;
+use crate::journal::Transaction;
+use crate::object::AutoLifecycleObject;
+use crate::object::ObjectState;
 use crate::op::commit_object::OpCommitObjectOutput;
-use crate::op::OpError;
 use crate::op::OpResult;
 use crate::state::State;
-use crate::stream::StreamEvent;
+use crate::stream::StreamEventOwned;
 use crate::stream::StreamEventType;
 use crate::util::get_now_ms;
 use tinybuf::TinyBuf;
 
 pub(crate) struct ActionCommitObjectInput {
-  pub key: TinyBuf,
-  pub incomplete_token: IncompleteToken,
-  // Look up any existing object with the same key (which will be in the same bucket) before performing this action, as it will require async I/O. Yes, it's optimistic because someone could create one after we check but before this action is executed, but this is mostly a user error anyway as they should not be committing two identically-keyed objects simultaneously anyway.
-  pub also_delete_object_in_same_bucket_with_id: Option<u64>,
+  /// WARNING: This object must be in the Committed state and have no writers (and will never have writers in the future).
+  pub obj: AutoLifecycleObject,
 }
 
 pub(crate) fn action_commit_object(
   state: &mut State,
-  req: ActionCommitObjectInput,
+  txn: &mut Transaction,
+  ActionCommitObjectInput { obj }: ActionCommitObjectInput,
 ) -> OpResult<OpCommitObjectOutput> {
-  assert!(state.cfg.versioning && req.also_delete_object_in_same_bucket_with_id.is_none());
-
-  let IncompleteToken {
-    object_id,
-    bucket_id,
-    ..
-  } = req.incomplete_token;
-
-  let Some(obj) = state.incomplete_list.remove(object_id) else {
-    return Err(OpError::ObjectNotFound);
-  };
-
   let now = get_now_ms();
+  let key = TinyBuf::from_slice(obj.key());
+  let object_id = obj.id();
 
-  let deleted = state
-    .buckets
-    .get_or_create_bucket_mut_by_id(bucket_id)
-    .update_list(Some(obj), req.also_delete_object_in_same_bucket_with_id);
-  if let Some(deleted) = deleted {
-    state.stream.write().add_event_pending_commit(StreamEvent {
-      typ: StreamEventType::ObjectDelete,
-      timestamp_ms: now,
-      object_id: deleted.id,
-      key: req.key.clone(),
-    });
+  txn.record(
+    obj.dev_offset(),
+    obj.build_raw_data_with_new_object_state(&state.pages, ObjectState::Committed),
+  );
+
+  let existing = state.committed_objects.insert(key.clone(), obj);
+  if let Some(existing) = existing {
+    action_delete_object(state, txn, ActionDeleteObjectInput { obj: existing }).unwrap();
   };
-  state.stream.write().add_event_pending_commit(StreamEvent {
-    typ: StreamEventType::ObjectCommit,
-    timestamp_ms: now,
-    object_id,
-    key: req.key,
-  });
+
+  state
+    .stream
+    .write()
+    .add_event_pending_commit(StreamEventOwned {
+      typ: StreamEventType::ObjectCommit,
+      timestamp_ms: now,
+      object_id,
+      key,
+    });
 
   Ok(OpCommitObjectOutput { object_id })
 }

@@ -1,9 +1,12 @@
 # blobd
 
-- Scales to millions of random concurrent partial reads over trillions of objects (tiny or huge) at constant disk-level latency.
+Extremely fast and parallel object storage, performing at raw device speeds. Designed for millions of concurrent random partial reads over trillions of objects (tiny or huge) with constant latency.
+
+- All the good stuff: shared-nothing architecture, io_uring, async Rust for I/O, no page cache, direct I/O.
+- Guaranteed durability: safe to crash at any time, and a success result means the data has been 100% persisted.
+- Create partitions to locally shard per CPU core for extremely high create and delete throughput.
+- Available as embedded library, RPC server, or HTTP RESTful server with CORS, range requests, presigned URLs, and HTTP/2.
 - Asynchronous replication and event streaming.
-- Batch creation API for very high transfer and creation rates with many small objects.
-- HTTP RESTful API with support for CORS, range requests, presigned URLs, and HTTP/2.
 
 ## Design
 

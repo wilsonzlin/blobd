@@ -2,6 +2,7 @@ use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
 use crate::incomplete_token::IncompleteToken;
+use crate::object::ObjectState;
 use crate::state::action::commit_object::ActionCommitObjectInput;
 use crate::state::StateAction;
 use signal_future::SignalFuture;
@@ -19,31 +20,17 @@ pub(crate) async fn op_commit_object(
   ctx: Arc<Ctx>,
   req: OpCommitObjectInput,
 ) -> OpResult<OpCommitObjectOutput> {
-  let Some(bkt) = ctx.buckets.get_bucket_by_id(req.incomplete_token.bucket_id) else {
+  let Some(obj) = ctx.incomplete_objects.write().remove(&req.incomplete_token.object_id) else {
     return Err(OpError::ObjectNotFound);
   };
 
-  let Some(key) = bkt.find_object_with_id_and_read_key(ctx.device.clone(), req.incomplete_token.object_id).await else {
-    return Err(OpError::ObjectNotFound);
-  };
-
-  // SAFETY: If we find ourselves (because someone else has committed our incomplete token), we'll fail later.
-  let existing = if ctx.versioning {
-    None
-  } else {
-    bkt
-      .find_object(ctx.device.clone(), &key, None)
-      .await
-      .map(|o| o.id)
-  };
+  obj
+    .update_state_then_ensure_no_writers(ObjectState::Committed)
+    .await;
 
   let (fut, fut_ctl) = SignalFuture::new();
   ctx.state.send_action(StateAction::Commit(
-    ActionCommitObjectInput {
-      also_delete_object_in_same_bucket_with_id: existing,
-      incomplete_token: req.incomplete_token,
-      key: key.into(),
-    },
+    ActionCommitObjectInput { obj },
     fut_ctl,
   ));
 

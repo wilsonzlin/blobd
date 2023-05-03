@@ -1,10 +1,15 @@
-/**
+use off64::u64;
+
+/*
 
 Structure
 ---------
 
-We cannot store head data inline as we need to know the object metadata size in order to allocate a page for it, but we cannot know any inline head data length unless we know the object metadata size.
-
+u8 page_size_pow2
+u8 state
+u64 id
+u40 size
+u48 created_sec
 u16 key_len
 u8[] key
 u48[] lpage_page_dev_offset
@@ -13,47 +18,39 @@ u48[] tail_page_dev_offset
 u16 assoc_data_len
 u8[] assoc_data
 
-**/
-
-// This makes it so that a read of the object fields up to and including the key is at most exactly 512 bytes, which is a well-aligned well-sized no-waste read from most SSDs.
-pub const OBJECT_KEY_LEN_MAX: u16 = 510;
+*/
 
 #[derive(Clone, Copy)]
-pub(crate) struct ObjectOffsets {
-  key_len: u16,
-  lpage_count: u64,
-  tail_page_count: u8,
-  assoc_data_len: u16,
+pub(crate) struct ObjectMetadataOffsets {
+  pub key_len: u16,
+  pub lpage_count: u32,
+  pub tail_page_count: u8,
+  pub assoc_data_len: u16,
 }
 
-impl ObjectOffsets {
-  pub fn with_key_len(self, key_len: u16) -> Self {
-    Self { key_len, ..self }
+impl ObjectMetadataOffsets {
+  pub fn page_size_pow2(self) -> u64 {
+    0
   }
 
-  pub fn with_lpages(self, lpage_count: u64) -> Self {
-    Self {
-      lpage_count,
-      ..self
-    }
+  pub fn state(self) -> u64 {
+    self.page_size_pow2() + 1
   }
 
-  pub fn with_tail_pages(self, tail_page_count: u8) -> Self {
-    Self {
-      tail_page_count,
-      ..self
-    }
+  pub fn id(self) -> u64 {
+    self.state() + 1
   }
 
-  pub fn with_assoc_data_len(self, assoc_data_len: u16) -> Self {
-    Self {
-      assoc_data_len,
-      ..self
-    }
+  pub fn size(self) -> u64 {
+    self.id() + 8
+  }
+
+  pub fn created_sec(self) -> u64 {
+    self.size() + 5
   }
 
   pub fn key_len(self) -> u64 {
-    0
+    self.created_sec() + 6
   }
 
   pub fn key(self) -> u64 {
@@ -61,11 +58,11 @@ impl ObjectOffsets {
   }
 
   pub fn lpages(self) -> u64 {
-    self.key() + u64::from(self.key_len)
+    self.key() + u64!(self.key_len)
   }
 
-  pub fn lpage(self, idx: u64) -> u64 {
-    self.lpages() + 6 * idx
+  pub fn lpage(self, idx: u32) -> u64 {
+    self.lpages() + 6 * u64!(idx)
   }
 
   pub fn tail_pages(self) -> u64 {
@@ -73,7 +70,7 @@ impl ObjectOffsets {
   }
 
   pub fn tail_page(self, idx: u8) -> u64 {
-    self.tail_pages() + 6 * u64::from(idx)
+    self.tail_pages() + 6 * u64!(idx)
   }
 
   pub fn assoc_data_len(self) -> u64 {
@@ -85,14 +82,6 @@ impl ObjectOffsets {
   }
 
   pub fn _total_size(self) -> u64 {
-    self.assoc_data() + u64::from(self.assoc_data_len)
+    self.assoc_data() + u64!(self.assoc_data_len)
   }
 }
-
-/// WARNING: This is only safe to use for getting offset of fields up to and including `key`. Call `with_*` methods to get offsets of other fields.
-pub(crate) const OBJECT_OFF: ObjectOffsets = ObjectOffsets {
-  assoc_data_len: 0,
-  key_len: 0,
-  lpage_count: 0,
-  tail_page_count: 0,
-};

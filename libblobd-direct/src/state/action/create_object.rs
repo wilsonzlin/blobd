@@ -1,93 +1,67 @@
 use crate::incomplete_token::IncompleteToken;
 use crate::journal::Transaction;
-use crate::object::layout::calc_object_layout;
 use crate::object::layout::ObjectLayout;
-use crate::object::offset::OBJECT_OFF;
+use crate::object::offset::ObjectMetadataOffsets;
+use crate::object::AutoLifecycleObject;
 use crate::object::ObjectMetadata;
+use crate::object::ObjectState;
 use crate::op::create_object::OpCreateObjectOutput;
-use crate::op::OpError;
 use crate::op::OpResult;
 use crate::state::State;
-use crate::util::get_now_sec;
-use bufpool::BUFPOOL;
+use bufpool_fixed::buf::FixedBuf;
 use off64::int::Off64WriteMutInt;
-use off64::u16;
-use off64::usz;
-use off64::Off64WriteMut;
-use tinybuf::TinyBuf;
+use off64::u64;
 
 pub(crate) struct ActionCreateObjectInput {
-  pub key: TinyBuf,
-  pub size: u64,
-  pub assoc_data: TinyBuf,
+  pub raw: FixedBuf,
+  pub offsets: ObjectMetadataOffsets,
+  pub layout: ObjectLayout,
 }
 
 pub(crate) fn action_create_object(
   state: &mut State,
   txn: &mut Transaction,
-  req: ActionCreateObjectInput,
+  ActionCreateObjectInput {
+    mut raw,
+    offsets,
+    layout,
+  }: ActionCreateObjectInput,
 ) -> OpResult<OpCreateObjectOutput> {
-  let key_len = u16!(req.key.len());
+  for i in 0..layout.lpage_count {
+    let lpage_dev_offset = state.data_allocator.allocate(state.pages.lpage_size());
+    raw.write_u48_le_at(offsets.lpage(i), lpage_dev_offset);
+  }
+  for (i, tail_page_size_pow2) in layout.tail_page_sizes_pow2 {
+    let page_dev_offset = state.data_allocator.allocate(1 << tail_page_size_pow2);
+    raw.write_u48_le_at(offsets.tail_page(i), page_dev_offset);
+  }
 
-  let ObjectLayout {
-    lpage_count,
-    tail_page_sizes_pow2,
-  } = calc_object_layout(
-    state.cfg.spage_size_pow2,
-    state.cfg.lpage_size_pow2,
-    req.size,
+  let dev_offset = state.metadata_allocator.allocate(u64!(raw.len()));
+  let obj = ObjectMetadata::new(
+    dev_offset,
+    raw.clone(),
+    offsets,
+    layout.tail_page_sizes_pow2,
   );
+  let object_id = obj.id();
+  let object_size = obj.size();
 
-  let off = OBJECT_OFF
-    .with_key_len(key_len)
-    .with_lpages(lpage_count)
-    .with_tail_pages(tail_page_sizes_pow2.len())
-    .with_assoc_data_len(u16!(req.assoc_data.len()));
-
-  let meta_size = off._total_size();
-  if meta_size > state.cfg.lpage_size() {
-    return Err(OpError::ObjectMetadataTooLarge);
+  let None = state.incomplete_objects.write().insert(object_id, AutoLifecycleObject::new(obj, ObjectState::Incomplete)) else {
+    unreachable!();
   };
 
-  let created_sec = get_now_sec();
-
-  let object_id = state.object_id_serial.next();
-
-  let dev_offset = state.allocator.allocate(meta_size);
-
-  let mut raw = BUFPOOL.allocate_with_zeros(usz!(meta_size));
-  raw.write_u16_le_at(off.key_len(), key_len);
-  raw.write_at(off.key(), &req.key);
-  raw.write_u16_le_at(off.assoc_data_len(), u16!(req.assoc_data.len()));
-  raw.write_at(off.assoc_data(), &req.assoc_data);
-
-  for i in 0..lpage_count {
-    let lpage_dev_offset = state.allocator.allocate(state.cfg.lpage_size());
-    raw.write_u48_le_at(off.lpage(i), lpage_dev_offset);
-  }
-  for (i, tail_page_size_pow2) in tail_page_sizes_pow2 {
-    let page_dev_offset = state.allocator.allocate(1 << tail_page_size_pow2);
-    raw.write_u48_le_at(off.tail_page(i), page_dev_offset);
-  }
-
-  state.incomplete_list.insert(ObjectMetadata {
-    created_sec,
-    dev_offset,
-    id: object_id,
-    size: req.size,
-  });
-
-  state.metrics.incr_object_count(1);
-  state.metrics.incr_object_data_bytes(req.size);
-  state.metrics.incr_object_metadata_bytes(meta_size);
+  state.metrics.incr_object_data_bytes(object_size);
+  // NOTE: this is not the same as `req.raw.len()`, as that's padded to nearest page size.
+  state
+    .metrics
+    .incr_object_metadata_bytes(offsets._total_size());
 
   txn.record(dev_offset, raw);
 
   Ok(OpCreateObjectOutput {
     token: IncompleteToken {
-      bucket_id: state.buckets.bucket_id_for_key(&req.key),
+      partition_idx: state.partition_idx,
       object_id,
-      key_len,
     },
   })
 }

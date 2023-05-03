@@ -1,14 +1,15 @@
-use crate::bucket::BucketsReader;
-use crate::incomplete_list::IncompleteListReader;
+use crate::object::id::ObjectIdSerial;
+use crate::objects::CommittedObjects;
+use crate::objects::IncompleteObjects;
+use crate::pages::Pages;
 use crate::state::StateWorker;
-use crate::uring::Uring;
+use crate::uring::UringBounded;
 
 pub(crate) struct Ctx {
-  pub buckets: BucketsReader,
-  pub device: Uring,
-  pub incomplete_list: IncompleteListReader,
-  pub lpage_size_pow2: u8,
-  pub spage_size_pow2: u8,
+  pub committed_objects: CommittedObjects,
+  pub device: UringBounded,
+  pub incomplete_objects: IncompleteObjects,
+  pub object_id_serial: ObjectIdSerial,
+  pub pages: Pages,
   pub state: StateWorker,
-  pub versioning: bool,
 }

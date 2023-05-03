@@ -1,5 +1,6 @@
-use bufpool::buf::Buf;
-use bufpool::BUFPOOL;
+use crate::journal::Transaction;
+use crate::pages::Pages;
+use bufpool_fixed::buf::FixedBuf;
 use dashmap::DashMap;
 use io_uring::cqueue::Entry as CEntry;
 use io_uring::opcode;
@@ -7,6 +8,7 @@ use io_uring::squeue::Entry as SEntry;
 use io_uring::types;
 use io_uring::IoUring;
 use off64::u32;
+use off64::u64;
 use off64::usz;
 use rustc_hash::FxHasher;
 use signal_future::SignalFuture;
@@ -30,18 +32,18 @@ struct WriteRequest {
   /// Must be a multiple of 4096.
   offset: u64,
   /// Must be a multiple of 4096.
-  data: Buf,
+  data: FixedBuf,
 }
 
 #[derive(Display)]
 enum Request {
   Read {
     req: ReadRequest,
-    res: SignalFutureController<Buf>,
+    res: SignalFutureController<FixedBuf>,
   },
   Write {
     req: WriteRequest,
-    res: SignalFutureController<Buf>,
+    res: SignalFutureController<FixedBuf>,
   },
   Sync {
     res: SignalFutureController<()>,
@@ -51,15 +53,15 @@ enum Request {
 #[derive(Display)]
 enum Pending {
   Read {
-    buf: Buf,
-    res: SignalFutureController<Buf>,
+    buf: FixedBuf,
+    res: SignalFutureController<FixedBuf>,
   },
   Write {
     // This takes ownership of `buf` to prevent it from being dropped while io_uring is working.
     // This will also be returned, so that it can be reused.
-    buf: Buf,
+    buf: FixedBuf,
     len: u32,
-    res: SignalFutureController<Buf>,
+    res: SignalFutureController<FixedBuf>,
   },
   Sync {
     res: SignalFutureController<()>,
@@ -69,9 +71,11 @@ enum Pending {
 // For now, we just use one ring, with one submitter on one thread and one receiver on another thread. While there are possibly faster ways, like one ring per thread and using one thread for both submitting and receiving (to avoid any locking), the actual I/O should be the bottleneck so we can just stick with this for now.
 /// This can be cheaply cloned.
 #[derive(Clone)]
-pub(crate) struct Uring {
+pub(crate) struct UringBounded {
   // We don't use std::sync::mpsc::Sender as it is not Sync, so it's really complicated to use from any async function.
   sender: crossbeam_channel::Sender<Request>,
+  offset: u64,
+  len: u64,
 }
 
 // Sources:
@@ -88,8 +92,9 @@ pub(crate) struct Uring {
 //   - https://github.com/axboe/liburing/issues/129
 //   - https://github.com/axboe/liburing/issues/571#issuecomment-1106480309
 // - Kernel poller: https://unixism.net/loti/tutorial/sq_poll.html
-impl Uring {
-  pub fn new(file: File) -> Self {
+impl UringBounded {
+  /// `offset` must be a multiple of the underlying device's sector size.
+  pub fn new(file: File, offset: u64, len: u64, pages: Pages) -> Self {
     let (sender, receiver) = crossbeam_channel::unbounded::<Request>();
     let pending: Arc<DashMap<u64, Pending, BuildHasherDefault<FxHasher>>> = Default::default();
     let ring = IoUring::<SEntry, CEntry>::builder()
@@ -109,6 +114,7 @@ impl Uring {
     let ring = Arc::new(ring);
     // Submission thread.
     thread::spawn({
+      let pages = pages.clone();
       let pending = pending.clone();
       let ring = ring.clone();
       move || {
@@ -119,9 +125,7 @@ impl Uring {
           next_id += 1;
           let entry = match msg {
             Request::Read { req, res } => {
-              assert_eq!(req.offset % 4096, 0);
-              assert_eq!(req.len % 4096, 0);
-              let buf = BUFPOOL.allocate(usz!(req.len));
+              let buf = pages.allocate_with_zeros(u64!(req.len));
               // Using `as_mut_ptr` would require a mutable borrow.
               let ptr = buf.as_ptr() as *mut u8;
               // Insert before submitting. This takes ownership of `buf` which will ensure it doesn't get dropped while waiting for io_uring.
@@ -132,8 +136,6 @@ impl Uring {
                 .user_data(id)
             }
             Request::Write { req, res } => {
-              assert_eq!(req.offset % 4096, 0);
-              assert_eq!(req.data.len() % 4096, 0);
               // Using `as_mut_ptr` would require a mutable borrow.
               let ptr = req.data.as_ptr() as *mut u8;
               // Insert before submitting. This takes ownership of `buf` which will ensure it doesn't get dropped while waiting for io_uring.
@@ -179,11 +181,12 @@ impl Uring {
           let id = e.user_data();
           let p = pending.remove(&id).unwrap().1;
           match p {
-            Pending::Read { mut buf, res } => {
+            Pending::Read { buf, res } => {
               if e.result() < 0 {
                 panic!("{:?}", io::Error::from_raw_os_error(-e.result()));
               };
-              unsafe { buf.set_len(usz!(e.result())) };
+              // We may have read fewer bytes.
+              assert_eq!(usz!(e.result()), buf.len());
               res.signal(buf);
             }
             Pending::Write { res, len, buf } => {
@@ -205,16 +208,36 @@ impl Uring {
       }
     });
 
-    Self { sender }
+    Self {
+      sender,
+      offset,
+      len,
+    }
   }
 
-  pub async fn read(&self, offset: u64, len: u64) -> Buf {
+  /// Length of the underlying file range. Note that this may not be the same as the actual file length.
+  pub fn len(&self) -> u64 {
+    self.len
+  }
+
+  /// `offset` must be a multiple of the underlying device's sector size.
+  pub fn bounded(&self, offset: u64, len: u64) -> UringBounded {
+    Self {
+      sender: self.sender.clone(),
+      offset: self.offset + offset,
+      len,
+    }
+  }
+
+  /// `offset` and `len` must be multiples of the underlying device's sector size.
+  pub async fn read(&self, offset: u64, len: u64) -> FixedBuf {
+    assert!(offset + len <= self.len);
     let (fut, fut_ctl) = SignalFuture::new();
     self
       .sender
       .send(Request::Read {
         req: ReadRequest {
-          offset,
+          offset: self.offset + offset,
           len: u32!(len),
         },
         res: fut_ctl,
@@ -223,17 +246,27 @@ impl Uring {
     fut.await
   }
 
+  /// `offset` and `data.len()` must be multiples of the underlying device's sector size.
   /// Returns the original `data` so that it can be reused, if desired.
-  pub async fn write(&self, offset: u64, data: Buf) -> Buf {
+  pub async fn write(&self, offset: u64, data: FixedBuf) -> FixedBuf {
+    assert!(offset + u64!(data.len()) <= self.len);
     let (fut, fut_ctl) = SignalFuture::new();
     self
       .sender
       .send(Request::Write {
-        req: WriteRequest { offset, data },
+        req: WriteRequest {
+          offset: self.offset + offset,
+          data,
+        },
         res: fut_ctl,
       })
       .unwrap();
     fut.await
+  }
+
+  pub fn record_in_transaction(&self, txn: &mut Transaction, offset: u64, data: FixedBuf) {
+    assert!(offset + u64!(data.len()) <= self.len);
+    txn.record(self.offset + offset, data);
   }
 
   /// Even when using direct I/O, `fsync` is still necessary, as it ensures the device itself has flushed any internal caches.

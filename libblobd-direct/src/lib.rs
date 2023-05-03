@@ -1,15 +1,12 @@
 #![allow(non_snake_case)]
 
-use crate::allocator::Allocator;
-use crate::bucket::BucketsWriter;
-use crate::incomplete_list::IncompleteListWriter;
-use crate::object::id::ObjectIdSerial;
-use crate::stream::Stream;
-use crate::util::ceil_pow2;
-use ctx::Ctx;
-use futures::join;
-use journal::Journal;
+use crate::pages::Pages;
+use crate::partition::PartitionLoader;
+use futures::future::join_all;
+use futures::stream::iter;
+use futures::StreamExt;
 use metrics::BlobdMetrics;
+use off64::usz;
 use op::commit_object::op_commit_object;
 use op::commit_object::OpCommitObjectInput;
 use op::commit_object::OpCommitObjectOutput;
@@ -29,212 +26,106 @@ use op::write_object::op_write_object;
 use op::write_object::OpWriteObjectInput;
 use op::write_object::OpWriteObjectOutput;
 use op::OpResult;
-use state::ObjectsPendingDrop;
-use state::State;
-use state::StateWorker;
+use partition::Partition;
 use std::error::Error;
-use std::fs::File;
-use std::sync::atomic::AtomicU64;
+use std::path::PathBuf;
 use std::sync::Arc;
-use stream::StreamEvent;
-use stream::StreamEventExpiredError;
-use tracing::info;
-use uring::Uring;
 
 pub mod allocator;
-pub mod bucket;
 pub mod ctx;
-pub mod incomplete_list;
 pub mod incomplete_token;
 pub mod journal;
 pub mod metrics;
 pub mod object;
+pub mod objects;
 pub mod op;
-pub mod persisted_collection;
+pub mod pages;
+pub mod partition;
+pub mod ring_buf;
 pub mod state;
 pub mod stream;
+pub mod unaligned_reader;
 pub mod uring;
 pub mod util;
 
-/**
-
-DEVICE
-======
-
-Structure
----------
-
-metrics
-object_id_serial
-stream
-incomplete_list (first page)
-buckets (first page)
-allocator (initial bitmap container pages)
-journal // Placed here to make use of otherwise unused space due to heap alignment.
-heap
-
-**/
+#[derive(Clone, Debug)]
+pub struct BlobdCfgPartition {
+  /// This file will be opened with O_RDWR | O_DIRECT.
+  pub path: PathBuf,
+  /// This must be a multiple of the lpage size.
+  pub offset: u64,
+  /// This must be a multiple of the lpage size.
+  pub len: u64,
+}
 
 #[derive(Clone, Debug)]
 pub struct BlobdCfg {
+  /// This must be at least two.
   pub event_stream_spage_capacity: u64,
+  /// This should be at least 1 GiB; the more the better.
+  pub journal_size_min: u64,
   pub lpage_size_pow2: u8,
+  /// The amount of bytes to reserve for storing the metadata of all objects. This can be expanded online later on, but only up to the leftmost object data allocation, so it's worth setting this to a high value. This must be a multiple of the lpage size.
+  pub object_metadata_reserved_space: u64,
+  /// The amount of partitions must be a power of two.
+  pub partitions: Vec<BlobdCfgPartition>,
+  /// This must be much greater than zero.
   pub reap_objects_after_secs: u64,
   /// It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
   pub spage_size_pow2: u8,
-  pub versioning: bool,
-}
-
-impl BlobdCfg {
-  pub fn lpage_size(&self) -> u64 {
-    1 << self.lpage_size_pow2
-  }
-
-  pub fn spage_size(&self) -> u64 {
-    1 << self.spage_size_pow2
-  }
 }
 
 pub struct BlobdLoader {
-  device: Uring,
-  device_size: Arc<AtomicU64>, // To allow online resizing, this must be atomically mutable at any time.
   cfg: BlobdCfg,
-  journal: Journal,
-
-  metrics_dev_offset: u64,
-  object_id_serial_dev_offset: u64,
-  stream_dev_offset: u64,
-  incomplete_list_dev_offset: u64,
-  buckets_dev_offset: u64,
-  allocator_dev_offset: u64,
-  heap_dev_offset: u64,
+  metrics: Arc<BlobdMetrics>,
+  partitions: Vec<PartitionLoader>,
 }
 
 impl BlobdLoader {
-  pub fn new(device: File, device_size: u64, cfg: BlobdCfg) -> Self {
+  pub fn new(cfg: BlobdCfg) -> Self {
+    assert!(cfg.event_stream_spage_capacity >= 2);
     assert!(cfg.reap_objects_after_secs > 0);
 
-    const JOURNAL_SIZE_MIN: u64 = 1024 * 1024 * 1024 * 1;
-    let allocator_size = Allocator::initial_bitmap_container_page_count(
-      device_size,
-      cfg.spage_size_pow2,
-      cfg.lpage_size_pow2,
-    ) * cfg.spage_size();
-
-    let device = Uring::new(device);
-
-    let metrics_dev_offset = 0;
-    let object_id_serial_dev_offset = metrics_dev_offset + cfg.spage_size();
-    let stream_dev_offset = object_id_serial_dev_offset + cfg.spage_size();
-    let incomplete_list_dev_offset = stream_dev_offset + cfg.spage_size();
-    let buckets_dev_offset = incomplete_list_dev_offset + cfg.spage_size();
-    let allocator_dev_offset = buckets_dev_offset + cfg.spage_size();
-    let journal_dev_offset = buckets_dev_offset + allocator_size;
-    let min_reserved_space = journal_dev_offset + JOURNAL_SIZE_MIN;
-
-    // `heap_dev_offset` is equivalent to the reserved size.
-    let heap_dev_offset = ceil_pow2(min_reserved_space, cfg.lpage_size_pow2);
-    let journal_size = heap_dev_offset - journal_dev_offset;
-
-    info!(
-      device_size,
-      journal_size,
-      reserved_size = heap_dev_offset,
-      lpage_size = 1 << cfg.lpage_size_pow2,
-      spage_size = 1 << cfg.spage_size_pow2,
-      "init",
-    );
-
-    let journal = Journal::new(
-      device.clone(),
-      journal_dev_offset,
-      journal_size,
-      cfg.spage_size_pow2,
-    );
+    let pages = Pages::new(cfg.spage_size_pow2, cfg.lpage_size_pow2);
+    let metrics = Arc::new(BlobdMetrics::default());
+    let mut partitions = Vec::new();
+    for i in 0..cfg.partitions.len() {
+      partitions.push(PartitionLoader::new(
+        cfg.clone(),
+        i,
+        pages.clone(),
+        metrics.clone(),
+      ));
+    }
 
     Self {
-      allocator_dev_offset,
-      buckets_dev_offset,
       cfg,
-      device_size: Arc::new(AtomicU64::new(device_size)),
-      device,
-      heap_dev_offset,
-      journal,
-      incomplete_list_dev_offset,
-      metrics_dev_offset,
-      object_id_serial_dev_offset,
-      stream_dev_offset,
+      metrics,
+      partitions,
     }
   }
 
   pub async fn format(&self) {
-    let dev = &self.device;
-    join! {
-      BlobdMetrics::format_device(dev.clone(), self.metrics_dev_offset, self.cfg.spage_size()),
-      ObjectIdSerial::format_device(dev.clone(), self.object_id_serial_dev_offset, self.cfg.spage_size()),
-      Stream::format_device(dev.clone(), self.stream_dev_offset, self.stream_dev_offset + self.cfg.spage_size(), self.cfg.event_stream_spage_capacity, self.cfg.spage_size()),
-      IncompleteListWriter::format_device(dev.clone(), self.incomplete_list_dev_offset, self.cfg.spage_size()),
-      BucketsWriter::format_device(dev.clone(), self.buckets_dev_offset, self.cfg.spage_size()),
-      Allocator::format_device(dev.clone(), self.device_size.load(std::sync::atomic::Ordering::Relaxed), self.cfg.spage_size_pow2, self.cfg.lpage_size_pow2, self.allocator_dev_offset),
-      self.journal.format_device(),
-    };
-    dev.sync().await;
+    iter(&self.partitions)
+      .for_each_concurrent(None, |p| async move {
+        p.format().await;
+      })
+      .await;
   }
 
   pub async fn load(self) -> Blobd {
-    self.journal.recover().await;
-
-    let dev = &self.device;
-
-    let objects_pending_drop = Arc::new(ObjectsPendingDrop::default());
-
-    // Ensure journal has been recovered first before loading any other data.
-    let metrics = Arc::new(
-      BlobdMetrics::load_from_device(dev.clone(), self.metrics_dev_offset, self.cfg.spage_size())
-        .await,
-    );
-    let (
-      object_id_serial,
-      stream,
-      (incomplete_list_reader, incomplete_list_writer),
-      (buckets_reader, buckets_writer),
-      allocator,
-    ) = join! {
-      ObjectIdSerial::load_from_device(dev.clone(), self.object_id_serial_dev_offset, self.cfg.spage_size()),
-      Stream::load_from_device(dev.clone(), self.stream_dev_offset, self.stream_dev_offset + self.cfg.spage_size(), self.cfg.event_stream_spage_capacity, self.cfg.spage_size()),
-      IncompleteListWriter::load_from_device(dev.clone(), self.incomplete_list_dev_offset, self.cfg.spage_size(), self.cfg.reap_objects_after_secs, objects_pending_drop.clone()),
-      BucketsWriter::load_from_device(dev.clone(), self.buckets_dev_offset, self.cfg.spage_size(), &objects_pending_drop),
-      Allocator::load_from_device(dev.clone(), self.allocator_dev_offset, self.heap_dev_offset, self.cfg.spage_size_pow2, self.cfg.lpage_size_pow2, metrics.clone()),
-    };
-    let stream = Arc::new(parking_lot::RwLock::new(stream));
-
-    let state = State {
-      allocator,
-      buckets: buckets_writer,
-      cfg: self.cfg.clone(),
-      incomplete_list: incomplete_list_writer,
-      metrics: metrics.clone(),
-      object_id_serial,
-      stream: stream.clone(),
-    };
-
-    let state_worker = StateWorker::start(state, self.journal, objects_pending_drop.clone());
-
-    let ctx = Arc::new(Ctx {
-      buckets: buckets_reader,
-      device: dev.clone(),
-      incomplete_list: incomplete_list_reader,
-      lpage_size_pow2: self.cfg.lpage_size_pow2,
-      spage_size_pow2: self.cfg.spage_size_pow2,
-      state: state_worker,
-      versioning: self.cfg.versioning,
-    });
+    let partitions = join_all(
+      self
+        .partitions
+        .into_iter()
+        .map(|p| async move { p.load().await }),
+    )
+    .await;
 
     Blobd {
       cfg: self.cfg,
-      ctx: ctx.clone(),
-      metrics: metrics.clone(),
-      stream: stream.clone(),
+      metrics: self.metrics,
+      partitions: Arc::new(partitions),
     }
   }
 }
@@ -242,11 +133,11 @@ impl BlobdLoader {
 #[derive(Clone)]
 pub struct Blobd {
   cfg: BlobdCfg,
-  ctx: Arc<Ctx>,
   metrics: Arc<BlobdMetrics>,
-  stream: Arc<parking_lot::RwLock<Stream>>,
+  partitions: Arc<Vec<Partition>>,
 }
 
+// TODO get_stream_event
 impl Blobd {
   // Provide getter to prevent mutating BlobdCfg.
   pub fn cfg(&self) -> &BlobdCfg {
@@ -257,34 +148,55 @@ impl Blobd {
     &self.metrics
   }
 
-  pub async fn get_stream_event(
-    &self,
-    id: u64,
-  ) -> Result<Option<StreamEvent>, StreamEventExpiredError> {
-    self.stream.read().get_event(id)
+  fn get_partition_by_object_key(&self, key: &[u8]) -> &Partition {
+    let hash = twox_hash::xxh3::hash64(key);
+    let idx = usz!(hash) % self.partitions.len();
+    &self.partitions[idx]
   }
 
   pub async fn commit_object(&self, input: OpCommitObjectInput) -> OpResult<OpCommitObjectOutput> {
-    op_commit_object(self.ctx.clone(), input).await
+    op_commit_object(
+      self.partitions[input.incomplete_token.partition_idx]
+        .ctx
+        .clone(),
+      input,
+    )
+    .await
   }
 
   pub async fn create_object(&self, input: OpCreateObjectInput) -> OpResult<OpCreateObjectOutput> {
-    op_create_object(self.ctx.clone(), input).await
+    op_create_object(
+      self.get_partition_by_object_key(&input.key).ctx.clone(),
+      input,
+    )
+    .await
   }
 
   pub async fn delete_object(&self, input: OpDeleteObjectInput) -> OpResult<OpDeleteObjectOutput> {
-    op_delete_object(self.ctx.clone(), input).await
+    op_delete_object(
+      self.get_partition_by_object_key(&input.key).ctx.clone(),
+      input,
+    )
+    .await
   }
 
   pub async fn inspect_object(
     &self,
     input: OpInspectObjectInput,
   ) -> OpResult<OpInspectObjectOutput> {
-    op_inspect_object(self.ctx.clone(), input).await
+    op_inspect_object(
+      self.get_partition_by_object_key(&input.key).ctx.clone(),
+      input,
+    )
+    .await
   }
 
   pub async fn read_object(&self, input: OpReadObjectInput) -> OpResult<OpReadObjectOutput> {
-    op_read_object(self.ctx.clone(), input).await
+    op_read_object(
+      self.get_partition_by_object_key(&input.key).ctx.clone(),
+      input,
+    )
+    .await
   }
 
   pub async fn write_object<
@@ -294,6 +206,12 @@ impl Blobd {
     &self,
     input: OpWriteObjectInput<D, S>,
   ) -> OpResult<OpWriteObjectOutput> {
-    op_write_object(self.ctx.clone(), input).await
+    op_write_object(
+      self.partitions[input.incomplete_token.partition_idx]
+        .ctx
+        .clone(),
+      input,
+    )
+    .await
   }
 }

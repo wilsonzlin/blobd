@@ -1,7 +1,11 @@
 use crate::journal::Transaction;
-use crate::uring::Uring;
-use bufpool::buf::Buf;
+use crate::pages::Pages;
+use crate::ring_buf::BufOrSlice;
+use crate::ring_buf::RingBuf;
+use crate::ring_buf::RingBufItem;
+use crate::uring::UringBounded;
 use bufpool::BUFPOOL;
+use itertools::Itertools;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use off64::int::Off64ReadInt;
@@ -11,11 +15,10 @@ use off64::u64;
 use off64::usz;
 use off64::Off64Read;
 use off64::Off64WriteMut;
-use std::collections::VecDeque;
+use rustc_hash::FxHashSet;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
-use std::mem::replace;
 use struct_name::StructName;
 use struct_name_macro::StructName;
 use tinybuf::TinyBuf;
@@ -35,28 +38,7 @@ We must have strictly sequential event IDs, and we must assign and store them:
 
 The value of `virtual_head` represents the head position in the ring buffer, as well as that entry's event ID. This saves us from storing a sequential event ID with every event.
 
-Structure
----------
-
-## Metadata page:
-
-u64 virtual_tail_page // The page number of the most recently written/updated page.
-u64 virtual_tail_id // The amount of events written/created over all time (only increasing).
-
-## Data page:
-
-{
-  u8 type
-  u56 timestamp_ms
-  u64 object_id
-  u16 key_len
-  u8[] key
-}[] events
-
 **/
-
-const METADATA_OFFSETOF_VIRTUAL_TAIL_PAGE: u64 = 0;
-const METADATA_OFFSETOF_VIRTUAL_LEN: u64 = METADATA_OFFSETOF_VIRTUAL_TAIL_PAGE + 8;
 
 const STREVT_OFFSETOF_TYPE: u64 = 0;
 const STREVT_OFFSETOF_TIMESTAMP_MS: u64 = STREVT_OFFSETOF_TYPE + 1;
@@ -76,11 +58,45 @@ pub enum StreamEventType {
 }
 
 #[derive(Clone, Debug)]
-pub struct StreamEvent {
+pub struct StreamEventOwned {
   pub typ: StreamEventType,
   pub timestamp_ms: u64,
   pub object_id: u64,
   pub key: TinyBuf,
+}
+
+pub struct StreamEvent<'a> {
+  raw: BufOrSlice<'a>,
+}
+
+impl<'a> StreamEvent<'a> {
+  pub fn typ(&self) -> StreamEventType {
+    StreamEventType::from_u8(self.raw[usz!(STREVT_OFFSETOF_TYPE)]).unwrap()
+  }
+
+  pub fn timestamp_ms(&self) -> u64 {
+    self.raw.read_u56_le_at(STREVT_OFFSETOF_TIMESTAMP_MS)
+  }
+
+  pub fn object_id(&self) -> u64 {
+    self.raw.read_u64_le_at(STREVT_OFFSETOF_OBJECT_ID)
+  }
+
+  pub fn key(&self) -> &[u8] {
+    self.raw.read_at(
+      STREVT_OFFSETOF_KEY,
+      self.raw.read_u16_le_at(STREVT_OFFSETOF_KEY_LEN).into(),
+    )
+  }
+
+  pub fn to_owned(&self) -> StreamEventOwned {
+    StreamEventOwned {
+      typ: self.typ(),
+      timestamp_ms: self.timestamp_ms(),
+      object_id: self.object_id(),
+      key: TinyBuf::from_slice(self.key()),
+    }
+  }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, StructName)]
@@ -94,225 +110,85 @@ impl Display for StreamEventExpiredError {
 
 impl Error for StreamEventExpiredError {}
 
-#[derive(Default, Debug)]
-pub(crate) struct CommittedEvents {
-  pop_old_last_page: bool,
-  new_pages: Vec<Buf>,
-  new_positions: Vec<(u64, u64)>,
-}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct StreamEventId(RingBufItem);
 
 pub(crate) struct Stream {
-  metadata_dev_offset: u64,
-  data_dev_offset: u64,
-  data_page_cap: u64,
-  spage_size: u64,
-
-  virtual_head_page: u64,
-  pages: VecDeque<Buf>,
-  virtual_head_id: u64,
-  // (virtual_page_number, offset_in_page).
-  positions: VecDeque<(u64, u64)>,
-
-  pending: VecDeque<StreamEvent>,
+  dev: UringBounded,
+  pages: Pages,
+  ring: RingBuf,
+  pending: FxHashSet<StreamEventId>,
 }
 
 impl Stream {
-  pub async fn load_from_device(
-    dev: Uring,
-    metadata_dev_offset: u64,
-    data_dev_offset: u64,
-    data_page_cap: u64,
-    spage_size: u64,
-  ) -> Self {
-    assert!(data_page_cap >= 1);
-
-    let raw_meta = dev.read(metadata_dev_offset, spage_size).await;
-    let virtual_tail_page = raw_meta.read_u64_le_at(METADATA_OFFSETOF_VIRTUAL_TAIL_PAGE);
-    let virtual_len = raw_meta.read_u64_le_at(METADATA_OFFSETOF_VIRTUAL_LEN);
-
-    let mut pages = VecDeque::new();
-    let mut positions = VecDeque::new();
-
-    let virtual_head_page = virtual_tail_page.saturating_sub(data_page_cap - 1);
-    for vp in virtual_head_page..=virtual_tail_page {
-      let physical_dev_offset = data_dev_offset + (vp % data_page_cap) * spage_size;
-      let raw = dev.read(physical_dev_offset, spage_size).await;
-      let mut offset_within_page = 0;
-      while offset_within_page < u64!(raw.len()) {
-        let typ_raw = raw[usz!(offset_within_page + STREVT_OFFSETOF_TYPE)];
-        if typ_raw == 0 {
-          break;
-        };
-        let key_len = raw.read_u16_le_at(offset_within_page + STREVT_OFFSETOF_KEY_LEN);
-        positions.push_back((vp, offset_within_page));
-        offset_within_page += STREVT_SIZE(key_len);
-      }
-      pages.push_back(raw);
-    }
-    let virtual_head_id = virtual_len - u64!(positions.len());
+  pub async fn load_from_device(dev: UringBounded, pages: Pages) -> Self {
+    let raw = dev.read(0, dev.len()).await;
+    let (meta, data) = raw.split_at(usz!(pages.spage_size()));
+    let virtual_tail = meta.read_u64_le_at(0);
+    let ring = RingBuf::load(usz!(pages.spage_size()), usz!(virtual_tail), data.to_vec());
 
     Self {
-      data_dev_offset,
-      data_page_cap,
-      metadata_dev_offset,
+      dev,
       pages,
       pending: Default::default(),
-      positions,
-      spage_size,
-      virtual_head_id,
-      virtual_head_page,
+      ring,
     }
   }
 
-  pub async fn format_device(
-    dev: Uring,
-    metadata_dev_offset: u64,
-    data_dev_offset: u64,
-    _data_page_cap: u64,
-    spage_size: u64,
-  ) {
+  pub async fn format_device(dev: UringBounded, pages: Pages) {
     dev
-      .write(
-        metadata_dev_offset,
-        BUFPOOL.allocate_with_zeros(usz!(spage_size)),
-      )
-      .await;
-    dev
-      .write(
-        data_dev_offset,
-        BUFPOOL.allocate_with_zeros(usz!(spage_size)),
-      )
+      .write(dev.len(), pages.allocate_with_zeros(dev.len()))
       .await;
   }
 
-  pub fn get_event(&self, id: u64) -> Result<Option<StreamEvent>, StreamEventExpiredError> {
-    if id < self.virtual_head_id {
-      return Err(StreamEventExpiredError);
-    };
-    let idx = id - self.virtual_head_id;
-    let Some((virtual_page_number, offset_in_page)) = self.positions.get(usz!(idx)) else {
+  pub fn get_event(
+    &self,
+    id: StreamEventId,
+  ) -> Result<Option<StreamEvent>, StreamEventExpiredError> {
+    if self.pending.contains(&id) {
       return Ok(None);
     };
-    // The page must exist.
-    let page = self
-      .pages
-      .get(usz!(virtual_page_number - self.virtual_head_page))
-      .unwrap();
-    let typ = StreamEventType::from_u8(page[usz!(offset_in_page + STREVT_OFFSETOF_TYPE)]).unwrap();
-    let timestamp_ms = page.read_u56_le_at(offset_in_page + STREVT_OFFSETOF_TIMESTAMP_MS);
-    let object_id = page.read_u64_le_at(offset_in_page + STREVT_OFFSETOF_OBJECT_ID);
-    let key_len = page.read_u16_le_at(offset_in_page + STREVT_OFFSETOF_KEY_LEN);
-    let key =
-      TinyBuf::from_slice(page.read_at(offset_in_page + STREVT_OFFSETOF_KEY, key_len.into()));
-    Ok(Some(StreamEvent {
-      typ,
-      timestamp_ms,
-      object_id,
-      key,
-    }))
-  }
 
-  // This event will be written to the device, but won't be available/visible (i.e. retrievable via `get_event`) until it's been written to the device and synced.
-  pub fn add_event_pending_commit(&mut self, e: StreamEvent) {
-    self.pending.push_back(e);
-  }
-
-  /// How to use: call `commit` to generate data to write to device using journal and return an opaque value. After it's been written and synced, call `sync` on the returned value to make pending events available.
-  /// WARNING: `sync` must be called in the same order as `commit`, consuming the `commit` return values in order. However, it is safe to call `commit` multiple times before or in between `sync` calls, so long as the previous requirement is upheld.
-  pub fn commit(&mut self, txn: &mut Transaction) -> CommittedEvents {
-    let mut committed = CommittedEvents::default();
-    if self.pending.is_empty() {
-      return committed;
+    let Some(raw) = self.ring.get(id.0) else {
+      return Err(StreamEventExpiredError);
     };
 
-    // TODO Don't pop old last page if not enough free space for first pending event.
-    let (pop_old_last_page, mut buf, mut virtual_page_number, mut offset_within_page) =
-      match self.pages.back() {
-        Some(buf) => {
-          let virtual_page_number = self.virtual_head_page + u64!(self.pages.len()) - 1;
-          let last_pos = self.positions.back().unwrap();
-          assert_eq!(last_pos.0, virtual_page_number);
-          let offset_within_page = last_pos.1;
-          assert!(offset_within_page > 0);
-          (true, buf.clone(), virtual_page_number, offset_within_page)
-        }
-        None => {
-          let buf = BUFPOOL.allocate_with_zeros(usz!(self.spage_size));
-          (false, buf, self.virtual_head_page, 0)
-        }
-      };
-    committed.pop_old_last_page = pop_old_last_page;
+    let e = StreamEvent { raw };
 
-    for e in self.pending.drain(..) {
-      if offset_within_page + STREVT_SIZE(u16!(e.key.len())) > self.spage_size {
-        // We've run out of space on the current page.
-        let old_buf = replace(&mut buf, BUFPOOL.allocate_with_zeros(usz!(self.spage_size)));
-        txn.record(
-          self.data_dev_offset + (virtual_page_number % self.data_page_cap) * self.spage_size,
-          old_buf.clone(),
-        );
-        committed.new_pages.push(old_buf);
-        virtual_page_number += 1;
-        offset_within_page = 0;
-      }
-      committed
-        .new_positions
-        .push((virtual_page_number, offset_within_page));
-      buf[usz!(offset_within_page + STREVT_OFFSETOF_TYPE)] = e.typ as u8;
-      buf.write_u56_le_at(
-        offset_within_page + STREVT_OFFSETOF_TIMESTAMP_MS,
-        e.timestamp_ms,
-      );
-      buf.write_u64_le_at(offset_within_page + STREVT_OFFSETOF_OBJECT_ID, e.object_id);
-      buf.write_u16_le_at(
-        offset_within_page + STREVT_OFFSETOF_KEY_LEN,
-        u16!(e.key.len()),
-      );
-      buf.write_at(offset_within_page + STREVT_OFFSETOF_KEY, e.key.as_slice());
-      offset_within_page += STREVT_SIZE(u16!(e.key.len()));
-    }
-    // Commit last page.
-    txn.record(
-      self.data_dev_offset + (virtual_page_number % self.data_page_cap) * self.spage_size,
-      buf.clone(),
-    );
-    committed.new_pages.push(buf);
-
-    // Commit metadata.
-    let mut raw_meta = BUFPOOL.allocate_with_zeros(usz!(self.spage_size));
-    raw_meta.write_u64_le_at(METADATA_OFFSETOF_VIRTUAL_TAIL_PAGE, virtual_page_number);
-    raw_meta.write_u64_le_at(
-      METADATA_OFFSETOF_VIRTUAL_LEN,
-      self.virtual_head_id + u64!(self.positions.len() + committed.new_positions.len()),
-    );
-    txn.record(self.metadata_dev_offset, raw_meta);
-
-    committed
+    Ok(Some(e))
   }
 
-  pub fn sync(&mut self, committed: CommittedEvents) {
-    if committed.pop_old_last_page {
-      self.pages.pop_back();
-    };
-    for e in committed.new_pages {
-      self.pages.push_back(e);
+  /// This event will be written to the device, but won't be available/visible (i.e. retrievable via `get_event`) until it's been durably written to the device.
+  pub fn add_event_pending_commit(&mut self, e: StreamEventOwned) {
+    let mut raw = BUFPOOL.allocate_with_zeros(usz!(STREVT_SIZE(u16!(e.key.len()))));
+    raw[usz!(STREVT_OFFSETOF_TYPE)] = e.typ as u8;
+    raw.write_u56_le_at(STREVT_OFFSETOF_TIMESTAMP_MS, e.timestamp_ms);
+    raw.write_u64_le_at(STREVT_OFFSETOF_OBJECT_ID, e.object_id);
+    raw.write_u16_le_at(STREVT_OFFSETOF_KEY_LEN, u16!(e.key.len()));
+    raw.write_at(STREVT_OFFSETOF_KEY, &e.key);
+    self.ring.push(&raw);
+  }
+
+  /// Provide the return value to `make_available` once durably written to the device.
+  pub fn commit(&mut self, txn: &mut Transaction) -> Vec<StreamEventId> {
+    let mut meta = self.pages.allocate_with_zeros(self.pages.spage_size());
+    meta.write_u64_le_at(0, u64!(self.ring.get_virtual_tail()));
+    self.dev.record_in_transaction(txn, 0, meta);
+
+    for (offset, data_slice) in self.ring.commit() {
+      let mut data = self.pages.allocate_with_zeros(self.pages.spage_size());
+      data.copy_from_slice(data_slice);
+      // The first page is reserved for metadata, so all data pages are shifted down by one page.
+      self
+        .dev
+        .record_in_transaction(txn, u64!(offset) + self.pages.spage_size(), data);
     }
-    for e in committed.new_positions {
-      self.positions.push_back(e);
-    }
-    while u64!(self.pages.len()) > self.data_page_cap {
-      let virtual_page_number = self.virtual_head_page;
-      self.pages.pop_front().unwrap();
-      self.virtual_head_page += 1;
-      while self
-        .positions
-        .front()
-        .filter(|p| p.0 == virtual_page_number)
-        .is_some()
-      {
-        self.positions.pop_front().unwrap();
-        self.virtual_head_id += 1;
-      }
+    self.pending.drain().collect_vec()
+  }
+
+  pub fn make_available(&mut self, pending: &[StreamEventId]) {
+    for id in pending {
+      assert!(self.pending.remove(id));
     }
   }
 }
