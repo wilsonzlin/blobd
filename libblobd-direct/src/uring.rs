@@ -1,6 +1,6 @@
 use crate::journal::Transaction;
 use crate::pages::Pages;
-use bufpool_fixed::buf::FixedBuf;
+use bufpool::buf::Buf;
 use dashmap::DashMap;
 use io_uring::cqueue::Entry as CEntry;
 use io_uring::opcode;
@@ -22,28 +22,24 @@ use std::thread;
 use strum::Display;
 
 struct ReadRequest {
-  /// Must be a multiple of 4096.
-  offset: u64,
-  /// Must be a multiple of 4096.
+  abs_offset: u64,
   len: u32,
 }
 
 struct WriteRequest {
-  /// Must be a multiple of 4096.
-  offset: u64,
-  /// Must be a multiple of 4096.
-  data: FixedBuf,
+  abs_offset: u64,
+  data: Buf,
 }
 
 #[derive(Display)]
 enum Request {
   Read {
     req: ReadRequest,
-    res: SignalFutureController<FixedBuf>,
+    res: SignalFutureController<Buf>,
   },
   Write {
     req: WriteRequest,
-    res: SignalFutureController<FixedBuf>,
+    res: SignalFutureController<Buf>,
   },
   Sync {
     res: SignalFutureController<()>,
@@ -53,15 +49,15 @@ enum Request {
 #[derive(Display)]
 enum Pending {
   Read {
-    buf: FixedBuf,
-    res: SignalFutureController<FixedBuf>,
+    buf: Buf,
+    res: SignalFutureController<Buf>,
   },
   Write {
     // This takes ownership of `buf` to prevent it from being dropped while io_uring is working.
     // This will also be returned, so that it can be reused.
-    buf: FixedBuf,
+    buf: Buf,
     len: u32,
-    res: SignalFutureController<FixedBuf>,
+    res: SignalFutureController<Buf>,
   },
   Sync {
     res: SignalFutureController<()>,
@@ -131,7 +127,7 @@ impl UringBounded {
               // Insert before submitting. This takes ownership of `buf` which will ensure it doesn't get dropped while waiting for io_uring.
               pending.insert(id, Pending::Read { buf, res });
               opcode::Read::new(types::Fixed(0), ptr, req.len)
-                .offset(req.offset)
+                .offset(req.abs_offset)
                 .build()
                 .user_data(id)
             }
@@ -146,7 +142,7 @@ impl UringBounded {
                 buf: req.data,
               });
               opcode::Write::new(types::Fixed(0), ptr, len)
-                .offset(req.offset)
+                .offset(req.abs_offset)
                 .build()
                 .user_data(id)
             }
@@ -230,14 +226,14 @@ impl UringBounded {
   }
 
   /// `offset` and `len` must be multiples of the underlying device's sector size.
-  pub async fn read(&self, offset: u64, len: u64) -> FixedBuf {
+  pub async fn read(&self, offset: u64, len: u64) -> Buf {
     assert!(offset + len <= self.len);
     let (fut, fut_ctl) = SignalFuture::new();
     self
       .sender
       .send(Request::Read {
         req: ReadRequest {
-          offset: self.offset + offset,
+          abs_offset: self.offset + offset,
           len: u32!(len),
         },
         res: fut_ctl,
@@ -248,14 +244,14 @@ impl UringBounded {
 
   /// `offset` and `data.len()` must be multiples of the underlying device's sector size.
   /// Returns the original `data` so that it can be reused, if desired.
-  pub async fn write(&self, offset: u64, data: FixedBuf) -> FixedBuf {
+  pub async fn write(&self, offset: u64, data: Buf) -> Buf {
     assert!(offset + u64!(data.len()) <= self.len);
     let (fut, fut_ctl) = SignalFuture::new();
     self
       .sender
       .send(Request::Write {
         req: WriteRequest {
-          offset: self.offset + offset,
+          abs_offset: self.offset + offset,
           data,
         },
         res: fut_ctl,
@@ -264,7 +260,7 @@ impl UringBounded {
     fut.await
   }
 
-  pub fn record_in_transaction(&self, txn: &mut Transaction, offset: u64, data: FixedBuf) {
+  pub fn record_in_transaction(&self, txn: &mut Transaction, offset: u64, data: Buf) {
     assert!(offset + u64!(data.len()) <= self.len);
     txn.record(self.offset + offset, data);
   }

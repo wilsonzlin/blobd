@@ -2,6 +2,7 @@
 
 use crate::pages::Pages;
 use crate::partition::PartitionLoader;
+use crate::util::mod_pow2;
 use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
@@ -60,8 +61,10 @@ pub struct BlobdCfgPartition {
 
 #[derive(Clone, Debug)]
 pub struct BlobdCfg {
-  /// This must be at least two.
-  pub event_stream_spage_capacity: u64,
+  /// This must be a multiple of the spage size.
+  pub event_stream_size: u64,
+  /// This must be much greater than zero.
+  pub expire_incomplete_objects_after_secs: u64,
   /// This should be at least 1 GiB; the more the better.
   pub journal_size_min: u64,
   pub lpage_size_pow2: u8,
@@ -69,8 +72,6 @@ pub struct BlobdCfg {
   pub object_metadata_reserved_space: u64,
   /// The amount of partitions must be a power of two.
   pub partitions: Vec<BlobdCfgPartition>,
-  /// This must be much greater than zero.
-  pub reap_objects_after_secs: u64,
   /// It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
   pub spage_size_pow2: u8,
 }
@@ -83,8 +84,8 @@ pub struct BlobdLoader {
 
 impl BlobdLoader {
   pub fn new(cfg: BlobdCfg) -> Self {
-    assert!(cfg.event_stream_spage_capacity >= 2);
-    assert!(cfg.reap_objects_after_secs > 0);
+    assert_eq!(mod_pow2(cfg.event_stream_size, cfg.spage_size_pow2), 0);
+    assert!(cfg.expire_incomplete_objects_after_secs > 0);
 
     let pages = Pages::new(cfg.spage_size_pow2, cfg.lpage_size_pow2);
     let metrics = Arc::new(BlobdMetrics::default());

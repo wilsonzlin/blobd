@@ -3,7 +3,6 @@ use crate::util::floor_pow2;
 use async_trait::async_trait;
 use bufpool::buf::Buf;
 use bufpool::BUFPOOL;
-use bufpool_fixed::buf::FixedBuf;
 use dashmap::DashMap;
 use off64::int::Off64AsyncReadInt;
 use off64::usz;
@@ -18,7 +17,7 @@ use std::sync::Arc;
 pub(crate) struct UnalignedReader {
   dev: UringBounded,
   page_size_pow2: u8,
-  cache: DashMap<u64, Arc<tokio::sync::Mutex<Option<FixedBuf>>>, BuildHasherDefault<FxHasher>>,
+  cache: DashMap<u64, Arc<tokio::sync::Mutex<Option<Buf>>>, BuildHasherDefault<FxHasher>>,
 }
 
 impl UnalignedReader {

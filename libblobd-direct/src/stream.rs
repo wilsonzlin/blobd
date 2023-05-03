@@ -16,6 +16,7 @@ use off64::usz;
 use off64::Off64Read;
 use off64::Off64WriteMut;
 use rustc_hash::FxHashSet;
+use std::cmp::min;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
@@ -135,10 +136,12 @@ impl Stream {
     }
   }
 
-  pub async fn format_device(dev: UringBounded, pages: Pages) {
-    dev
-      .write(dev.len(), pages.allocate_with_zeros(dev.len()))
-      .await;
+  pub async fn format_device(dev: UringBounded, pages: &Pages) {
+    const BUFSIZE: u64 = 1024 * 1024 * 1024 * 1;
+    for offset in (0..dev.len()).step_by(usz!(BUFSIZE)) {
+      let len = min(dev.len() - offset, BUFSIZE);
+      dev.write(0, pages.allocate_with_zeros(len)).await;
+    }
   }
 
   pub fn get_event(

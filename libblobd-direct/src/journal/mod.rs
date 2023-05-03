@@ -2,7 +2,7 @@ use crate::pages::Pages;
 use crate::uring::UringBounded;
 use crate::util::div_pow2;
 use crate::util::mod_pow2;
-use bufpool_fixed::buf::FixedBuf;
+use bufpool::buf::Buf;
 use futures::stream::iter;
 use futures::StreamExt;
 use off64::int::Off64ReadInt;
@@ -15,6 +15,7 @@ use off64::Off64WriteMut;
 use std::collections::BTreeMap;
 use std::mem::take;
 use tokio::task::spawn_blocking;
+use tracing::debug;
 use tracing::warn;
 
 /*
@@ -25,11 +26,11 @@ For simplicity, we buffer the entire journal in memory, and perform one single w
 
 */
 
-// Little more than a wrapper over a hash map, but provides semantic type and method names and does some basic assertions.
+// Little more than a wrapper over a map, but provides semantic type and method names and does some basic assertions.
 #[derive(Debug)]
 pub(crate) struct Transaction {
   spage_size_pow2: u8,
-  spages: BTreeMap<u64, FixedBuf>,
+  spages: BTreeMap<u64, Buf>,
 }
 
 impl Transaction {
@@ -44,7 +45,7 @@ impl Transaction {
     self.spages.is_empty()
   }
 
-  pub fn record(&mut self, dev_offset: u64, data: FixedBuf) {
+  pub fn record(&mut self, dev_offset: u64, data: Buf) {
     assert!(data.len() >= (1 << self.spage_size_pow2));
     assert_eq!(mod_pow2(u64!(data.len()), self.spage_size_pow2), 0);
     if let Some((prev_dev_offset, prev_data)) = self.spages.range(..dev_offset).rev().next() {
@@ -58,7 +59,7 @@ impl Transaction {
     };
   }
 
-  pub fn drain_all(&mut self) -> impl Iterator<Item = (u64, FixedBuf)> {
+  pub fn drain_all(&mut self) -> impl Iterator<Item = (u64, Buf)> {
     take(&mut self.spages).into_iter()
   }
 }
@@ -92,15 +93,21 @@ impl Journal {
   // Do not erase corrupt journal, in case user wants to investigate.
   // Do not being writing/recovering until fully checked that journal is not corrupt.
   pub async fn recover(&self) {
+    debug!("checking journal");
     let mut raw = self.dev.read(self.state_dev_offset, self.state_size).await;
     let byte_count = raw.read_u64_le_at(JOURNAL_METADATA_OFFSETOF_BYTE_COUNT);
     let recorded_hash = raw.read_at(JOURNAL_METADATA_OFFSETOF_HASH, 32).to_vec();
     raw.write_at(JOURNAL_METADATA_OFFSETOF_HASH, &[0u8; 32]);
-    let (expected_hash, raw) = spawn_blocking(move || (blake3::hash(&raw), raw))
-      .await
-      .unwrap();
+    let (expected_hash, raw) =
+      spawn_blocking(move || (blake3::hash(&raw[..usz!(byte_count)]), raw))
+        .await
+        .unwrap();
     if expected_hash.as_bytes() != recorded_hash.as_slice() {
-      warn!("journal is corrupt, invalid hash");
+      warn!(
+        expected_hash = format!("{:x?}", expected_hash.as_bytes()),
+        recorded_hash = format!("{:x?}", recorded_hash.as_slice()),
+        "journal is corrupt, invalid hash",
+      );
       return;
     };
 
@@ -116,6 +123,7 @@ impl Journal {
       next += record_data_len;
       to_write.push((record_dev_offset, record_data));
     }
+    debug!(records = to_write.len(), "recovering from journal");
 
     futures::stream::iter(to_write)
       .for_each_concurrent(None, |(dev_offset, buf)| async move {
@@ -130,17 +138,16 @@ impl Journal {
       .write(self.state_dev_offset, self.generate_blank_state())
       .await;
     self.dev.sync().await;
+    debug!("journal recovered");
   }
 
-  fn generate_blank_state(&self) -> FixedBuf {
-    let mut raw = self
-      .pages
-      .allocate_with_zeros(JOURNAL_METADATA_RESERVED_SIZE);
+  fn generate_blank_state(&self) -> Buf {
+    let mut raw = self.pages.allocate_with_zeros(self.pages.spage_size());
     raw.write_u64_le_at(
       JOURNAL_METADATA_OFFSETOF_BYTE_COUNT,
       JOURNAL_METADATA_RESERVED_SIZE,
     );
-    let hash = blake3::hash(&raw);
+    let hash = blake3::hash(&raw[..usz!(JOURNAL_METADATA_RESERVED_SIZE)]);
     raw.write_at(JOURNAL_METADATA_OFFSETOF_HASH, hash.as_bytes());
     raw
   }
@@ -152,7 +159,7 @@ impl Journal {
       .await;
   }
 
-  pub async fn commit(&self, txn_records: Vec<(u64, FixedBuf)>) {
+  pub async fn commit(&self, txn_records: Vec<(u64, Buf)>) {
     assert!(!txn_records.is_empty());
 
     // WARNING: We must fit all records in one journal write, and cannot have iterations, as otherwise it's no longer atomic.

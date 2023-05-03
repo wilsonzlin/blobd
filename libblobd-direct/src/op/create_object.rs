@@ -14,6 +14,7 @@ use off64::u8;
 use off64::usz;
 use off64::Off64WriteMut;
 use signal_future::SignalFuture;
+use std::cmp::max;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
 
@@ -51,8 +52,11 @@ pub(crate) async fn op_create_object(
 
   let object_id = ctx.object_id_serial.next();
 
+  let page_size = max(ctx.pages.spage_size(), meta_size.next_power_of_two());
+  // This is stored in memory, so don't allocate rounded up to spage if less, as that's a significant waste of memory.
+  // When the action writes, it'll copy the data to the page size.
   let mut raw = ctx.pages.allocate_with_zeros(meta_size);
-  raw[usz!(offsets.page_size_pow2())] = u8!(meta_size.next_power_of_two().ilog2());
+  raw[usz!(offsets.page_size_pow2())] = u8!(page_size.ilog2());
   raw[usz!(offsets.state())] = ObjectState::Incomplete as u8;
   raw.write_u64_le_at(offsets.id(), object_id);
   raw.write_u40_le_at(offsets.size(), req.size);
@@ -65,6 +69,7 @@ pub(crate) async fn op_create_object(
   let (fut, fut_ctl) = SignalFuture::new();
   ctx.state.send_action(StateAction::Create(
     ActionCreateObjectInput {
+      metadata_page_size: page_size,
       layout,
       offsets,
       raw,

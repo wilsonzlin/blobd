@@ -48,8 +48,8 @@ impl Direct {
         len: cfg.device_size,
         offset: 0,
       }],
-      event_stream_spage_capacity: 2097152,
-      reap_objects_after_secs: 60 * 60 * 24 * 7,
+      event_stream_size: 1024 * 1024 * 1024 * 1,
+      expire_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
       lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
     });

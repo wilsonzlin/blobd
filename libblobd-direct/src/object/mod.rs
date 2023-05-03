@@ -3,7 +3,7 @@ use self::offset::ObjectMetadataOffsets;
 use self::tail::TailPageSizes;
 use crate::op::OpError;
 use crate::pages::Pages;
-use bufpool_fixed::buf::FixedBuf;
+use bufpool::buf::Buf;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use off64::int::Off64ReadInt;
@@ -26,7 +26,7 @@ pub mod tail;
 #[derive(Clone)]
 pub(crate) struct ObjectMetadata {
   dev_offset: u64,
-  raw: FixedBuf,
+  raw: Buf,
   // If we don't store/cache this, we'll need to recalculate all ObjectMetadataOffsets fields each time we read some fields.
   off: ObjectMetadataOffsets,
   tail_page_sizes: TailPageSizes,
@@ -35,7 +35,7 @@ pub(crate) struct ObjectMetadata {
 impl ObjectMetadata {
   pub fn new(
     dev_offset: u64,
-    raw: FixedBuf,
+    raw: Buf,
     off: ObjectMetadataOffsets,
     tail_page_sizes: TailPageSizes,
   ) -> Self {
@@ -47,7 +47,7 @@ impl ObjectMetadata {
     }
   }
 
-  pub fn load_from_raw(pages: &Pages, dev_offset: u64, raw: FixedBuf) -> Self {
+  pub fn load_from_raw(pages: &Pages, dev_offset: u64, raw: Buf) -> Self {
     let mut off = ObjectMetadataOffsets {
       assoc_data_len: 0,
       key_len: 0,
@@ -63,12 +63,9 @@ impl ObjectMetadata {
     Self::new(dev_offset, raw, off, layout.tail_page_sizes_pow2)
   }
 
+  // NOTE: This is not the same as `1 << self.metadata_page_size()` as that's rounded up to nearest spage.
   pub fn metadata_size(&self) -> u64 {
     self.off._total_size()
-  }
-
-  pub fn metadata_size_pow2(&self) -> u8 {
-    u8!(self.metadata_size().next_power_of_two().ilog2())
   }
 
   pub fn dev_offset(&self) -> u64 {
@@ -87,13 +84,9 @@ impl ObjectMetadata {
     self.tail_page_sizes
   }
 
-  pub fn build_raw_data_with_new_object_state(
-    &self,
-    pages: &Pages,
-    new_state: ObjectState,
-  ) -> FixedBuf {
+  pub fn build_raw_data_with_new_object_state(&self, pages: &Pages, new_state: ObjectState) -> Buf {
     let mut buf = pages.allocate_with_zeros(pages.spage_size());
-    buf.copy_from_slice(&self.raw[..usz!(min(self.metadata_size(), pages.spage_size()))]);
+    buf.copy_from_slice(&self.raw[..usz!(pages.spage_size())]);
     buf[usz!(self.off.state())] = new_state as u8;
     buf
   }
@@ -104,6 +97,11 @@ impl ObjectMetadata {
   ======
 
   */
+  pub fn metadata_page_size_pow2(&self) -> u8 {
+    // NOTE: This is not the same as `self.metadata_size().ilog2()` as it's rounded up to nearest spage.
+    self.raw[usz!(self.off.page_size_pow2())]
+  }
+
   pub fn id(&self) -> u64 {
     self.raw.read_u64_le_at(self.off.id())
   }

@@ -8,12 +8,13 @@ use crate::object::ObjectState;
 use crate::op::create_object::OpCreateObjectOutput;
 use crate::op::OpResult;
 use crate::state::State;
-use bufpool_fixed::buf::FixedBuf;
+use bufpool::buf::Buf;
 use off64::int::Off64WriteMutInt;
 use off64::u64;
 
 pub(crate) struct ActionCreateObjectInput {
-  pub raw: FixedBuf,
+  pub metadata_page_size: u64,
+  pub raw: Buf,
   pub offsets: ObjectMetadataOffsets,
   pub layout: ObjectLayout,
 }
@@ -22,6 +23,7 @@ pub(crate) fn action_create_object(
   state: &mut State,
   txn: &mut Transaction,
   ActionCreateObjectInput {
+    metadata_page_size,
     mut raw,
     offsets,
     layout,
@@ -37,12 +39,9 @@ pub(crate) fn action_create_object(
   }
 
   let dev_offset = state.metadata_allocator.allocate(u64!(raw.len()));
-  let obj = ObjectMetadata::new(
-    dev_offset,
-    raw.clone(),
-    offsets,
-    layout.tail_page_sizes_pow2,
-  );
+  let mut write_page = state.pages.allocate_with_zeros(metadata_page_size);
+  write_page[..raw.len()].copy_from_slice(&raw);
+  let obj = ObjectMetadata::new(dev_offset, raw, offsets, layout.tail_page_sizes_pow2);
   let object_id = obj.id();
   let object_size = obj.size();
 
@@ -56,7 +55,7 @@ pub(crate) fn action_create_object(
     .metrics
     .incr_object_metadata_bytes(offsets._total_size());
 
-  txn.record(dev_offset, raw);
+  txn.record(dev_offset, write_page);
 
   Ok(OpCreateObjectOutput {
     token: IncompleteToken {

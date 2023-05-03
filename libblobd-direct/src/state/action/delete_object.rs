@@ -22,8 +22,8 @@ pub(crate) fn action_delete_object(
 
   // We can reap the object now, as there should only be other readers (it's committed, so there shouldn't be any writers), and readers will double check the state after reading and discard the read if necessary (the object metadata still exists in memory due to Arc, so it's safe to check).
 
-  let mut empty_page = state.pages.allocate_with_zeros(obj.metadata_size());
-  empty_page[0] = obj.metadata_size_pow2();
+  let mut empty_page = state.pages.allocate_with_zeros(state.pages.spage_size());
+  empty_page[0] = obj.metadata_page_size_pow2();
   empty_page[1] = ObjectState::_Empty as u8;
   txn.record(obj.dev_offset(), empty_page);
 
@@ -42,7 +42,7 @@ pub(crate) fn action_delete_object(
   // This is safe because we've recorded the empty page already.
   state
     .metadata_allocator
-    .release(obj.dev_offset(), obj.metadata_size_pow2());
+    .release(obj.dev_offset(), obj.metadata_page_size_pow2());
 
   state.metrics.decr_object_data_bytes(obj.size());
   state

@@ -20,7 +20,7 @@ use crate::op::OpResult;
 use crate::pages::Pages;
 use crate::stream::Stream;
 use crate::stream::StreamEventId;
-use bufpool_fixed::buf::FixedBuf;
+use bufpool::buf::Buf;
 use signal_future::SignalFutureController;
 use std::fmt;
 use std::fmt::Debug;
@@ -108,7 +108,7 @@ impl StateAction {
 impl StateWorker {
   pub fn start(mut state: State, journal: Journal) -> Self {
     let (txn_sender, mut txn_receiver) = tokio::sync::mpsc::unbounded_channel::<(
-      Vec<(u64, FixedBuf)>,
+      Vec<(u64, Buf)>,
       Vec<StreamEventId>,
       Vec<SignalReadyToFire>,
     )>();

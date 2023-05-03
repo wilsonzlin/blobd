@@ -2,6 +2,7 @@ use crate::ctx::Ctx;
 use crate::journal::Journal;
 use crate::metrics::BlobdMetrics;
 use crate::object::id::ObjectIdSerial;
+use crate::objects::format_device_for_objects;
 use crate::objects::load_objects_from_device;
 use crate::objects::LoadedObjects;
 use crate::pages::Pages;
@@ -69,7 +70,7 @@ impl PartitionLoader {
     let object_id_serial_size = pages.spage_size();
 
     let stream_dev_offset = object_id_serial_dev_offset + object_id_serial_size;
-    let stream_size = cfg.event_stream_spage_capacity * pages.spage_size();
+    let stream_size = cfg.event_stream_size;
 
     let journal_dev_offset = stream_dev_offset + stream_size;
     let min_reserved_space = journal_dev_offset + cfg.journal_size_min;
@@ -78,7 +79,7 @@ impl PartitionLoader {
     let heap_dev_offset = ceil_pow2(min_reserved_space, pages.lpage_size_pow2);
     let heap_end = floor_pow2(dev.len(), pages.lpage_size_pow2);
     assert!(heap_dev_offset < heap_end);
-    let journal_size = heap_dev_offset - journal_dev_offset;
+    let journal_size = floor_pow2(heap_dev_offset - journal_dev_offset, pages.spage_size_pow2);
 
     let journal = Journal::new(dev.clone(), journal_dev_offset, journal_size, pages.clone());
 
@@ -113,8 +114,9 @@ impl PartitionLoader {
   pub async fn format(&self) {
     let dev = &self.dev;
     join! {
-      ObjectIdSerial::format_device(dev.bounded(self.object_id_serial_dev_offset, self.object_id_serial_size), self.pages.clone()),
-      Stream::format_device(dev.bounded(self.stream_dev_offset, self.stream_size), self.pages.clone()),
+      ObjectIdSerial::format_device(dev.bounded(self.object_id_serial_dev_offset, self.object_id_serial_size), &self.pages),
+      Stream::format_device(dev.bounded(self.stream_dev_offset, self.stream_size), &self.pages),
+      format_device_for_objects(dev.bounded(self.heap_dev_offset, self.heap_dev_offset + self.metadata_heap_size), &self.pages),
       self.journal.format_device(),
     };
     dev.sync().await;

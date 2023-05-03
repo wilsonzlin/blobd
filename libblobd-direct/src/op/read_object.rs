@@ -5,7 +5,7 @@ use crate::object::AutoLifecycleObject;
 use crate::object::ObjectState;
 use crate::util::div_pow2;
 use crate::util::mod_pow2;
-use bufpool_fixed::buf::FixedBuf;
+use bufpool::buf::Buf;
 use futures::Stream;
 use off64::u32;
 use off64::u64;
@@ -26,7 +26,7 @@ pub struct OpReadObjectInput {
 }
 
 pub struct OpReadObjectOutput {
-  pub data_stream: Pin<Box<dyn Stream<Item = OpResult<FixedBuf>> + Send>>,
+  pub data_stream: Pin<Box<dyn Stream<Item = OpResult<Buf>> + Send>>,
   pub start: u64,
   pub end: u64,
   pub object_size: u64,

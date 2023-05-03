@@ -8,6 +8,8 @@ use crate::pages::Pages;
 use crate::uring::UringBounded;
 use dashmap::DashMap;
 use num_traits::FromPrimitive;
+use off64::usz;
+use std::cmp::min;
 use std::collections::BTreeMap;
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
@@ -24,6 +26,15 @@ pub(crate) struct LoadedObjects {
   pub committed_objects: CommittedObjects,
   pub data_allocator: Allocator,
   pub metadata_allocator: Allocator,
+}
+
+pub(crate) async fn format_device_for_objects(metadata_dev: UringBounded, pages: &Pages) {
+  // We need to erase the entire area so that even when new objects are added the end is always ObjectState::_EndOfObjects.
+  const BUFSIZE: u64 = 1024 * 1024 * 1024;
+  for offset in (0..metadata_dev.len()).step_by(usz!(BUFSIZE)) {
+    let size = min(metadata_dev.len() - offset, 1024);
+    metadata_dev.write(0, pages.allocate_with_zeros(size)).await;
+  }
 }
 
 pub(crate) async fn load_objects_from_device(

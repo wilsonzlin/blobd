@@ -37,7 +37,7 @@ impl ObjectIdSerial {
     }
   }
 
-  pub async fn format_device(dev: UringBounded, pages: Pages) {
+  pub async fn format_device(dev: UringBounded, pages: &Pages) {
     dev
       .write(0, pages.allocate_with_zeros(pages.spage_size()))
       .await;
