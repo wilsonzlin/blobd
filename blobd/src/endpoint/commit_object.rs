@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::http::Uri;
 use blobd_token::AuthTokenAction;
 use itertools::Itertools;
-use libblobd::op::commit_object::OpCommitObjectInput;
+use libblobd_lite::op::commit_object::OpCommitObjectInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;

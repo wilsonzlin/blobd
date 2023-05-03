@@ -1,7 +1,7 @@
 pub mod target;
 
 use crate::target::direct::Direct;
-use crate::target::vanilla::Vanilla;
+use crate::target::lite::Lite;
 use crate::target::InitCfg;
 use crate::target::Target;
 use crate::target::TargetCommitObjectInput;
@@ -13,7 +13,7 @@ use crate::target::TargetWriteObjectInput;
 use clap::Parser;
 use clap::ValueEnum;
 use futures::StreamExt;
-use libblobd::object::OBJECT_KEY_LEN_MAX;
+use libblobd_lite::object::OBJECT_KEY_LEN_MAX;
 use off64::u64;
 use off64::usz;
 use rand::thread_rng;
@@ -55,7 +55,7 @@ Use [tokio-console](https://github.com/tokio-rs/console#running-the-console) to 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, ValueEnum)]
 enum TargetType {
   Direct,
-  Vanilla,
+  Lite,
 }
 
 #[derive(Debug, Parser)]
@@ -186,7 +186,7 @@ async fn main() {
   };
   let target: Arc<dyn Target> = match cli.target {
     TargetType::Direct => Arc::new(Direct::start(init_cfg, completed.clone()).await),
-    TargetType::Vanilla => Arc::new(Vanilla::start(init_cfg, completed.clone()).await),
+    TargetType::Lite => Arc::new(Lite::start(init_cfg, completed.clone()).await),
   };
 
   info!(

@@ -12,7 +12,7 @@ use axum::http::Uri;
 use axum::TypedHeader;
 use blobd_token::AuthTokenAction;
 use futures::StreamExt;
-use libblobd::op::write_object::OpWriteObjectInput;
+use libblobd_lite::op::write_object::OpWriteObjectInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;

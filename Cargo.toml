@@ -5,8 +5,8 @@ members = [
   "blobd-client-rs",
   "blobd-token",
   "blobd",
-  "libblobd",
   "libblobd-direct",
+  "libblobd-lite",
   "stochastic-stresser",
 ]
 

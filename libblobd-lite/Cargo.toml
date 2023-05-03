@@ -1,7 +1,7 @@
 [package]
-name = "libblobd"
+name = "libblobd-lite"
 version = "0.1.1"
-description = "Library for blobd"
+description = "Library for blobd, lite variant"
 license = "SSPL-1.0"
 homepage = "https://github.com/wilsonzlin/blobd"
 repository = "https://github.com/wilsonzlin/blobd.git"

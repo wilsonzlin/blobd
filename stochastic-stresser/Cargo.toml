@@ -13,7 +13,7 @@ async-trait = "0.1.68"
 clap = { version = "4.1.14", features = ["derive"] }
 console-subscriber = { version = "0.1.8", optional = true }
 futures = "0.3.27"
-libblobd = { version = "0.1.1", path = "../libblobd" }
+libblobd-lite = { version = "0.1.1", path = "../libblobd-lite" }
 libblobd-direct = { version = "0.1.1", path = "../libblobd-direct" }
 off64 = "0.6.0"
 rand = "0.8.5"

@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use blobd_token::AuthTokenAction;
-use libblobd::op::delete_object::OpDeleteObjectInput;
+use libblobd_lite::op::delete_object::OpDeleteObjectInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;

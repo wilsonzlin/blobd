@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tinybuf::TinyBuf;
 
 pub mod direct;
-pub mod vanilla;
+pub mod lite;
 
 pub struct InitCfg {
   pub bucket_count: u64,

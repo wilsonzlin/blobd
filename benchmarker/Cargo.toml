@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 clap = { version = "4.1.14", features = ["derive"] }
 futures = "0.3.27"
-libblobd = { version = "0.1.1", path = "../libblobd" }
+libblobd-lite = { version = "0.1.1", path = "../libblobd-lite" }
 off64 = "0.6.0"
 parking_lot = "0.12.1"
 rand = "0.8.5"

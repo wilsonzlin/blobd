@@ -8,7 +8,7 @@ use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use blobd_token::AuthTokenAction;
-use libblobd::op::create_object::OpCreateObjectInput;
+use libblobd_lite::op::create_object::OpCreateObjectInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;

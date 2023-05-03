@@ -13,16 +13,16 @@ use super::TargetWriteObjectInput;
 use async_trait::async_trait;
 use futures::stream::once;
 use futures::StreamExt;
-use libblobd::incomplete_token::IncompleteToken;
-use libblobd::op::commit_object::OpCommitObjectInput;
-use libblobd::op::create_object::OpCreateObjectInput;
-use libblobd::op::delete_object::OpDeleteObjectInput;
-use libblobd::op::inspect_object::OpInspectObjectInput;
-use libblobd::op::read_object::OpReadObjectInput;
-use libblobd::op::write_object::OpWriteObjectInput;
-use libblobd::Blobd;
-use libblobd::BlobdCfg;
-use libblobd::BlobdLoader;
+use libblobd_lite::incomplete_token::IncompleteToken;
+use libblobd_lite::op::commit_object::OpCommitObjectInput;
+use libblobd_lite::op::create_object::OpCreateObjectInput;
+use libblobd_lite::op::delete_object::OpDeleteObjectInput;
+use libblobd_lite::op::inspect_object::OpInspectObjectInput;
+use libblobd_lite::op::read_object::OpReadObjectInput;
+use libblobd_lite::op::write_object::OpWriteObjectInput;
+use libblobd_lite::Blobd;
+use libblobd_lite::BlobdCfg;
+use libblobd_lite::BlobdLoader;
 use off64::u64;
 use off64::u8;
 use seekable_async_file::SeekableAsyncFile;
@@ -36,11 +36,11 @@ use tokio::spawn;
 use tokio::time::sleep;
 use tracing::info;
 
-pub struct Vanilla {
+pub struct Lite {
   blobd: Blobd,
 }
 
-impl Vanilla {
+impl Lite {
   pub async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self {
     assert!(cfg.bucket_count.is_power_of_two());
     let bucket_count_log2: u8 = cfg.bucket_count.ilog2().try_into().unwrap();
@@ -112,7 +112,7 @@ impl Vanilla {
 }
 
 #[async_trait]
-impl Target for Vanilla {
+impl Target for Lite {
   async fn create_object(&self, input: TargetCreateObjectInput) -> TargetCreateObjectOutput {
     let res = self
       .blobd
