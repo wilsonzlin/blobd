@@ -140,7 +140,7 @@ impl Stream {
     const BUFSIZE: u64 = 1024 * 1024 * 1024 * 1;
     for offset in (0..dev.len()).step_by(usz!(BUFSIZE)) {
       let len = min(dev.len() - offset, BUFSIZE);
-      dev.write(0, pages.slow_allocate_with_zeros(len)).await;
+      dev.write(offset, pages.slow_allocate_with_zeros(len)).await;
     }
   }
 
