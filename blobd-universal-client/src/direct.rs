@@ -26,12 +26,7 @@ use libblobd_direct::BlobdCfgPartition;
 use libblobd_direct::BlobdLoader;
 use off64::u64;
 use off64::u8;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::spawn;
-use tokio::time::sleep;
 use tracing::info;
 
 pub struct Direct {
@@ -39,7 +34,7 @@ pub struct Direct {
 }
 
 impl Direct {
-  pub async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self {
+  pub async fn start(cfg: InitCfg) -> Self {
     let blobd = BlobdLoader::new(BlobdCfg {
       journal_size_min: 1024 * 1024 * 512,
       object_metadata_reserved_space: 1024 * 1024 * 1024 * 4,
@@ -62,34 +57,21 @@ impl Direct {
     let blobd = blobd.load().await;
     info!("loaded device");
 
-    // Background loop to regularly prinit out metrics and progress.
-    spawn({
-      let blobd = blobd.clone();
-      let completed = completed.clone();
-      async move {
-        loop {
-          sleep(Duration::from_secs(5)).await;
-          let completed = completed.load(Ordering::Relaxed);
-          info!(
-            completed,
-            object_data_bytes = blobd.metrics().object_data_bytes(),
-            object_metadata_bytes = blobd.metrics().object_metadata_bytes(),
-            used_bytes = blobd.metrics().used_bytes(),
-            "progress",
-          );
-          if completed == cfg.object_count {
-            break;
-          };
-        }
-      }
-    });
-
     Self { blobd }
   }
 }
 
 #[async_trait]
 impl BlobdProvider for Direct {
+  fn metrics(&self) -> Vec<(&'static str, u64)> {
+    let m = self.blobd.metrics();
+    vec![
+      ("object_data_bytes", m.object_data_bytes()),
+      ("object_metadata_bytes", m.object_metadata_bytes()),
+      ("used_bytes", m.used_bytes()),
+    ]
+  }
+
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput {
     let res = self
       .blobd

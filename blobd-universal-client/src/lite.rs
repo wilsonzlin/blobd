@@ -27,13 +27,10 @@ use off64::u64;
 use off64::u8;
 use seekable_async_file::SeekableAsyncFile;
 use seekable_async_file::SeekableAsyncFileMetrics;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::join;
 use tokio::spawn;
-use tokio::time::sleep;
 use tracing::info;
 
 pub struct Lite {
@@ -41,7 +38,7 @@ pub struct Lite {
 }
 
 impl Lite {
-  pub async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self {
+  pub async fn start(cfg: InitCfg) -> Self {
     assert!(cfg.bucket_count.is_power_of_two());
     let bucket_count_log2: u8 = cfg.bucket_count.ilog2().try_into().unwrap();
 
@@ -80,39 +77,26 @@ impl Lite {
       }
     });
 
-    // Background loop to regularly prinit out metrics and progress.
-    spawn({
-      let blobd = blobd.clone();
-      let completed = completed.clone();
-      async move {
-        loop {
-          sleep(Duration::from_secs(5)).await;
-          let completed = completed.load(Ordering::Relaxed);
-          info!(
-            completed,
-            allocated_block_count = blobd.metrics().allocated_block_count(),
-            allocated_page_count = blobd.metrics().allocated_page_count(),
-            deleted_object_count = blobd.metrics().deleted_object_count(),
-            incomplete_object_count = blobd.metrics().incomplete_object_count(),
-            object_count = blobd.metrics().object_count(),
-            object_data_bytes = blobd.metrics().object_data_bytes(),
-            object_metadata_bytes = blobd.metrics().object_metadata_bytes(),
-            used_bytes = blobd.metrics().used_bytes(),
-            "progress",
-          );
-          if completed == cfg.object_count {
-            break;
-          };
-        }
-      }
-    });
-
     Self { blobd }
   }
 }
 
 #[async_trait]
 impl BlobdProvider for Lite {
+  fn metrics(&self) -> Vec<(&'static str, u64)> {
+    let m = self.blobd.metrics();
+    vec![
+      ("allocated_block_count", m.allocated_block_count()),
+      ("allocated_page_count", m.allocated_page_count()),
+      ("deleted_object_count", m.deleted_object_count()),
+      ("incomplete_object_count", m.incomplete_object_count()),
+      ("object_count", m.object_count()),
+      ("object_data_bytes", m.object_data_bytes()),
+      ("object_metadata_bytes", m.object_metadata_bytes()),
+      ("used_bytes", m.used_bytes()),
+    ]
+  }
+
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput {
     let res = self
       .blobd

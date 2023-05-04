@@ -185,9 +185,9 @@ async fn main() {
     object_count: cli.objects,
     spage_size: cli.spage_size,
   };
-  let target: Arc<dyn BlobdProvider> = match cli.target {
-    TargetType::Direct => Arc::new(Direct::start(init_cfg, completed.clone()).await),
-    TargetType::Lite => Arc::new(Lite::start(init_cfg, completed.clone()).await),
+  let blobd: Arc<dyn BlobdProvider> = match cli.target {
+    TargetType::Direct => Arc::new(Direct::start(init_cfg).await),
+    TargetType::Lite => Arc::new(Lite::start(init_cfg).await),
   };
 
   info!(
@@ -241,14 +241,34 @@ async fn main() {
   })
   .await
   .unwrap();
-  let mut threads = Vec::new();
+
+  // Background loop to regularly prinit out metrics and progress.
+  spawn({
+    let blobd = blobd.clone();
+    let completed = completed.clone();
+    async move {
+      loop {
+        sleep(Duration::from_secs(10)).await;
+        let completed = completed.load(Ordering::Relaxed);
+        info!(completed, "progress");
+        for (k, v) in blobd.metrics() {
+          info!(value = v, "metric: {k}");
+        }
+        if completed == cli.objects {
+          break;
+        };
+      }
+    }
+  });
+
+  let mut workers = Vec::new();
   for worker_no in 0..cli.concurrency {
-    let target = target.clone();
+    let blobd = blobd.clone();
     let pool = pool.clone();
     let completed = completed.clone();
     let tasks_sender = tasks_sender.clone();
     let tasks_receiver = tasks_receiver.clone();
-    threads.push(spawn(async move {
+    workers.push(spawn(async move {
       loop {
         if completed.load(Ordering::Relaxed) == cli.objects {
           break;
@@ -273,7 +293,7 @@ async fn main() {
             data_len,
             data_offset,
           } => {
-            let res = target
+            let res = blobd
               .create_object(CreateObjectInput {
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 size: data_len,
@@ -305,7 +325,7 @@ async fn main() {
             } else {
               data_len - chunk_offset
             };
-            target
+            blobd
               .write_object(WriteObjectInput {
                 data: pool.get(data_offset + chunk_offset, chunk_len),
                 incomplete_token: incomplete_token.clone(),
@@ -340,7 +360,7 @@ async fn main() {
             data_offset,
             incomplete_token,
           } => {
-            let res = target
+            let res = blobd
               .commit_object(CommitObjectInput { incomplete_token })
               .await;
             tasks_sender
@@ -360,7 +380,7 @@ async fn main() {
             data_offset,
             object_id,
           } => {
-            let res = target
+            let res = blobd
               .inspect_object(InspectObjectInput {
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 id: Some(object_id),
@@ -389,7 +409,7 @@ async fn main() {
           } => {
             // Read a random amount to test various cases stochastically.
             let end = thread_rng().gen_range(chunk_offset + 1..=data_len);
-            let mut res = target
+            let mut res = blobd
               .read_object(ReadObjectInput {
                 end: Some(end),
                 start: chunk_offset,
@@ -432,7 +452,7 @@ async fn main() {
             key_offset,
             object_id,
           } => {
-            target
+            blobd
               .delete_object(DeleteObjectInput {
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 id: Some(object_id),
@@ -446,11 +466,11 @@ async fn main() {
   }
   drop(tasks_sender);
   drop(tasks_receiver);
-  for t in threads {
+  for t in workers {
     t.await.unwrap();
   }
 
-  // TODO Assert all tiles are solid, no fragmented files.
+  // TODO For libblobd-lite: assert all tiles are solid, no fragmented tiles.
 
   let exec_sec = started.elapsed().as_secs_f64();
   info!(

@@ -13,3 +13,4 @@ seekable-async-file = "0.11.1"
 tokio = { version = "1.28.0", features = ["macros", "time", "rt"] }
 off64 = "0.6.0"
 tracing = "0.1.37"
+serde = "1.0.160"

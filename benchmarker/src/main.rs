@@ -1,28 +1,24 @@
+use blobd_universal_client::direct::Direct;
+use blobd_universal_client::lite::Lite;
+use blobd_universal_client::BlobdProvider;
+use blobd_universal_client::CommitObjectInput;
+use blobd_universal_client::CreateObjectInput;
+use blobd_universal_client::DeleteObjectInput;
+use blobd_universal_client::InitCfg;
+use blobd_universal_client::InspectObjectInput;
+use blobd_universal_client::ReadObjectInput;
+use blobd_universal_client::WriteObjectInput;
 use clap::Parser;
+use clap::ValueEnum;
 use futures::stream::iter;
-use futures::stream::once;
 use futures::StreamExt;
-use libblobd_lite::op::commit_object::OpCommitObjectInput;
-use libblobd_lite::op::create_object::OpCreateObjectInput;
-use libblobd_lite::op::delete_object::OpDeleteObjectInput;
-use libblobd_lite::op::inspect_object::OpInspectObjectInput;
-use libblobd_lite::op::read_object::OpReadObjectInput;
-use libblobd_lite::op::write_object::OpWriteObjectInput;
-use libblobd_lite::BlobdCfg;
-use libblobd_lite::BlobdLoader;
 use off64::int::create_u64_be;
-use off64::u8;
 use off64::usz;
 use seekable_async_file::get_file_len_via_seek;
-use seekable_async_file::SeekableAsyncFile;
-use seekable_async_file::SeekableAsyncFileMetrics;
 use std::cmp::min;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tinybuf::TinyBuf;
-use tokio::join;
-use tokio::spawn;
 use tokio::time::Instant;
 use tracing::info;
 
@@ -47,9 +43,18 @@ Despite these limitations, the benchmarker can be useful to find hotspots and sl
 
 const EMPTY_POOL: [u8; 16_777_216] = [0u8; 16_777_216];
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, ValueEnum)]
+enum TargetType {
+  Direct,
+  Lite,
+}
+
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
 struct Cli {
+  #[arg(long)]
+  target: TargetType,
+
   /// Path to the device or regular file to use as the underlying storage.
   #[arg(long)]
   device: PathBuf,
@@ -93,44 +98,21 @@ async fn main() {
 
   let cli = Cli::parse();
 
-  assert!(cli.buckets.is_power_of_two());
-  let bucket_count_log2: u8 = cli.buckets.ilog2().try_into().unwrap();
-
   let device_size = get_file_len_via_seek(&cli.device).await.unwrap();
 
-  let io_metrics = Arc::new(SeekableAsyncFileMetrics::default());
-  let device = SeekableAsyncFile::open(
-    &cli.device,
+  let init_cfg = InitCfg {
+    bucket_count: cli.buckets,
     device_size,
-    io_metrics,
-    Duration::from_micros(200),
-    0,
-  )
-  .await;
+    lpage_size: cli.lpage_size,
+    object_count: cli.objects,
+    spage_size: cli.spage_size,
+    device: cli.device,
+  };
 
-  let blobd = BlobdLoader::new(device.clone(), device_size, BlobdCfg {
-    bucket_count_log2,
-    bucket_lock_count_log2: bucket_count_log2,
-    reap_objects_after_secs: 60 * 60 * 24 * 7,
-    lpage_size_pow2: u8!(cli.lpage_size.ilog2()),
-    spage_size_pow2: u8!(cli.spage_size.ilog2()),
-    versioning: false,
-  });
-  blobd.format().await;
-  info!("formatted device");
-  let blobd = blobd.load().await;
-  info!("loaded device");
-
-  spawn({
-    let blobd = blobd.clone();
-    let device = device.clone();
-    async move {
-      join! {
-        blobd.start(),
-        device.start_delayed_data_sync_background_loop(),
-      };
-    }
-  });
+  let blobd: Arc<dyn BlobdProvider> = match cli.target {
+    TargetType::Direct => Arc::new(Direct::start(init_cfg).await),
+    TargetType::Lite => Arc::new(Lite::start(init_cfg).await),
+  };
 
   let now = Instant::now();
   let incomplete_tokens = Arc::new(parking_lot::Mutex::new(Vec::new()));
@@ -140,13 +122,12 @@ async fn main() {
       let incomplete_tokens = incomplete_tokens.clone();
       async move {
         let res = blobd
-          .create_object(OpCreateObjectInput {
+          .create_object(CreateObjectInput {
             key: create_u64_be(i).into(),
             size: cli.object_size,
             assoc_data: TinyBuf::empty(),
           })
-          .await
-          .unwrap();
+          .await;
         incomplete_tokens.lock().push(res.token);
       }
     })
@@ -166,15 +147,12 @@ async fn main() {
         for offset in (0..cli.object_size).step_by(usz!(cli.lpage_size)) {
           let data_len = min(cli.object_size - offset, cli.lpage_size);
           blobd
-            .write_object(OpWriteObjectInput {
+            .write_object(WriteObjectInput {
               offset,
               incomplete_token: incomplete_token.clone(),
-              data_len,
-              data_stream: once(async { Ok(TinyBuf::from_static(&EMPTY_POOL[..usz!(data_len)])) })
-                .boxed(),
+              data: &EMPTY_POOL[..usz!(data_len)],
             })
-            .await
-            .unwrap();
+            .await;
         }
       }
     })
@@ -194,11 +172,10 @@ async fn main() {
       let blobd = blobd.clone();
       async move {
         blobd
-          .commit_object(OpCommitObjectInput {
+          .commit_object(CommitObjectInput {
             incomplete_token: incomplete_token.clone(),
           })
-          .await
-          .unwrap();
+          .await;
       }
     })
     .await;
@@ -215,12 +192,11 @@ async fn main() {
       let blobd = blobd.clone();
       async move {
         blobd
-          .inspect_object(OpInspectObjectInput {
+          .inspect_object(InspectObjectInput {
             key: create_u64_be(i).into(),
             id: None,
           })
-          .await
-          .unwrap();
+          .await;
       }
     })
     .await;
@@ -238,15 +214,14 @@ async fn main() {
       async move {
         for start in (0..cli.object_size).step_by(usz!(cli.read_size)) {
           let res = blobd
-            .read_object(OpReadObjectInput {
+            .read_object(ReadObjectInput {
               key: create_u64_be(i).into(),
               id: None,
               start,
               end: Some(min(cli.object_size, start + cli.read_size)),
               stream_buffer_size: cli.read_stream_buffer_size,
             })
-            .await
-            .unwrap();
+            .await;
           let page_count = res.data_stream.count().await;
           // Do something with `page_count` so that the compiler doesn't just drop it, and then possibly drop the stream too.
           assert!(page_count > 0);
@@ -268,12 +243,11 @@ async fn main() {
       let blobd = blobd.clone();
       async move {
         blobd
-          .delete_object(OpDeleteObjectInput {
+          .delete_object(DeleteObjectInput {
             key: create_u64_be(i).into(),
             id: None,
           })
-          .await
-          .unwrap();
+          .await;
       }
     })
     .await;
