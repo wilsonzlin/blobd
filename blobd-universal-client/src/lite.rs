@@ -1,66 +1,84 @@
+use super::CommitObjectInput;
+use super::CommitObjectOutput;
+use super::CreateObjectInput;
+use super::CreateObjectOutput;
+use super::DeleteObjectInput;
 use super::InitCfg;
-use super::Target;
-use super::TargetCommitObjectInput;
-use super::TargetCommitObjectOutput;
-use super::TargetCreateObjectInput;
-use super::TargetCreateObjectOutput;
-use super::TargetDeleteObjectInput;
-use super::TargetInspectObjectInput;
-use super::TargetInspectObjectOutput;
-use super::TargetReadObjectInput;
-use super::TargetReadObjectOutput;
-use super::TargetWriteObjectInput;
+use super::InspectObjectInput;
+use super::InspectObjectOutput;
+use super::ReadObjectInput;
+use super::ReadObjectOutput;
+use super::WriteObjectInput;
+use crate::BlobdProvider;
 use async_trait::async_trait;
 use futures::stream::once;
 use futures::StreamExt;
-use libblobd_direct::incomplete_token::IncompleteToken;
-use libblobd_direct::op::commit_object::OpCommitObjectInput;
-use libblobd_direct::op::create_object::OpCreateObjectInput;
-use libblobd_direct::op::delete_object::OpDeleteObjectInput;
-use libblobd_direct::op::inspect_object::OpInspectObjectInput;
-use libblobd_direct::op::read_object::OpReadObjectInput;
-use libblobd_direct::op::write_object::OpWriteObjectInput;
-use libblobd_direct::Blobd;
-use libblobd_direct::BlobdCfg;
-use libblobd_direct::BlobdCfgPartition;
-use libblobd_direct::BlobdLoader;
+use libblobd_lite::incomplete_token::IncompleteToken;
+use libblobd_lite::op::commit_object::OpCommitObjectInput;
+use libblobd_lite::op::create_object::OpCreateObjectInput;
+use libblobd_lite::op::delete_object::OpDeleteObjectInput;
+use libblobd_lite::op::inspect_object::OpInspectObjectInput;
+use libblobd_lite::op::read_object::OpReadObjectInput;
+use libblobd_lite::op::write_object::OpWriteObjectInput;
+use libblobd_lite::Blobd;
+use libblobd_lite::BlobdCfg;
+use libblobd_lite::BlobdLoader;
 use off64::u64;
 use off64::u8;
+use seekable_async_file::SeekableAsyncFile;
+use seekable_async_file::SeekableAsyncFileMetrics;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::join;
 use tokio::spawn;
 use tokio::time::sleep;
 use tracing::info;
 
-pub struct Direct {
+pub struct Lite {
   blobd: Blobd,
 }
 
-impl Direct {
+impl Lite {
   pub async fn start(cfg: InitCfg, completed: Arc<AtomicU64>) -> Self {
-    let blobd = BlobdLoader::new(BlobdCfg {
-      journal_size_min: 1024 * 1024 * 512,
-      object_metadata_reserved_space: 1024 * 1024 * 1024 * 4,
-      partitions: vec![BlobdCfgPartition {
-        path: cfg.device,
-        len: cfg.device_size,
-        offset: 0,
-      }],
-      event_stream_size: 1024 * 1024 * 1024 * 1,
-      expire_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
+    assert!(cfg.bucket_count.is_power_of_two());
+    let bucket_count_log2: u8 = cfg.bucket_count.ilog2().try_into().unwrap();
+
+    let io_metrics = Arc::new(SeekableAsyncFileMetrics::default());
+    let device = SeekableAsyncFile::open(
+      &cfg.device,
+      cfg.device_size,
+      io_metrics,
+      Duration::from_micros(200),
+      0,
+    )
+    .await;
+
+    let blobd = BlobdLoader::new(device.clone(), cfg.device_size, BlobdCfg {
+      bucket_count_log2,
+      bucket_lock_count_log2: bucket_count_log2,
+      reap_objects_after_secs: 60 * 60 * 24 * 7,
       lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
-      uring_coop_taskrun: false,
-      uring_defer_taskrun: false,
-      uring_iopoll: false,
-      uring_sqpoll: None,
+      // We must enable versioning as some objects will have duplicate keys, and then their derived tasks won't work unless they were the last to commit.
+      versioning: true,
     });
     blobd.format().await;
     info!("formatted device");
     let blobd = blobd.load().await;
     info!("loaded device");
+
+    spawn({
+      let blobd = blobd.clone();
+      let device = device.clone();
+      async move {
+        join! {
+          blobd.start(),
+          device.start_delayed_data_sync_background_loop(),
+        };
+      }
+    });
 
     // Background loop to regularly prinit out metrics and progress.
     spawn({
@@ -72,6 +90,11 @@ impl Direct {
           let completed = completed.load(Ordering::Relaxed);
           info!(
             completed,
+            allocated_block_count = blobd.metrics().allocated_block_count(),
+            allocated_page_count = blobd.metrics().allocated_page_count(),
+            deleted_object_count = blobd.metrics().deleted_object_count(),
+            incomplete_object_count = blobd.metrics().incomplete_object_count(),
+            object_count = blobd.metrics().object_count(),
             object_data_bytes = blobd.metrics().object_data_bytes(),
             object_metadata_bytes = blobd.metrics().object_metadata_bytes(),
             used_bytes = blobd.metrics().used_bytes(),
@@ -89,8 +112,8 @@ impl Direct {
 }
 
 #[async_trait]
-impl Target for Direct {
-  async fn create_object(&self, input: TargetCreateObjectInput) -> TargetCreateObjectOutput {
+impl BlobdProvider for Lite {
+  async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput {
     let res = self
       .blobd
       .create_object(OpCreateObjectInput {
@@ -100,12 +123,12 @@ impl Target for Direct {
       })
       .await
       .unwrap();
-    TargetCreateObjectOutput {
+    CreateObjectOutput {
       token: Arc::new(res.token),
     }
   }
 
-  async fn write_object<'a>(&'a self, input: TargetWriteObjectInput<'a>) {
+  async fn write_object<'a>(&'a self, input: WriteObjectInput<'a>) {
     self
       .blobd
       .write_object(OpWriteObjectInput {
@@ -121,7 +144,7 @@ impl Target for Direct {
       .unwrap();
   }
 
-  async fn commit_object(&self, input: TargetCommitObjectInput) -> TargetCommitObjectOutput {
+  async fn commit_object(&self, input: CommitObjectInput) -> CommitObjectOutput {
     let res = self
       .blobd
       .commit_object(OpCommitObjectInput {
@@ -132,12 +155,12 @@ impl Target for Direct {
       })
       .await
       .unwrap();
-    TargetCommitObjectOutput {
+    CommitObjectOutput {
       object_id: res.object_id,
     }
   }
 
-  async fn inspect_object(&self, input: TargetInspectObjectInput) -> TargetInspectObjectOutput {
+  async fn inspect_object(&self, input: InspectObjectInput) -> InspectObjectOutput {
     let res = self
       .blobd
       .inspect_object(OpInspectObjectInput {
@@ -146,13 +169,13 @@ impl Target for Direct {
       })
       .await
       .unwrap();
-    TargetInspectObjectOutput {
+    InspectObjectOutput {
       id: res.id,
       size: res.size,
     }
   }
 
-  async fn read_object(&self, input: TargetReadObjectInput) -> TargetReadObjectOutput {
+  async fn read_object(&self, input: ReadObjectInput) -> ReadObjectOutput {
     let res = self
       .blobd
       .read_object(OpReadObjectInput {
@@ -160,10 +183,11 @@ impl Target for Direct {
         id: input.id,
         key: input.key,
         start: input.start,
+        stream_buffer_size: input.stream_buffer_size,
       })
       .await
       .unwrap();
-    TargetReadObjectOutput {
+    ReadObjectOutput {
       data_stream: res
         .data_stream
         .map(|chunk| {
@@ -174,7 +198,7 @@ impl Target for Direct {
     }
   }
 
-  async fn delete_object(&self, input: TargetDeleteObjectInput) {
+  async fn delete_object(&self, input: DeleteObjectInput) {
     self
       .blobd
       .delete_object(OpDeleteObjectInput {

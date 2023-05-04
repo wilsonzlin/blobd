@@ -1,19 +1,17 @@
-pub mod target;
-
-use crate::target::direct::Direct;
-use crate::target::lite::Lite;
-use crate::target::InitCfg;
-use crate::target::Target;
-use crate::target::TargetCommitObjectInput;
-use crate::target::TargetCreateObjectInput;
-use crate::target::TargetDeleteObjectInput;
-use crate::target::TargetInspectObjectInput;
-use crate::target::TargetReadObjectInput;
-use crate::target::TargetWriteObjectInput;
+use blobd_universal_client::direct::Direct;
+use blobd_universal_client::lite::Lite;
+use blobd_universal_client::BlobdProvider;
+use blobd_universal_client::CommitObjectInput;
+use blobd_universal_client::CreateObjectInput;
+use blobd_universal_client::DeleteObjectInput;
+use blobd_universal_client::IncompleteToken;
+use blobd_universal_client::InitCfg;
+use blobd_universal_client::InspectObjectInput;
+use blobd_universal_client::ReadObjectInput;
+use blobd_universal_client::WriteObjectInput;
 use clap::Parser;
 use clap::ValueEnum;
 use futures::StreamExt;
-use libblobd_lite::object::OBJECT_KEY_LEN_MAX;
 use off64::u64;
 use off64::usz;
 use rand::thread_rng;
@@ -28,7 +26,6 @@ use std::time::Duration;
 use stochastic_queue::stochastic_channel;
 use stochastic_queue::StochasticMpmcRecvError;
 use strum_macros::Display;
-use target::TargetIncompleteToken;
 use tinybuf::TinyBuf;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
@@ -71,6 +68,10 @@ struct Cli {
   // How many buckets to allocate. Defaults to 131,072.
   #[arg(long, default_value_t = 131_072)]
   buckets: u64,
+
+  /// Maximum object key length. Defaults to 480.
+  #[arg(long, default_value_t = 480)]
+  object_key_len_max: u64,
 
   /// Objects to create. Defaults to 100,000.
   #[arg(long, default_value_t = 100_000)]
@@ -131,7 +132,7 @@ enum Task {
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
-    incomplete_token: TargetIncompleteToken,
+    incomplete_token: IncompleteToken,
     chunk_offset: u64,
   },
   Commit {
@@ -139,7 +140,7 @@ enum Task {
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
-    incomplete_token: TargetIncompleteToken,
+    incomplete_token: IncompleteToken,
   },
   Inspect {
     key_len: u64,
@@ -184,7 +185,7 @@ async fn main() {
     object_count: cli.objects,
     spage_size: cli.spage_size,
   };
-  let target: Arc<dyn Target> = match cli.target {
+  let target: Arc<dyn BlobdProvider> = match cli.target {
     TargetType::Direct => Arc::new(Direct::start(init_cfg, completed.clone()).await),
     TargetType::Lite => Arc::new(Lite::start(init_cfg, completed.clone()).await),
   };
@@ -216,7 +217,7 @@ async fn main() {
       let mut total_data_bytes = 0;
       for i in 0..cli.objects {
         let key_len = (hash64_with_seed(&i.to_be_bytes(), key_len_seed)
-          % u64::from(OBJECT_KEY_LEN_MAX - 1))
+          % u64::from(cli.object_key_len_max - 1))
           + 1;
         let key_offset =
           hash64_with_seed(&i.to_be_bytes(), key_offset_seed) % (cli.pool_size - key_len);
@@ -273,7 +274,7 @@ async fn main() {
             data_offset,
           } => {
             let res = target
-              .create_object(TargetCreateObjectInput {
+              .create_object(CreateObjectInput {
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 size: data_len,
                 assoc_data: TinyBuf::empty(),
@@ -305,7 +306,7 @@ async fn main() {
               data_len - chunk_offset
             };
             target
-              .write_object(TargetWriteObjectInput {
+              .write_object(WriteObjectInput {
                 data: pool.get(data_offset + chunk_offset, chunk_len),
                 incomplete_token: incomplete_token.clone(),
                 offset: chunk_offset,
@@ -340,7 +341,7 @@ async fn main() {
             incomplete_token,
           } => {
             let res = target
-              .commit_object(TargetCommitObjectInput { incomplete_token })
+              .commit_object(CommitObjectInput { incomplete_token })
               .await;
             tasks_sender
               .send(Task::Inspect {
@@ -360,7 +361,7 @@ async fn main() {
             object_id,
           } => {
             let res = target
-              .inspect_object(TargetInspectObjectInput {
+              .inspect_object(InspectObjectInput {
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 id: Some(object_id),
               })
@@ -389,7 +390,7 @@ async fn main() {
             // Read a random amount to test various cases stochastically.
             let end = thread_rng().gen_range(chunk_offset + 1..=data_len);
             let mut res = target
-              .read_object(TargetReadObjectInput {
+              .read_object(ReadObjectInput {
                 end: Some(end),
                 start: chunk_offset,
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
@@ -432,7 +433,7 @@ async fn main() {
             object_id,
           } => {
             target
-              .delete_object(TargetDeleteObjectInput {
+              .delete_object(DeleteObjectInput {
                 key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
                 id: Some(object_id),
               })
