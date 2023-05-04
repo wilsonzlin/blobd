@@ -32,7 +32,7 @@ pub(crate) async fn format_device_for_objects(metadata_dev: UringBounded, pages:
   // We need to erase the entire area so that even when new objects are added the end is always ObjectState::_EndOfObjects.
   const BUFSIZE: u64 = 1024 * 1024 * 1024;
   for offset in (0..metadata_dev.len()).step_by(usz!(BUFSIZE)) {
-    let size = min(metadata_dev.len() - offset, 1024);
+    let size = min(metadata_dev.len() - offset, BUFSIZE);
     metadata_dev
       .write(offset, pages.slow_allocate_with_zeros(size))
       .await;
