@@ -87,7 +87,10 @@ impl PartitionLoader {
     assert!(heap_dev_offset < heap_end);
     let journal_size = floor_pow2(heap_dev_offset - journal_dev_offset, pages.spage_size_pow2);
 
-    let journal = Journal::new(dev.clone(), journal_dev_offset, journal_size, pages.clone());
+    let mut journal = Journal::new(dev.clone(), journal_dev_offset, journal_size, pages.clone());
+    if cfg.dangerously_disable_journal {
+      journal.dangerously_disable_journal();
+    };
 
     let metadata_heap_size = cfg.object_metadata_reserved_space;
     let data_heap_size = heap_end - heap_dev_offset - metadata_heap_size;

@@ -61,6 +61,9 @@ pub struct BlobdCfgPartition {
 
 #[derive(Clone, Debug)]
 pub struct BlobdCfg {
+  /// This is dangerous to enable. Only enable this if the blobd instance will be discarded after the process exits.
+  /// Disabling this will likely result in corruption on exit, even when terminating normally via SIGINT/SIGTERM, and almost certainly on crash or power loss. Corruption doesn't just mean data loss, it means any possible metadata state, likely invalid.
+  pub dangerously_disable_journal: bool,
   /// This must be a multiple of the spage size.
   pub event_stream_size: u64,
   /// This must be much greater than zero.

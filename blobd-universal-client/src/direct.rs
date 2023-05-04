@@ -36,6 +36,7 @@ pub struct Direct {
 impl Direct {
   pub async fn start(cfg: InitCfg) -> Self {
     let blobd = BlobdLoader::new(BlobdCfg {
+      dangerously_disable_journal: false,
       journal_size_min: 1024 * 1024 * 512,
       object_metadata_reserved_space: 1024 * 1024 * 1024 * 4,
       partitions: vec![BlobdCfgPartition {

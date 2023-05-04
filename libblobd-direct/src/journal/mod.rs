@@ -66,6 +66,7 @@ const JOURNAL_METADATA_OFFSETOF_BYTE_COUNT: u64 = JOURNAL_METADATA_OFFSETOF_HASH
 const JOURNAL_METADATA_RESERVED_SIZE: u64 = JOURNAL_METADATA_OFFSETOF_BYTE_COUNT + 8;
 
 pub(crate) struct Journal {
+  disabled: bool,
   dev: UringBounded,
   // Must be a multiple of spage for direct I/O writing to work.
   state_dev_offset: u64,
@@ -77,11 +78,17 @@ pub(crate) struct Journal {
 impl Journal {
   pub fn new(dev: UringBounded, state_dev_offset: u64, state_size: u64, pages: Pages) -> Self {
     Self {
+      disabled: false,
       dev,
       pages,
       state_dev_offset,
       state_size,
     }
+  }
+
+  pub fn dangerously_disable_journal(&mut self) {
+    self.disabled = true;
+    warn!("journal is now disabled, corruption will likely occur on crash or power loss");
   }
 
   // Do not erase corrupt journal, in case user wants to investigate.
@@ -158,35 +165,36 @@ impl Journal {
   pub async fn commit(&self, txn_records: Vec<(u64, Buf)>) {
     assert!(!txn_records.is_empty());
 
-    // WARNING: We must fit all records in one journal write, and cannot have iterations, as otherwise it's no longer atomic.
+    if !self.disabled {
+      // WARNING: We must fit all records in one journal write, and cannot have iterations, as otherwise it's no longer atomic.
+      trace!(records = txn_records.len(), "beginning commit");
 
-    trace!(records = txn_records.len(), "beginning commit");
+      // Don't use `allocate_with_zeros`, as it takes a really long time to allocate then fill a huge slice of memory (especially in this hot path, as a lot of writes have to go through the journal), and it's unnecessary.
+      let mut jnl = self.pages.allocate(self.state_size);
+      jnl.extend_from_slice(&[0u8; JOURNAL_METADATA_RESERVED_SIZE as usize]);
 
-    // Don't use `allocate_with_zeros`, as it takes a really long time to allocate then fill a huge slice of memory (especially in this hot path, as a lot of writes have to go through the journal), and it's unnecessary.
-    let mut jnl = self.pages.allocate(self.state_size);
-    jnl.extend_from_slice(&[0u8; JOURNAL_METADATA_RESERVED_SIZE as usize]);
+      for (dev_offset, data) in txn_records.iter() {
+        let data_len = u64!(data.len());
+        assert_eq!(mod_pow2(data_len, self.pages.spage_size_pow2), 0);
 
-    for (dev_offset, data) in txn_records.iter() {
-      let data_len = u64!(data.len());
-      assert_eq!(mod_pow2(data_len, self.pages.spage_size_pow2), 0);
+        jnl.write(&create_u40_le(dev_offset >> 8)).unwrap();
+        jnl.push(u8!(div_pow2(data_len, self.pages.spage_size_pow2)));
+        jnl.write(data).unwrap();
+      }
 
-      jnl.write(&create_u40_le(dev_offset >> 8)).unwrap();
-      jnl.push(u8!(div_pow2(data_len, self.pages.spage_size_pow2)));
-      jnl.write(data).unwrap();
-    }
+      let jnl_byte_count = u64!(jnl.len());
+      jnl.write_u64_le_at(JOURNAL_METADATA_OFFSETOF_BYTE_COUNT, jnl_byte_count);
 
-    let jnl_byte_count = u64!(jnl.len());
-    jnl.write_u64_le_at(JOURNAL_METADATA_OFFSETOF_BYTE_COUNT, jnl_byte_count);
+      trace!(bytes = jnl_byte_count, "hashing journal");
+      let (hash, mut jnl) = spawn_blocking(move || (blake3::hash(&jnl), jnl))
+        .await
+        .unwrap();
+      jnl.write_at(JOURNAL_METADATA_OFFSETOF_HASH, hash.as_bytes());
 
-    trace!(bytes = jnl_byte_count, "hashing journal");
-    let (hash, mut jnl) = spawn_blocking(move || (blake3::hash(&jnl), jnl))
-      .await
-      .unwrap();
-    jnl.write_at(JOURNAL_METADATA_OFFSETOF_HASH, hash.as_bytes());
-
-    trace!(bytes = jnl_byte_count, "writing journal");
-    self.dev.write(self.state_dev_offset, jnl).await;
-    self.dev.sync().await;
+      trace!(bytes = jnl_byte_count, "writing journal");
+      self.dev.write(self.state_dev_offset, jnl).await;
+      self.dev.sync().await;
+    };
 
     trace!(records = txn_records.len(), "writing records");
     iter(txn_records)
@@ -196,12 +204,14 @@ impl Journal {
       .await;
     self.dev.sync().await;
 
-    trace!("erasing journal");
-    self
-      .dev
-      .write(self.state_dev_offset, self.generate_blank_state())
-      .await;
-    self.dev.sync().await;
-    trace!("journal committed");
+    if !self.disabled {
+      trace!("erasing journal");
+      self
+        .dev
+        .write(self.state_dev_offset, self.generate_blank_state())
+        .await;
+      self.dev.sync().await;
+      trace!("journal committed");
+    };
   }
 }
