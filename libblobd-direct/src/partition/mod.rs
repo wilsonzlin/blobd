@@ -76,15 +76,16 @@ impl PartitionLoader {
     let object_id_serial_size = pages.spage_size();
 
     let stream_dev_offset = object_id_serial_dev_offset + object_id_serial_size;
-    let stream_size = cfg.event_stream_size;
+    let stream_size = floor_pow2(cfg.event_stream_size, cfg.spage_size_pow2);
 
     let journal_dev_offset = stream_dev_offset + stream_size;
     let min_reserved_space = journal_dev_offset + cfg.journal_size_min;
 
     // `heap_dev_offset` is equivalent to the reserved size.
     let heap_dev_offset = ceil_pow2(min_reserved_space, pages.lpage_size_pow2);
+    let metadata_heap_size = floor_pow2(cfg.object_metadata_reserved_space, cfg.lpage_size_pow2);
     let heap_end = floor_pow2(dev.len(), pages.lpage_size_pow2);
-    assert!(heap_dev_offset < heap_end);
+    assert!(heap_dev_offset + metadata_heap_size < heap_end);
     let journal_size = floor_pow2(heap_dev_offset - journal_dev_offset, pages.spage_size_pow2);
 
     let mut journal = Journal::new(dev.clone(), journal_dev_offset, journal_size, pages.clone());
@@ -92,7 +93,6 @@ impl PartitionLoader {
       journal.dangerously_disable_journal();
     };
 
-    let metadata_heap_size = cfg.object_metadata_reserved_space;
     let data_heap_size = heap_end - heap_dev_offset - metadata_heap_size;
 
     info!(
@@ -156,7 +156,7 @@ impl PartitionLoader {
     ) = join! {
       ObjectIdSerial::load_from_device(dev.bounded(self.object_id_serial_dev_offset, self.object_id_serial_size), pages.clone()),
       Stream::load_from_device(dev.bounded(self.stream_dev_offset, self.stream_size), pages.clone()),
-      load_objects_from_device(dev.bounded(self.heap_dev_offset, self.heap_dev_offset + self.metadata_heap_size), pages.clone(), self.metrics.clone(), self.heap_dev_offset, self.metadata_heap_size, self.data_heap_size)
+      load_objects_from_device(dev.clone(), pages.clone(), self.metrics.clone(), self.heap_dev_offset, self.metadata_heap_size, self.data_heap_size)
     };
 
     let stream = Arc::new(parking_lot::RwLock::new(stream));

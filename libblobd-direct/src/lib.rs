@@ -64,14 +64,14 @@ pub struct BlobdCfg {
   /// This is dangerous to enable. Only enable this if the blobd instance will be discarded after the process exits.
   /// Disabling this will likely result in corruption on exit, even when terminating normally via SIGINT/SIGTERM, and almost certainly on crash or power loss. Corruption doesn't just mean data loss, it means any possible metadata state, likely invalid.
   pub dangerously_disable_journal: bool,
-  /// This must be a multiple of the spage size.
+  /// This will be rounded down to the nearest multiple of the spage size.
   pub event_stream_size: u64,
   /// This must be much greater than zero.
   pub expire_incomplete_objects_after_secs: u64,
   /// This should be at least 1 GiB; the more the better.
   pub journal_size_min: u64,
   pub lpage_size_pow2: u8,
-  /// The amount of bytes to reserve for storing the metadata of all objects. This can be expanded online later on, but only up to the leftmost object data allocation, so it's worth setting this to a high value. This must be a multiple of the lpage size.
+  /// The amount of bytes to reserve for storing the metadata of all objects. This can be expanded online later on, but only up to the leftmost object data allocation, so it's worth setting this to a high value. This will be rounded down to the nearest multiple of the lpage size.
   pub object_metadata_reserved_space: u64,
   /// The amount of partitions must be a power of two.
   pub partitions: Vec<BlobdCfgPartition>,
@@ -92,7 +92,6 @@ pub struct BlobdLoader {
 
 impl BlobdLoader {
   pub fn new(cfg: BlobdCfg) -> Self {
-    assert_eq!(mod_pow2(cfg.event_stream_size, cfg.spage_size_pow2), 0);
     assert!(cfg.expire_incomplete_objects_after_secs > 0);
 
     let pages = Pages::new(cfg.spage_size_pow2, cfg.lpage_size_pow2);

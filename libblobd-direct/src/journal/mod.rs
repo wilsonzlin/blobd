@@ -88,7 +88,7 @@ impl Journal {
 
   pub fn dangerously_disable_journal(&mut self) {
     self.disabled = true;
-    warn!("journal is now disabled, corruption will likely occur on crash or power loss");
+    warn!("journal is now disabled, corruption will likely occur on exit");
   }
 
   // Do not erase corrupt journal, in case user wants to investigate.

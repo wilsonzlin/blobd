@@ -1,6 +1,7 @@
 use crate::journal::Transaction;
 use crate::pages::Pages;
 use bufpool::buf::Buf;
+#[cfg(not(feature = "io-uring"))]
 use bufpool::BUFPOOL;
 use dashmap::DashMap;
 #[cfg(feature = "io-uring")]
@@ -24,10 +25,12 @@ use std::fs::File;
 use std::hash::BuildHasherDefault;
 use std::io;
 use std::os::fd::AsRawFd;
+#[cfg(not(feature = "io-uring"))]
 use std::os::unix::prelude::FileExt;
 use std::sync::Arc;
 use std::thread;
 use strum::Display;
+#[cfg(not(feature = "io-uring"))]
 use tokio::task::spawn_blocking;
 use tokio::time::Instant;
 use tracing::trace;

@@ -40,14 +40,14 @@ pub(crate) async fn format_device_for_objects(metadata_dev: UringBounded, pages:
 }
 
 pub(crate) async fn load_objects_from_device(
-  metadata_dev: UringBounded,
+  // This must not be bounded as we'll use raw absolute offsets.
+  dev: UringBounded,
   pages: Pages,
   metrics: Arc<BlobdMetrics>,
   heap_dev_offset: u64,
   metadata_space: u64,
   data_space: u64,
 ) -> LoadedObjects {
-  let meta_dev = metadata_dev;
   let mut incomplete = BTreeMap::new();
   let committed: CommittedObjects = Default::default();
   let mut meta_alloc = Allocator::new(
@@ -68,7 +68,7 @@ pub(crate) async fn load_objects_from_device(
   let mut dev_offset = heap_dev_offset;
   // This condition handles the edge case where the entire metadata heap is used.
   'outer: while dev_offset < heap_dev_offset + metadata_space {
-    let raw = meta_dev.read(dev_offset, pages.lpage_size()).await;
+    let raw = dev.read(dev_offset, pages.lpage_size()).await;
     let mut cur = &raw[..];
     while !cur.is_empty() {
       let page_size_pow2 = cur[0];

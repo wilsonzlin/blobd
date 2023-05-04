@@ -26,6 +26,7 @@ use libblobd_direct::BlobdCfgPartition;
 use libblobd_direct::BlobdLoader;
 use off64::u64;
 use off64::u8;
+use off64::usz;
 use std::sync::Arc;
 use tracing::info;
 
@@ -35,16 +36,21 @@ pub struct Direct {
 
 impl Direct {
   pub async fn start(cfg: InitCfg) -> Self {
+    let part_count = u64!(num_cpus::get());
+    let part_len = cfg.device_size / part_count / cfg.lpage_size * cfg.lpage_size;
     let blobd = BlobdLoader::new(BlobdCfg {
       dangerously_disable_journal: false,
-      journal_size_min: 1024 * 1024 * 512,
-      object_metadata_reserved_space: 1024 * 1024 * 1024 * 4,
-      partitions: vec![BlobdCfgPartition {
-        path: cfg.device,
-        len: cfg.device_size,
-        offset: 0,
-      }],
-      event_stream_size: 1024 * 1024 * 1024 * 1,
+      journal_size_min: (1024 * 1024 * 512) / part_count,
+      object_metadata_reserved_space: (1024 * 1024 * 1024 * 4) / part_count,
+      partitions: (0..cfg.device_size)
+        .step_by(usz!(part_len))
+        .map(|offset| BlobdCfgPartition {
+          path: cfg.device.clone(),
+          len: part_len,
+          offset,
+        })
+        .collect(),
+      event_stream_size: (1024 * 1024 * 1024 * 1) / part_count,
       expire_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
       lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
