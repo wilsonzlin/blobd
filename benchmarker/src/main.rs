@@ -81,7 +81,7 @@ struct Cli {
 
   /// Concurrency level. Defaults to 64.
   #[arg(long, default_value_t = 64)]
-  threads: usize,
+  concurrency: usize,
 
   /// Lpage size. Defaults to 16 MiB.
   #[arg(long, default_value_t = 1024 * 1024 * 16)]
@@ -117,7 +117,7 @@ async fn main() {
   let now = Instant::now();
   let incomplete_tokens = Arc::new(parking_lot::Mutex::new(Vec::new()));
   iter(0..cli.objects)
-    .for_each_concurrent(Some(cli.threads), |i| {
+    .for_each_concurrent(Some(cli.concurrency), |i| {
       let blobd = blobd.clone();
       let incomplete_tokens = incomplete_tokens.clone();
       async move {
@@ -141,7 +141,7 @@ async fn main() {
 
   let now = Instant::now();
   iter(incomplete_tokens.lock().as_slice())
-    .for_each_concurrent(Some(cli.threads), |incomplete_token| {
+    .for_each_concurrent(Some(cli.concurrency), |incomplete_token| {
       let blobd = blobd.clone();
       async move {
         for offset in (0..cli.object_size).step_by(usz!(cli.lpage_size)) {
@@ -168,7 +168,7 @@ async fn main() {
 
   let now = Instant::now();
   iter(incomplete_tokens.lock().as_slice())
-    .for_each_concurrent(Some(cli.threads), |incomplete_token| {
+    .for_each_concurrent(Some(cli.concurrency), |incomplete_token| {
       let blobd = blobd.clone();
       async move {
         blobd
@@ -188,7 +188,7 @@ async fn main() {
 
   let now = Instant::now();
   iter(0..cli.objects)
-    .for_each_concurrent(Some(cli.threads), |i| {
+    .for_each_concurrent(Some(cli.concurrency), |i| {
       let blobd = blobd.clone();
       async move {
         blobd
@@ -209,7 +209,7 @@ async fn main() {
 
   let now = Instant::now();
   iter(0..cli.objects)
-    .for_each_concurrent(Some(cli.threads), |i| {
+    .for_each_concurrent(Some(cli.concurrency), |i| {
       let blobd = blobd.clone();
       async move {
         for start in (0..cli.object_size).step_by(usz!(cli.read_size)) {
@@ -239,7 +239,7 @@ async fn main() {
 
   let now = Instant::now();
   iter(0..cli.objects)
-    .for_each_concurrent(Some(cli.threads), |i| {
+    .for_each_concurrent(Some(cli.concurrency), |i| {
       let blobd = blobd.clone();
       async move {
         blobd

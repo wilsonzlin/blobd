@@ -1,11 +1,17 @@
 use crate::journal::Transaction;
 use crate::pages::Pages;
 use bufpool::buf::Buf;
+use bufpool::BUFPOOL;
 use dashmap::DashMap;
+#[cfg(feature = "io-uring")]
 use io_uring::cqueue::Entry as CEntry;
+#[cfg(feature = "io-uring")]
 use io_uring::opcode;
+#[cfg(feature = "io-uring")]
 use io_uring::squeue::Entry as SEntry;
+#[cfg(feature = "io-uring")]
 use io_uring::types;
+#[cfg(feature = "io-uring")]
 use io_uring::IoUring;
 use off64::u32;
 use off64::u64;
@@ -18,9 +24,11 @@ use std::fs::File;
 use std::hash::BuildHasherDefault;
 use std::io;
 use std::os::fd::AsRawFd;
+use std::os::unix::prelude::FileExt;
 use std::sync::Arc;
 use std::thread;
 use strum::Display;
+use tokio::task::spawn_blocking;
 use tokio::time::Instant;
 use tracing::trace;
 
@@ -78,7 +86,10 @@ enum Pending {
 /// This can be cheaply cloned.
 #[derive(Clone)]
 pub(crate) struct UringBounded {
+  #[cfg(not(feature = "io-uring"))]
+  file: Arc<File>,
   // We don't use std::sync::mpsc::Sender as it is not Sync, so it's really complicated to use from any async function.
+  #[cfg(feature = "io-uring")]
   sender: crossbeam_channel::Sender<Request>,
   offset: u64,
   len: u64,
@@ -92,6 +103,41 @@ pub(crate) struct UringCfg {
   pub iopoll: bool,
   /// This requires CAP_SYS_NICE.
   pub sqpoll: Option<u32>,
+}
+
+impl UringBounded {
+  fn assert_in_bounds(&self, offset: u64, len: u64) {
+    assert!(
+      offset + len <= self.len,
+      "attempted to use offset {} with length {}, but device only has length {}",
+      self.offset + offset,
+      len,
+      self.offset + self.len
+    );
+  }
+
+  /// Length of the underlying file range. Note that this may not be the same as the actual file length.
+  pub fn len(&self) -> u64 {
+    self.len
+  }
+
+  /// `offset` must be a multiple of the underlying device's sector size.
+  pub fn bounded(&self, offset: u64, len: u64) -> UringBounded {
+    self.assert_in_bounds(offset, len);
+    Self {
+      #[cfg(not(feature = "io-uring"))]
+      file: self.file.clone(),
+      #[cfg(feature = "io-uring")]
+      sender: self.sender.clone(),
+      offset: self.offset + offset,
+      len,
+    }
+  }
+
+  pub fn record_in_transaction(&self, txn: &mut Transaction, offset: u64, data: Buf) {
+    self.assert_in_bounds(offset, u64!(data.len()));
+    txn.record(self.offset + offset, data);
+  }
 }
 
 // Sources:
@@ -108,6 +154,7 @@ pub(crate) struct UringCfg {
 //   - https://github.com/axboe/liburing/issues/129
 //   - https://github.com/axboe/liburing/issues/571#issuecomment-1106480309
 // - Kernel poller: https://unixism.net/loti/tutorial/sq_poll.html
+#[cfg(feature = "io-uring")]
 impl UringBounded {
   /// `offset` must be a multiple of the underlying device's sector size.
   pub fn new(file: File, offset: u64, len: u64, pages: Pages, cfg: UringCfg) -> Self {
@@ -116,7 +163,7 @@ impl UringBounded {
       Default::default();
     let ring = {
       let mut builder = IoUring::<SEntry, CEntry>::builder();
-      builder.setup_clamp().setup_single_issuer();
+      builder.setup_clamp();
       if cfg.coop_taskrun {
         builder.setup_coop_taskrun();
       };
@@ -252,30 +299,6 @@ impl UringBounded {
     }
   }
 
-  /// Length of the underlying file range. Note that this may not be the same as the actual file length.
-  pub fn len(&self) -> u64 {
-    self.len
-  }
-
-  /// `offset` must be a multiple of the underlying device's sector size.
-  pub fn bounded(&self, offset: u64, len: u64) -> UringBounded {
-    Self {
-      sender: self.sender.clone(),
-      offset: self.offset + offset,
-      len,
-    }
-  }
-
-  fn assert_in_bounds(&self, offset: u64, len: u64) {
-    assert!(
-      offset + len <= self.len,
-      "attempted to read/write at {} with length {}, but device only has length {}",
-      self.offset + offset,
-      len,
-      self.offset + self.len
-    );
-  }
-
   /// `offset` and `len` must be multiples of the underlying device's sector size.
   pub async fn read(&self, offset: u64, len: u64) -> Buf {
     self.assert_in_bounds(offset, len);
@@ -311,15 +334,68 @@ impl UringBounded {
     fut.await
   }
 
-  pub fn record_in_transaction(&self, txn: &mut Transaction, offset: u64, data: Buf) {
-    self.assert_in_bounds(offset, u64!(data.len()));
-    txn.record(self.offset + offset, data);
-  }
-
   /// Even when using direct I/O, `fsync` is still necessary, as it ensures the device itself has flushed any internal caches.
   pub async fn sync(&self) {
     let (fut, fut_ctl) = SignalFuture::new();
     self.sender.send(Request::Sync { res: fut_ctl }).unwrap();
     fut.await
+  }
+}
+
+#[cfg(not(feature = "io-uring"))]
+impl UringBounded {
+  /// `offset` must be a multiple of the underlying device's sector size.
+  pub fn new(file: File, offset: u64, len: u64, _pages: Pages, _cfg: UringCfg) -> Self {
+    Self {
+      file: Arc::new(file),
+      offset,
+      len,
+    }
+  }
+
+  /// `offset` and `len` must be multiples of the underlying device's sector size.
+  pub async fn read(&self, offset: u64, len: u64) -> Buf {
+    self.assert_in_bounds(offset, len);
+    let mut buf = BUFPOOL.allocate_uninitialised(usz!(len));
+    let abs_offset = self.offset + offset;
+    spawn_blocking({
+      let file = self.file.clone();
+      move || {
+        let n = file.read_at(&mut buf, abs_offset).unwrap();
+        assert_eq!(n, usz!(len));
+        buf
+      }
+    })
+    .await
+    .unwrap()
+  }
+
+  /// `offset` and `data.len()` must be multiples of the underlying device's sector size.
+  /// Returns the original `data` so that it can be reused, if desired.
+  pub async fn write(&self, offset: u64, data: Buf) -> Buf {
+    self.assert_in_bounds(offset, u64!(data.len()));
+    let abs_offset = self.offset + offset;
+    spawn_blocking({
+      let file = self.file.clone();
+      move || {
+        let n = file.write_at(&data, abs_offset).unwrap();
+        assert_eq!(n, data.len());
+        data
+      }
+    })
+    .await
+    .unwrap()
+  }
+
+  /// Even when using direct I/O, `fsync` is still necessary, as it ensures the device itself has flushed any internal caches.
+  pub async fn sync(&self) {
+    spawn_blocking({
+      let file = self.file.clone();
+      move || {
+        file.sync_data().unwrap();
+      }
+    })
+    .await
+    .unwrap();
   }
 }

@@ -32,5 +32,5 @@ tinybuf = "0.2.3"
 tokio = { version = "1", features = ["full"] }
 toml = "0.7"
 tower-http = { version = "0.4.0", features = ["cors", "trace"] }
-tracing = { version = "0.1.37", features = ["release_max_level_info"] }
+tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
