@@ -74,6 +74,11 @@ pub struct BlobdCfg {
   pub partitions: Vec<BlobdCfgPartition>,
   /// It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
   pub spage_size_pow2: u8,
+  /// Advanced options, only change if you know what you're doing.
+  pub uring_coop_taskrun: bool,
+  pub uring_defer_taskrun: bool,
+  pub uring_iopoll: bool,
+  pub uring_sqpoll: Option<u32>,
 }
 
 pub struct BlobdLoader {

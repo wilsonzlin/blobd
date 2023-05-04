@@ -140,7 +140,7 @@ impl Stream {
     const BUFSIZE: u64 = 1024 * 1024 * 1024 * 1;
     for offset in (0..dev.len()).step_by(usz!(BUFSIZE)) {
       let len = min(dev.len() - offset, BUFSIZE);
-      dev.write(0, pages.allocate_with_zeros(len)).await;
+      dev.write(0, pages.slow_allocate_with_zeros(len)).await;
     }
   }
 
@@ -174,13 +174,13 @@ impl Stream {
 
   /// Provide the return value to `make_available` once durably written to the device.
   pub fn commit(&mut self, txn: &mut Transaction) -> Vec<StreamEventId> {
-    let mut meta = self.pages.allocate_with_zeros(self.pages.spage_size());
+    let mut meta = self.pages.allocate_uninitialised(self.pages.spage_size());
     meta.write_u64_le_at(0, u64!(self.ring.get_virtual_tail()));
     self.dev.record_in_transaction(txn, 0, meta);
 
     for (offset, data_slice) in self.ring.commit() {
-      let mut data = self.pages.allocate_with_zeros(self.pages.spage_size());
-      data.copy_from_slice(data_slice);
+      assert_eq!(data_slice.len(), usz!(self.pages.spage_size()));
+      let data = self.pages.allocate_from_data(data_slice);
       // The first page is reserved for metadata, so all data pages are shifted down by one page.
       self
         .dev

@@ -12,7 +12,7 @@ edition = "2021"
 async-stream = "0.3.4"
 async-trait = "0.1.68"
 blake3 = "1.3.3"
-bufpool = "0.2.0"
+bufpool = "0.2.1"
 chrono = "0.4.24"
 crossbeam-channel = "0.5.8"
 dashmap = "5.4.0"
@@ -35,7 +35,7 @@ struct-name-macro = "0.0.2"
 strum = { version = "0.24", features = ["derive"] }
 tinybuf = "0.2.3"
 tokio = { version = "1", features = ["macros", "sync"] }
-tracing = { version = "0.1.37", features = ["release_max_level_info"] }
+tracing = "0.1.37"
 twox-hash = "=1.6.3" # Pin the version as the docs mention that outputs could change in future versions, which would be fatal: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
 
 [dev-dependencies]

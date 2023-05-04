@@ -39,7 +39,8 @@ pub(crate) fn action_create_object(
   }
 
   let dev_offset = state.metadata_allocator.allocate(u64!(raw.len()));
-  let mut write_page = state.pages.allocate_with_zeros(metadata_page_size);
+  // NOTE: This is not the same as `allocate_from_data` as `metadata_page_size` may be much larger than the actual `raw.len()`.
+  let mut write_page = state.pages.allocate_uninitialised(metadata_page_size);
   write_page[..raw.len()].copy_from_slice(&raw);
   let obj = ObjectMetadata::new(dev_offset, raw, offsets, layout.tail_page_sizes_pow2);
   let object_id = obj.id();

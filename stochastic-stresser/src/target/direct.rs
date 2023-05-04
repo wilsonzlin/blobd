@@ -52,6 +52,10 @@ impl Direct {
       expire_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
       lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
+      uring_coop_taskrun: false,
+      uring_defer_taskrun: false,
+      uring_iopoll: false,
+      uring_sqpoll: None,
     });
     blobd.format().await;
     info!("formatted device");

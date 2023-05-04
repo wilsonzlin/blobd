@@ -39,7 +39,7 @@ impl ObjectIdSerial {
 
   pub async fn format_device(dev: UringBounded, pages: &Pages) {
     dev
-      .write(0, pages.allocate_with_zeros(pages.spage_size()))
+      .write(0, pages.slow_allocate_with_zeros(pages.spage_size()))
       .await;
   }
 
@@ -59,7 +59,7 @@ impl ObjectIdSerial {
     let mut raw = self
       .inner
       .pages
-      .allocate_with_zeros(self.inner.pages.spage_size());
+      .allocate_uninitialised(self.inner.pages.spage_size());
     raw.write_u64_le_at(0, next);
     self.inner.dev.record_in_transaction(txn, 0, raw);
   }

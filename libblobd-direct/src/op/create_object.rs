@@ -55,7 +55,7 @@ pub(crate) async fn op_create_object(
   let page_size = max(ctx.pages.spage_size(), meta_size.next_power_of_two());
   // This is stored in memory, so don't allocate rounded up to spage if less, as that's a significant waste of memory.
   // When the action writes, it'll copy the data to the page size.
-  let mut raw = ctx.pages.allocate_with_zeros(meta_size);
+  let mut raw = ctx.pages.allocate_uninitialised(meta_size);
   raw[usz!(offsets.page_size_pow2())] = u8!(page_size.ilog2());
   raw[usz!(offsets.state())] = ObjectState::Incomplete as u8;
   raw.write_u64_le_at(offsets.id(), object_id);

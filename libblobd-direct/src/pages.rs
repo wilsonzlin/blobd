@@ -3,6 +3,7 @@ use bufpool::BufPool;
 use off64::usz;
 use std::ops::Deref;
 use std::sync::Arc;
+use tracing::trace;
 
 pub(crate) struct Inner {
   pub lpage_size_pow2: u8,
@@ -30,14 +31,37 @@ impl Pages {
     1 << self.spage_size_pow2
   }
 
-  /// `size` must be a multiple of the spage size.
-  pub fn allocate_with_zeros(&self, size: u64) -> Buf {
-    self.pool.allocate_with_zeros(usz!(size))
+  /// `cap` must be a multiple of the spage size.
+  pub fn allocate(&self, cap: u64) -> Buf {
+    trace!(cap, "allocating buffer");
+    let res = self.pool.allocate(usz!(cap));
+    trace!(cap, "allocated buffer");
+    res
+  }
+
+  /// `len` must be a multiple of the spage size.
+  // Prefer this over `allocate_with_zeros` as it's extremely slow. If you need it, use `slow_allocate_with_zeros`.
+  pub fn allocate_uninitialised(&self, len: u64) -> Buf {
+    trace!(len, "allocating uninitialised buffer");
+    let res = self.pool.allocate_uninitialised(usz!(len));
+    trace!(len, "allocated uninitialised buffer");
+    res
+  }
+
+  // This is slow, so avoid it in hot paths.
+  pub fn slow_allocate_with_zeros(&self, len: u64) -> Buf {
+    trace!(len, "allocating zeroed buffer");
+    let res = self.pool.allocate_with_zeros(usz!(len));
+    trace!(len, "allocated zeroed buffer");
+    res
   }
 
   /// `data.len()` must be a multiple of the spage size.
   pub fn allocate_from_data(&self, data: &[u8]) -> Buf {
-    self.pool.allocate_from_data(data)
+    trace!(size = data.len(), "copying data into buffer");
+    let res = self.pool.allocate_from_data(data);
+    trace!(size = data.len(), "copied data into buffer");
+    res
   }
 }
 

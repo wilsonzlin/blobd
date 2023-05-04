@@ -10,6 +10,7 @@ use crate::state::State;
 use crate::state::StateWorker;
 use crate::stream::Stream;
 use crate::uring::UringBounded;
+use crate::uring::UringCfg;
 use crate::util::ceil_pow2;
 use crate::util::floor_pow2;
 use crate::BlobdCfg;
@@ -64,7 +65,12 @@ impl PartitionLoader {
       .custom_flags(libc::O_DIRECT)
       .open(&part.path)
       .unwrap();
-    let dev = UringBounded::new(part_file, part.offset, part.len, pages.clone());
+    let dev = UringBounded::new(part_file, part.offset, part.len, pages.clone(), UringCfg {
+      coop_taskrun: cfg.uring_coop_taskrun,
+      defer_taskrun: cfg.uring_defer_taskrun,
+      iopoll: cfg.uring_iopoll,
+      sqpoll: cfg.uring_sqpoll,
+    });
 
     let object_id_serial_dev_offset = 0;
     let object_id_serial_size = pages.spage_size();

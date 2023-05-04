@@ -5,6 +5,7 @@ use crate::util::mod_pow2;
 use bufpool::buf::Buf;
 use futures::stream::iter;
 use futures::StreamExt;
+use off64::int::create_u40_le;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
 use off64::u64;
@@ -12,10 +13,10 @@ use off64::u8;
 use off64::usz;
 use off64::Off64Read;
 use off64::Off64WriteMut;
-use std::collections::BTreeMap;
-use std::mem::take;
+use std::io::Write;
 use tokio::task::spawn_blocking;
 use tracing::debug;
+use tracing::trace;
 use tracing::warn;
 
 /*
@@ -26,18 +27,19 @@ For simplicity, we buffer the entire journal in memory, and perform one single w
 
 */
 
-// Little more than a wrapper over a map, but provides semantic type and method names and does some basic assertions.
+// Little more than a wrapper, but provides semantic type and method names and does some basic assertions.
 #[derive(Debug)]
 pub(crate) struct Transaction {
   spage_size_pow2: u8,
-  spages: BTreeMap<u64, Buf>,
+  // We no longer use a map, as overwrites in the same transaction are rare and intentional (e.g. updating state of object rewrites only first spage) in the current new architecture.
+  spages: Vec<(u64, Buf)>,
 }
 
 impl Transaction {
   pub fn new(spage_size_pow2: u8) -> Self {
     Self {
       spage_size_pow2,
-      spages: Default::default(),
+      spages: Vec::new(),
     }
   }
 
@@ -48,19 +50,11 @@ impl Transaction {
   pub fn record(&mut self, dev_offset: u64, data: Buf) {
     assert!(data.len() >= (1 << self.spage_size_pow2));
     assert_eq!(mod_pow2(u64!(data.len()), self.spage_size_pow2), 0);
-    if let Some((prev_dev_offset, prev_data)) = self.spages.range(..dev_offset).rev().next() {
-      assert!(prev_dev_offset + u64!(prev_data.len()) <= dev_offset);
-    };
-    if let Some((next_dev_offset, _)) = self.spages.range(dev_offset..).next() {
-      assert!(*next_dev_offset >= dev_offset + u64!(data.len()));
-    };
-    let None = self.spages.insert(dev_offset, data) else {
-      panic!("conflicting data to write at offset {dev_offset}");
-    };
+    self.spages.push((dev_offset, data));
   }
 
-  pub fn drain_all(&mut self) -> impl Iterator<Item = (u64, Buf)> {
-    take(&mut self.spages).into_iter()
+  pub fn drain_all(&mut self) -> impl Iterator<Item = (u64, Buf)> + '_ {
+    self.spages.drain(..)
   }
 }
 
@@ -118,8 +112,9 @@ impl Journal {
       let record_data_len = u64!(raw[usz!(next + 5)]) * self.pages.spage_size();
       next += 6;
 
-      let mut record_data = self.pages.allocate_with_zeros(record_data_len);
-      record_data.copy_from_slice(raw.read_at(next, record_data_len));
+      let record_data = self
+        .pages
+        .allocate_from_data(raw.read_at(next, record_data_len));
       next += record_data_len;
       to_write.push((record_dev_offset, record_data));
     }
@@ -142,7 +137,8 @@ impl Journal {
   }
 
   fn generate_blank_state(&self) -> Buf {
-    let mut raw = self.pages.allocate_with_zeros(self.pages.spage_size());
+    let mut raw = self.pages.allocate_uninitialised(self.pages.spage_size());
+    raw.write_at(JOURNAL_METADATA_OFFSETOF_HASH, &[0u8; 32]);
     raw.write_u64_le_at(
       JOURNAL_METADATA_OFFSETOF_BYTE_COUNT,
       JOURNAL_METADATA_RESERVED_SIZE,
@@ -164,31 +160,35 @@ impl Journal {
 
     // WARNING: We must fit all records in one journal write, and cannot have iterations, as otherwise it's no longer atomic.
 
-    let mut jnl = self.pages.allocate_with_zeros(self.state_size);
+    trace!(records = txn_records.len(), "beginning commit");
 
-    let mut next = JOURNAL_METADATA_RESERVED_SIZE;
+    // Don't use `allocate_with_zeros`, as it takes a really long time to allocate then fill a huge slice of memory (especially in this hot path, as a lot of writes have to go through the journal), and it's unnecessary.
+    let mut jnl = self.pages.allocate(self.state_size);
+    jnl.extend_from_slice(&[0u8; JOURNAL_METADATA_RESERVED_SIZE as usize]);
+
     for (dev_offset, data) in txn_records.iter() {
       let data_len = u64!(data.len());
       assert_eq!(mod_pow2(data_len, self.pages.spage_size_pow2), 0);
 
-      jnl.write_u40_le_at(next, dev_offset >> 8);
-      jnl[usz!(next + 5)] = u8!(div_pow2(data_len, self.pages.spage_size_pow2));
-      next += 6;
-
-      jnl.write_at(next, &data);
-      next += data_len;
+      jnl.write(&create_u40_le(dev_offset >> 8)).unwrap();
+      jnl.push(u8!(div_pow2(data_len, self.pages.spage_size_pow2)));
+      jnl.write(data).unwrap();
     }
 
-    jnl.write_u64_le_at(JOURNAL_METADATA_OFFSETOF_BYTE_COUNT, next);
+    let jnl_byte_count = u64!(jnl.len());
+    jnl.write_u64_le_at(JOURNAL_METADATA_OFFSETOF_BYTE_COUNT, jnl_byte_count);
 
+    trace!(bytes = jnl_byte_count, "hashing journal");
     let (hash, mut jnl) = spawn_blocking(move || (blake3::hash(&jnl), jnl))
       .await
       .unwrap();
     jnl.write_at(JOURNAL_METADATA_OFFSETOF_HASH, hash.as_bytes());
 
+    trace!(bytes = jnl_byte_count, "writing journal");
     self.dev.write(self.state_dev_offset, jnl).await;
     self.dev.sync().await;
 
+    trace!(records = txn_records.len(), "writing records");
     iter(txn_records)
       .for_each_concurrent(None, |(dev_offset, buf)| async move {
         self.dev.write(dev_offset, buf).await;
@@ -196,10 +196,12 @@ impl Journal {
       .await;
     self.dev.sync().await;
 
+    trace!("erasing journal");
     self
       .dev
       .write(self.state_dev_offset, self.generate_blank_state())
       .await;
     self.dev.sync().await;
+    trace!("journal committed");
   }
 }

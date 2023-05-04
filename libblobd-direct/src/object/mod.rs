@@ -84,7 +84,7 @@ impl ObjectMetadata {
   }
 
   pub fn build_raw_data_with_new_object_state(&self, pages: &Pages, new_state: ObjectState) -> Buf {
-    let mut buf = pages.allocate_with_zeros(pages.spage_size());
+    let mut buf = pages.allocate_uninitialised(pages.spage_size());
     let len = min(self.raw.len(), usz!(pages.spage_size()));
     buf[..len].copy_from_slice(&self.raw[..len]);
     buf[usz!(self.off.state())] = new_state as u8;

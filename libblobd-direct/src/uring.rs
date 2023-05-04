@@ -13,6 +13,7 @@ use off64::usz;
 use rustc_hash::FxHasher;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
+use std::collections::VecDeque;
 use std::fs::File;
 use std::hash::BuildHasherDefault;
 use std::io;
@@ -20,6 +21,15 @@ use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::thread;
 use strum::Display;
+use tokio::time::Instant;
+use tracing::trace;
+
+fn assert_result_is_ok(res: i32) -> u32 {
+  if res < 0 {
+    panic!("{:?}", io::Error::from_raw_os_error(-res));
+  };
+  u32!(res)
+}
 
 struct ReadRequest {
   abs_offset: u64,
@@ -74,6 +84,16 @@ pub(crate) struct UringBounded {
   len: u64,
 }
 
+/// For advanced users only. Some of these may cause EINVAL, or worsen performance.
+#[derive(Clone, Default, Debug)]
+pub(crate) struct UringCfg {
+  pub coop_taskrun: bool,
+  pub defer_taskrun: bool,
+  pub iopoll: bool,
+  /// This requires CAP_SYS_NICE.
+  pub sqpoll: Option<u32>,
+}
+
 // Sources:
 // - Example: https://github1s.com/tokio-rs/io-uring/blob/HEAD/examples/tcp_echo.rs
 // - liburing docs: https://unixism.net/loti/ref-liburing/completion.html
@@ -90,19 +110,27 @@ pub(crate) struct UringBounded {
 // - Kernel poller: https://unixism.net/loti/tutorial/sq_poll.html
 impl UringBounded {
   /// `offset` must be a multiple of the underlying device's sector size.
-  pub fn new(file: File, offset: u64, len: u64, pages: Pages) -> Self {
+  pub fn new(file: File, offset: u64, len: u64, pages: Pages, cfg: UringCfg) -> Self {
     let (sender, receiver) = crossbeam_channel::unbounded::<Request>();
-    let pending: Arc<DashMap<u64, Pending, BuildHasherDefault<FxHasher>>> = Default::default();
-    let ring = IoUring::<SEntry, CEntry>::builder()
-      // TODO These cause EINVAL, investigate further.
-      // .setup_coop_taskrun()
-      // .setup_defer_taskrun()
-      // .setup_iopoll()
-      .setup_clamp()
-      .setup_single_issuer()
-      .setup_sqpoll(3000) // NOTE: This requires CAP_SYS_NICE.
-      .build(134217728)
-      .unwrap();
+    let pending: Arc<DashMap<u64, (Pending, Instant), BuildHasherDefault<FxHasher>>> =
+      Default::default();
+    let ring = {
+      let mut builder = IoUring::<SEntry, CEntry>::builder();
+      builder.setup_clamp().setup_single_issuer();
+      if cfg.coop_taskrun {
+        builder.setup_coop_taskrun();
+      };
+      if cfg.defer_taskrun {
+        builder.setup_defer_taskrun();
+      };
+      if cfg.iopoll {
+        builder.setup_iopoll();
+      }
+      if let Some(sqpoll) = cfg.sqpoll {
+        builder.setup_sqpoll(sqpoll);
+      };
+      builder.build(134217728).unwrap()
+    };
     ring
       .submitter()
       .register_files(&[file.as_raw_fd()])
@@ -113,50 +141,65 @@ impl UringBounded {
       let pages = pages.clone();
       let pending = pending.clone();
       let ring = ring.clone();
+      // This is outside the loop to avoid reallocation each time.
+      let mut msgbuf = VecDeque::new();
       move || {
         let mut submission = unsafe { ring.submission_shared() };
         let mut next_id = 0;
-        for msg in receiver {
-          let id = next_id;
-          next_id += 1;
-          let entry = match msg {
-            Request::Read { req, res } => {
-              let buf = pages.allocate_with_zeros(u64!(req.len));
-              // Using `as_mut_ptr` would require a mutable borrow.
-              let ptr = buf.as_ptr() as *mut u8;
-              // Insert before submitting. This takes ownership of `buf` which will ensure it doesn't get dropped while waiting for io_uring.
-              pending.insert(id, Pending::Read { buf, res });
-              opcode::Read::new(types::Fixed(0), ptr, req.len)
-                .offset(req.abs_offset)
-                .build()
-                .user_data(id)
-            }
-            Request::Write { req, res } => {
-              // Using `as_mut_ptr` would require a mutable borrow.
-              let ptr = req.data.as_ptr() as *mut u8;
-              // Insert before submitting. This takes ownership of `buf` which will ensure it doesn't get dropped while waiting for io_uring.
-              let len = u32!(req.data.len());
-              pending.insert(id, Pending::Write {
-                res,
-                len,
-                buf: req.data,
-              });
-              opcode::Write::new(types::Fixed(0), ptr, len)
-                .offset(req.abs_offset)
-                .build()
-                .user_data(id)
-            }
-            Request::Sync { res } => {
-              // Insert before submitting.
-              pending.insert(id, Pending::Sync { res });
-              opcode::Fsync::new(types::Fixed(0)).build().user_data(id)
-            }
-          };
-          unsafe {
-            submission.push(&entry).unwrap();
-          };
+        loop {
+          // Process multiple messages at once to avoid too many io_uring submits.
+          msgbuf.push_back(receiver.recv().unwrap());
+          while let Ok(msg) = receiver.try_recv() {
+            msgbuf.push_back(msg);
+          }
+          for msg in msgbuf.drain(..) {
+            let id = next_id;
+            next_id += 1;
+            trace!(id, typ = msg.to_string(), "submitting request");
+            let (pending_entry, submission_entry) = match msg {
+              Request::Read { req, res } => {
+                let buf = pages.allocate_uninitialised(u64!(req.len));
+                // Using `as_mut_ptr` would require a mutable borrow.
+                let ptr = buf.as_ptr() as *mut u8;
+                // This takes ownership of `buf` which will ensure it doesn't get dropped while waiting for io_uring.
+                (
+                  Pending::Read { buf, res },
+                  opcode::Read::new(types::Fixed(0), ptr, req.len)
+                    .offset(req.abs_offset)
+                    .build()
+                    .user_data(id),
+                )
+              }
+              Request::Write { req, res } => {
+                // Using `as_mut_ptr` would require a mutable borrow.
+                let ptr = req.data.as_ptr() as *mut u8;
+                // This takes ownership of `buf` which will ensure it doesn't get dropped while waiting for io_uring.
+                let len = u32!(req.data.len());
+                (
+                  Pending::Write {
+                    res,
+                    len,
+                    buf: req.data,
+                  },
+                  opcode::Write::new(types::Fixed(0), ptr, len)
+                    .offset(req.abs_offset)
+                    .build()
+                    .user_data(id),
+                )
+              }
+              Request::Sync { res } => (
+                Pending::Sync { res },
+                opcode::Fsync::new(types::Fixed(0)).build().user_data(id),
+              ),
+            };
+            // Insert before submitting.
+            pending.insert(id, (pending_entry, Instant::now()));
+            unsafe {
+              submission.push(&submission_entry).unwrap();
+            };
+          }
           submission.sync();
-          // In case our kernel thread has gone to sleep.
+          // This is still necessary even with sqpoll, as our kernel thread may have gone to sleep.
           ring.submit().unwrap();
         }
       }
@@ -175,28 +218,26 @@ impl UringBounded {
             continue;
           };
           let id = e.user_data();
-          let p = pending.remove(&id).unwrap().1;
+          let (p, started) = pending.remove(&id).unwrap().1;
+          trace!(
+            id,
+            typ = p.to_string(),
+            exec_us = started.elapsed().as_micros(),
+            "completing request"
+          );
+          let rv = assert_result_is_ok(e.result());
           match p {
             Pending::Read { buf, res } => {
-              if e.result() < 0 {
-                panic!("{:?}", io::Error::from_raw_os_error(-e.result()));
-              };
               // We may have read fewer bytes.
-              assert_eq!(usz!(e.result()), buf.len());
+              assert_eq!(usz!(rv), buf.len());
               res.signal(buf);
             }
             Pending::Write { res, len, buf } => {
-              if e.result() < 0 {
-                panic!("{:?}", io::Error::from_raw_os_error(-e.result()));
-              };
               // Assert that all requested bytes to write were written.
-              assert_eq!(len, u32!(e.result()));
+              assert_eq!(rv, len);
               res.signal(buf);
             }
             Pending::Sync { res } => {
-              if e.result() < 0 {
-                panic!("{:?}", io::Error::from_raw_os_error(-e.result()));
-              };
               res.signal(());
             }
           }

@@ -33,7 +33,9 @@ pub(crate) async fn format_device_for_objects(metadata_dev: UringBounded, pages:
   const BUFSIZE: u64 = 1024 * 1024 * 1024;
   for offset in (0..metadata_dev.len()).step_by(usz!(BUFSIZE)) {
     let size = min(metadata_dev.len() - offset, 1024);
-    metadata_dev.write(0, pages.allocate_with_zeros(size)).await;
+    metadata_dev
+      .write(0, pages.slow_allocate_with_zeros(size))
+      .await;
   }
 }
 
