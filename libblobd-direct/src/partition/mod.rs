@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tokio::join;
 use tracing::info;
 
-/**
+/*
 
 PARTITION
 =========
@@ -33,7 +33,7 @@ stream
 journal // Placed here to make use of otherwise unused space due to heap alignment.
 heap
 
-**/
+*/
 
 pub(crate) struct PartitionLoader {
   dev: UringBounded,
@@ -59,12 +59,13 @@ impl PartitionLoader {
     metrics: Arc<BlobdMetrics>,
   ) -> Self {
     let part = &cfg.partitions[partition_idx];
-    let part_file = OpenOptions::new()
-      .read(true)
-      .write(true)
-      .custom_flags(libc::O_DIRECT)
-      .open(&part.path)
-      .unwrap();
+    let part_file = {
+      let mut opt = OpenOptions::new();
+      opt.read(true).write(true);
+      #[cfg(target_os = "linux")]
+      opt.custom_flags(libc::O_DIRECT);
+      opt.open(&part.path).unwrap()
+    };
     let dev = UringBounded::new(part_file, part.offset, part.len, pages.clone(), UringCfg {
       coop_taskrun: cfg.uring_coop_taskrun,
       defer_taskrun: cfg.uring_defer_taskrun,
@@ -137,7 +138,7 @@ impl PartitionLoader {
     dev.sync().await;
   }
 
-  pub async fn load(self) -> Partition {
+  pub async fn load_and_start(self) -> Partition {
     self.journal.recover().await;
 
     let dev = &self.dev;

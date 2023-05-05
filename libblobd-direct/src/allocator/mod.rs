@@ -1,3 +1,6 @@
+#[cfg(test)]
+pub mod tests;
+
 use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
 use crate::util::div_pow2;
@@ -8,7 +11,23 @@ use off64::u8;
 use off64::usz;
 use roaring::RoaringBitmap;
 use std::cmp::max;
+use std::error::Error;
+use std::fmt;
+use std::fmt::Display;
 use std::sync::Arc;
+use struct_name::StructName;
+use struct_name_macro::StructName;
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug, StructName)]
+pub(crate) struct OutOfSpaceError;
+
+impl Display for OutOfSpaceError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(Self::struct_name())
+  }
+}
+
+impl Error for OutOfSpaceError {}
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum AllocDir {
@@ -55,7 +74,11 @@ impl Allocator {
     }
   }
 
-  fn bitmap(&mut self, page_size_pow2: u8) -> &mut RoaringBitmap {
+  fn bitmap(&self, page_size_pow2: u8) -> &RoaringBitmap {
+    &self.free[usz!(page_size_pow2 - self.pages.spage_size_pow2)]
+  }
+
+  fn bitmap_mut(&mut self, page_size_pow2: u8) -> &mut RoaringBitmap {
     &mut self.free[usz!(page_size_pow2 - self.pages.spage_size_pow2)]
   }
 
@@ -74,10 +97,10 @@ impl Allocator {
     assert!(
       page_size_pow2 >= self.pages.spage_size_pow2 && page_size_pow2 <= self.pages.lpage_size_pow2
     );
-    if !self.bitmap(page_size_pow2).remove(page_num) {
+    if !self.bitmap_mut(page_size_pow2).remove(page_num) {
       // We need to split parent.
       self._mark_as_allocated(page_num / 2, page_size_pow2 + 1);
-      self.bitmap(page_size_pow2).insert(page_num ^ 1);
+      self.bitmap_mut(page_size_pow2).insert(page_num ^ 1);
     };
   }
 
@@ -92,8 +115,12 @@ impl Allocator {
     self.metrics.incr_used_bytes(1 << page_size_pow2);
   }
 
+  pub fn can_allocate(&self, page_size_pow2: u8, page_count: u64) -> bool {
+    self.bitmap(page_size_pow2).len() >= page_count
+  }
+
   /// Returns the page number.
-  fn allocate_page(&mut self, page_size_pow2: u8) -> PageNum {
+  fn _allocate(&mut self, page_size_pow2: u8) -> Result<PageNum, OutOfSpaceError> {
     assert!(
       page_size_pow2 >= self.pages.spage_size_pow2 && page_size_pow2 <= self.pages.lpage_size_pow2
     );
@@ -103,23 +130,33 @@ impl Allocator {
       self.bitmap(page_size_pow2).max()
     } {
       Some(page_num) => {
-        assert!(self.bitmap(page_size_pow2).remove(page_num));
-        page_num
+        assert!(self.bitmap_mut(page_size_pow2).remove(page_num));
+        Ok(page_num)
       }
-      None if page_size_pow2 == self.pages.lpage_size_pow2 => {
-        panic!("out of space");
-      }
+      None if page_size_pow2 == self.pages.lpage_size_pow2 => Err(OutOfSpaceError),
       None => {
         // Find or create a larger page.
-        let larger_page_num = self.allocate_page(page_size_pow2 + 1);
-        // Split the larger page in two, and release right page (we'll take the left one).
-        assert!(self.bitmap(page_size_pow2).insert(larger_page_num * 2 + 1));
-        larger_page_num * 2
+        let larger_page_num = self._allocate(page_size_pow2 + 1)?;
+        // Split the larger page in two, and release left/right page depending on allocation direction (we'll take the other one).
+        Ok(match self.dir {
+          // We'll take the left page, so free the right one.
+          AllocDir::Left => {
+            assert!(self
+              .bitmap_mut(page_size_pow2)
+              .insert(larger_page_num * 2 + 1));
+            larger_page_num * 2
+          }
+          // We'll take the right page, so free the left one.
+          AllocDir::Right => {
+            assert!(self.bitmap_mut(page_size_pow2).insert(larger_page_num * 2));
+            larger_page_num * 2 + 1
+          }
+        })
       }
     }
   }
 
-  pub fn allocate(&mut self, size: u64) -> u64 {
+  pub fn allocate(&mut self, size: u64) -> Result<u64, OutOfSpaceError> {
     let pow2 = max(
       self.pages.spage_size_pow2,
       u8!(size.next_power_of_two().ilog2()),
@@ -127,31 +164,31 @@ impl Allocator {
     assert!(pow2 <= self.pages.lpage_size_pow2);
     // We increment these metrics here instead of in `Pages::*`, `Allocator::insert_into_free_list`, `Allocator::allocate_page`, etc. as many of those are called during intermediate states, like merging/splitting pages, which aren't actual allocations.
     self.metrics.incr_used_bytes(1 << pow2);
-    let page_num = self.allocate_page(pow2);
-    self.to_page_dev_offset(page_num, pow2)
+    let page_num = self._allocate(pow2)?;
+    Ok(self.to_page_dev_offset(page_num, pow2))
   }
 
-  fn release_internal(&mut self, page_num: PageNum, page_size_pow2: u8) {
+  fn _release(&mut self, page_num: PageNum, page_size_pow2: u8) {
     // Check if buddy is also free so we can recompact. This doesn't apply to lpages as they don't have buddies (they aren't split).
     if page_size_pow2 < self.pages.lpage_size_pow2 {
       let buddy_page_num = page_num ^ 1;
       if self.bitmap(page_size_pow2).contains(buddy_page_num) {
         // Buddy is also free.
-        assert!(self.bitmap(page_size_pow2).remove(buddy_page_num));
+        assert!(self.bitmap_mut(page_size_pow2).remove(buddy_page_num));
         assert!(!self.bitmap(page_size_pow2).contains(page_num));
         // Merge by freeing parent larger page.
         let parent_page_num = page_num / 2;
-        self.release_internal(parent_page_num, page_size_pow2 + 1);
+        self._release(parent_page_num, page_size_pow2 + 1);
         return;
       };
     };
-    assert!(self.bitmap(page_size_pow2).insert(page_num));
+    assert!(self.bitmap_mut(page_size_pow2).insert(page_num));
   }
 
   pub fn release(&mut self, page_dev_offset: u64, page_size_pow2: u8) {
     let page_num = self.to_page_num(page_dev_offset, page_size_pow2);
     // Similar to `allocate`, we need to change metrics here and use an internal function. See `allocate` for comment explaining why.
     self.metrics.decr_used_bytes(1 << page_size_pow2);
-    self.release_internal(page_num, page_size_pow2);
+    self._release(page_num, page_size_pow2);
   }
 }

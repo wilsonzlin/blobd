@@ -22,19 +22,27 @@ use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
 use std::collections::VecDeque;
 use std::fs::File;
+#[cfg(feature = "io-uring")]
 use std::hash::BuildHasherDefault;
+#[cfg(feature = "io-uring")]
 use std::io;
+#[cfg(feature = "io-uring")]
 use std::os::fd::AsRawFd;
 #[cfg(not(feature = "io-uring"))]
 use std::os::unix::prelude::FileExt;
 use std::sync::Arc;
+#[cfg(feature = "io-uring")]
 use std::thread;
+#[cfg(feature = "io-uring")]
 use strum::Display;
 #[cfg(not(feature = "io-uring"))]
 use tokio::task::spawn_blocking;
+#[cfg(feature = "io-uring")]
 use tokio::time::Instant;
+#[cfg(feature = "io-uring")]
 use tracing::trace;
 
+#[cfg(feature = "io-uring")]
 fn assert_result_is_ok(res: i32) -> u32 {
   if res < 0 {
     panic!("{:?}", io::Error::from_raw_os_error(-res));
@@ -52,6 +60,7 @@ struct WriteRequest {
   data: Buf,
 }
 
+#[cfg(feature = "io-uring")]
 #[derive(Display)]
 enum Request {
   Read {
@@ -67,6 +76,7 @@ enum Request {
   },
 }
 
+#[cfg(feature = "io-uring")]
 #[derive(Display)]
 enum Pending {
   Read {

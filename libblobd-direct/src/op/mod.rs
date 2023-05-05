@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::fmt;
 use std::fmt::Display;
 use std::fmt::Write;
 
@@ -18,12 +19,13 @@ pub enum OpError {
   InexactWriteLength,
   ObjectMetadataTooLarge,
   ObjectNotFound,
+  OutOfSpace,
   RangeOutOfBounds,
   UnalignedWrite,
 }
 
 impl Display for OpError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
       OpError::DataStreamError(e) => {
         write!(f, "an error occurred while reading the input data: {e}")
@@ -35,6 +37,7 @@ impl Display for OpError {
       OpError::InexactWriteLength => write!(f, "data to write is not an exact chunk"),
       OpError::ObjectMetadataTooLarge => write!(f, "object metadata is too large"),
       OpError::ObjectNotFound => write!(f, "object does not exist"),
+      OpError::OutOfSpace => write!(f, "out of space"),
       OpError::RangeOutOfBounds => write!(f, "requested range to read or write is invalid"),
       OpError::UnalignedWrite => {
         write!(f, "data to write does not start at a multiple of TILE_SIZE")

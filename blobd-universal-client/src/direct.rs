@@ -61,7 +61,7 @@ impl Direct {
     });
     blobd.format().await;
     info!("formatted device");
-    let blobd = blobd.load().await;
+    let blobd = blobd.load_and_start().await;
     info!("loaded device");
 
     Self { blobd }

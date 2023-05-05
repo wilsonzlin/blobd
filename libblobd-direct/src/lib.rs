@@ -61,7 +61,7 @@ pub struct BlobdCfgPartition {
 
 #[derive(Clone, Debug)]
 pub struct BlobdCfg {
-  /// This is dangerous to enable. Only enable this if the blobd instance will be discarded after the process exits.
+  /// WARNING: This is dangerous to enable. Only enable this if the blobd instance will be discarded after the process exits.
   /// Disabling this will likely result in corruption on exit, even when terminating normally via SIGINT/SIGTERM, and almost certainly on crash or power loss. Corruption doesn't just mean data loss, it means any possible metadata state, likely invalid.
   pub dangerously_disable_journal: bool,
   /// This will be rounded down to the nearest multiple of the spage size.
@@ -121,12 +121,12 @@ impl BlobdLoader {
       .await;
   }
 
-  pub async fn load(self) -> Blobd {
+  pub async fn load_and_start(self) -> Blobd {
     let partitions = join_all(
       self
         .partitions
         .into_iter()
-        .map(|p| async move { p.load().await }),
+        .map(|p| async move { p.load_and_start().await }),
     )
     .await;
 
