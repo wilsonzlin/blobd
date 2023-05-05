@@ -2,7 +2,6 @@
 
 use crate::pages::Pages;
 use crate::partition::PartitionLoader;
-use crate::util::mod_pow2;
 use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
@@ -31,6 +30,9 @@ use partition::Partition;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
+use stream::StreamEventExpiredError;
+use stream::StreamEventId;
+use stream::StreamEventOwned;
 
 pub mod allocator;
 pub mod ctx;
@@ -158,8 +160,24 @@ impl Blobd {
 
   fn get_partition_by_object_key(&self, key: &[u8]) -> &Partition {
     let hash = twox_hash::xxh3::hash64(key);
+    // We support partition counts that are not power-of-two because that's too inflexible and costly.
     let idx = usz!(hash) % self.partitions.len();
     &self.partitions[idx]
+  }
+
+  /// Returns `Err(StreamEventExpiredError)` if the event no longer exists.
+  /// Returns `Ok(None)` if the event is not yet ready.
+  pub fn get_stream_event(
+    &self,
+    partition_idx: usize,
+    event_id: StreamEventId,
+  ) -> Result<Option<StreamEventOwned>, StreamEventExpiredError> {
+    // We must copy it to an owned value, as otherwise we'll hold the lock the entire time.
+    self.partitions[partition_idx]
+      .stream
+      .read()
+      .get_event(event_id)
+      .map(|e| e.map(|e| e.to_owned()))
   }
 
   pub async fn commit_object(&self, input: OpCommitObjectInput) -> OpResult<OpCommitObjectOutput> {

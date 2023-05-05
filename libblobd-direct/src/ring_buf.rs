@@ -1,6 +1,7 @@
 use bufpool::buf::Buf;
 use bufpool::BUFPOOL;
 use rustc_hash::FxHashSet;
+use std::ops::Deref;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct RingBufItem {
@@ -13,7 +14,7 @@ pub(crate) enum BufOrSlice<'a> {
   Slice(&'a [u8]),
 }
 
-impl<'a> std::ops::Deref for BufOrSlice<'a> {
+impl<'a> Deref for BufOrSlice<'a> {
   type Target = [u8];
 
   fn deref(&self) -> &Self::Target {
@@ -24,6 +25,9 @@ impl<'a> std::ops::Deref for BufOrSlice<'a> {
   }
 }
 
+/// A persisted contiguous block of bytes that will discard older entries as newer entries are pushed, where an entry is any arbitrary slice of bytes.
+/// Every entry pushed is represented by a virtual offset and length, and are pushed at the `virtual_tail` position. Once resolved to the physical position, the pushed data may overwrite/clobber part or all of older entries. **This is not managed by RingBuf**, and it's up to the caller to decide the best way to track and manage this. Also, because of this, RingBuf has no way of storing the virtual head (since `virtual_tail - capacity` may not be exactly at an entry boundary), so this is also left up to the user.
+/// Essentially, use this as a way to store and retrieve bytes compactly (including across page boundaries and rotated around the ring), and to determine which pages are dirty.
 pub(crate) struct RingBuf {
   // TODO A virtual uncommitted head offset would probably suffice and be faster, although slightly more complex.
   dirty_physical_pages: FxHashSet<usize>,
@@ -53,18 +57,22 @@ impl RingBuf {
     }
   }
 
+  pub fn capacity(&self) -> usize {
+    self.raw.len()
+  }
+
   pub fn push(&mut self, data: &[u8]) -> RingBufItem {
-    assert!(data.len() < self.raw.len());
+    assert!(data.len() < self.capacity());
     let virtual_offset = self.virtual_tail;
     for virtual_offset in (virtual_offset..virtual_offset + data.len()).step_by(self.page_size) {
       self
         .dirty_physical_pages
-        .insert(virtual_offset % self.raw.len());
+        .insert(virtual_offset % self.capacity());
     }
 
-    let physical_offset = virtual_offset % self.raw.len();
-    if physical_offset + data.len() > self.raw.len() {
-      let (a, b) = data.split_at(self.raw.len() - physical_offset);
+    let physical_offset = virtual_offset % self.capacity();
+    if physical_offset + data.len() > self.capacity() {
+      let (a, b) = data.split_at(self.capacity() - physical_offset);
       self.raw[physical_offset..].copy_from_slice(a);
       self.raw[..b.len()].copy_from_slice(b);
     } else {
@@ -77,11 +85,11 @@ impl RingBuf {
   }
 
   pub fn get<'a>(&'a self, item: RingBufItem) -> Option<BufOrSlice<'a>> {
-    if self.virtual_tail.saturating_sub(self.raw.len()) > item.virtual_offset {
+    if self.virtual_tail.saturating_sub(self.capacity()) > item.virtual_offset {
       return None;
     };
-    let physical_offset = item.virtual_offset % self.raw.len();
-    if physical_offset + item.len > self.raw.len() {
+    let physical_offset = item.virtual_offset % self.capacity();
+    if physical_offset + item.len > self.capacity() {
       let mut buf = BUFPOOL.allocate(item.len);
       buf.extend_from_slice(&self.raw[physical_offset..]);
       buf.extend_from_slice(&self.raw[..item.len - buf.len()]);
@@ -93,20 +101,25 @@ impl RingBuf {
     }
   }
 
-  pub fn get_virtual_tail(&self) -> usize {
+  pub fn virtual_tail(&self) -> usize {
     self.virtual_tail
   }
 
-  pub fn commit(&mut self) -> impl Iterator<Item = (usize, &[u8])> {
-    self
-      .dirty_physical_pages
-      .drain()
-      .into_iter()
-      .map(|physical_offset| {
-        (
-          physical_offset,
-          &self.raw[physical_offset..physical_offset + self.page_size],
-        )
-      })
+  pub fn commit(&mut self) -> Option<impl Iterator<Item = (usize, &[u8])>> {
+    if self.dirty_physical_pages.is_empty() {
+      return None;
+    };
+    Some(
+      self
+        .dirty_physical_pages
+        .drain()
+        .into_iter()
+        .map(|physical_offset| {
+          (
+            physical_offset,
+            &self.raw[physical_offset..physical_offset + self.page_size],
+          )
+        }),
+    )
   }
 }

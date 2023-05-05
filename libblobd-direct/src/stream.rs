@@ -17,6 +17,7 @@ use off64::Off64Read;
 use off64::Off64WriteMut;
 use rustc_hash::FxHashSet;
 use std::cmp::min;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
@@ -41,19 +42,23 @@ The value of `virtual_head` represents the head position in the ring buffer, as 
 
 **/
 
-const STREVT_OFFSETOF_TYPE: u64 = 0;
-const STREVT_OFFSETOF_TIMESTAMP_MS: u64 = STREVT_OFFSETOF_TYPE + 1;
-const STREVT_OFFSETOF_OBJECT_ID: u64 = STREVT_OFFSETOF_TIMESTAMP_MS + 7;
-const STREVT_OFFSETOF_KEY_LEN: u64 = STREVT_OFFSETOF_OBJECT_ID + 8;
-const STREVT_OFFSETOF_KEY: u64 = STREVT_OFFSETOF_KEY_LEN + 2;
-fn STREVT_SIZE(key_len: u16) -> u64 {
-  STREVT_OFFSETOF_KEY + u64::from(key_len)
+const STATE_OFFSETOF_HEAD_EVENT_ID: u64 = 0;
+const STATE_OFFSETOF_VIRTUAL_HEAD: u64 = STATE_OFFSETOF_HEAD_EVENT_ID + 8;
+const STATE_OFFSETOF_VIRTUAL_TAIL: u64 = STATE_OFFSETOF_VIRTUAL_HEAD + 8;
+
+const EVENT_OFFSETOF_TYPE: u64 = 0;
+const EVENT_OFFSETOF_TIMESTAMP_MS: u64 = EVENT_OFFSETOF_TYPE + 1;
+const EVENT_OFFSETOF_OBJECT_ID: u64 = EVENT_OFFSETOF_TIMESTAMP_MS + 7;
+const EVENT_OFFSETOF_KEY_LEN: u64 = EVENT_OFFSETOF_OBJECT_ID + 8;
+const EVENT_OFFSETOF_KEY: u64 = EVENT_OFFSETOF_KEY_LEN + 2;
+fn EVENT_SIZE(key_len: u16) -> u64 {
+  EVENT_OFFSETOF_KEY + u64::from(key_len)
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, FromPrimitive)]
 #[repr(u8)]
 pub enum StreamEventType {
-  // WARNING: Values must start from 1, so that empty slots are automatically detected since formatting fills storage with zero.
+  // Out of abundance of caution, don't use zero, as that may inadvertently accept a zeroed device.
   ObjectCommit = 1,
   ObjectDelete,
 }
@@ -72,21 +77,21 @@ pub struct StreamEvent<'a> {
 
 impl<'a> StreamEvent<'a> {
   pub fn typ(&self) -> StreamEventType {
-    StreamEventType::from_u8(self.raw[usz!(STREVT_OFFSETOF_TYPE)]).unwrap()
+    StreamEventType::from_u8(self.raw[usz!(EVENT_OFFSETOF_TYPE)]).unwrap()
   }
 
   pub fn timestamp_ms(&self) -> u64 {
-    self.raw.read_u56_le_at(STREVT_OFFSETOF_TIMESTAMP_MS)
+    self.raw.read_u56_le_at(EVENT_OFFSETOF_TIMESTAMP_MS)
   }
 
   pub fn object_id(&self) -> u64 {
-    self.raw.read_u64_le_at(STREVT_OFFSETOF_OBJECT_ID)
+    self.raw.read_u64_le_at(EVENT_OFFSETOF_OBJECT_ID)
   }
 
   pub fn key(&self) -> &[u8] {
     self.raw.read_at(
-      STREVT_OFFSETOF_KEY,
-      self.raw.read_u16_le_at(STREVT_OFFSETOF_KEY_LEN).into(),
+      EVENT_OFFSETOF_KEY,
+      self.raw.read_u16_le_at(EVENT_OFFSETOF_KEY_LEN).into(),
     )
   }
 
@@ -111,37 +116,61 @@ impl Display for StreamEventExpiredError {
 
 impl Error for StreamEventExpiredError {}
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct StreamEventId(RingBufItem);
+pub type StreamEventId = u64;
 
 pub(crate) struct Stream {
   dev: UringBounded,
   pages: Pages,
   ring: RingBuf,
   pending: FxHashSet<StreamEventId>,
+
+  head_id: StreamEventId,
+  offsets: VecDeque<RingBufItem>,
 }
 
 impl Stream {
   pub async fn load_from_device(dev: UringBounded, pages: Pages) -> Self {
     let raw = dev.read(0, dev.len()).await;
-    let (meta, data) = raw.split_at(usz!(pages.spage_size()));
-    let virtual_tail = meta.read_u64_le_at(0);
+    let (state, data) = raw.split_at(usz!(pages.spage_size()));
+    let head_id = state.read_u64_le_at(STATE_OFFSETOF_HEAD_EVENT_ID);
+    let virtual_head = state.read_u64_le_at(STATE_OFFSETOF_VIRTUAL_HEAD);
+    let virtual_tail = state.read_u64_le_at(STATE_OFFSETOF_VIRTUAL_TAIL);
     let ring = RingBuf::load(usz!(pages.spage_size()), usz!(virtual_tail), data.to_vec());
+
+    let mut offsets = VecDeque::new();
+    let mut virtual_next = virtual_head;
+    while virtual_next < virtual_tail {
+      let raw = ring
+        .get(RingBufItem {
+          virtual_offset: usz!(virtual_next),
+          len: usz!(EVENT_SIZE(0)),
+        })
+        .unwrap();
+      let key_len = raw.read_u16_le_at(EVENT_OFFSETOF_KEY_LEN);
+      let event_size = EVENT_SIZE(key_len);
+      offsets.push_back(RingBufItem {
+        virtual_offset: usz!(virtual_next),
+        len: usz!(event_size),
+      });
+      virtual_next += event_size;
+    }
 
     Self {
       dev,
       pages,
       pending: Default::default(),
       ring,
+
+      head_id,
+      offsets,
     }
   }
 
   pub async fn format_device(dev: UringBounded, pages: &Pages) {
-    const BUFSIZE: u64 = 1024 * 1024 * 1024 * 1;
-    for offset in (0..dev.len()).step_by(usz!(BUFSIZE)) {
-      let len = min(dev.len() - offset, BUFSIZE);
-      dev.write(offset, pages.slow_allocate_with_zeros(len)).await;
-    }
+    let mut state = pages.allocate_uninitialised(pages.spage_size());
+    state.write_u64_le_at(STATE_OFFSETOF_HEAD_EVENT_ID, 0);
+    state.write_u64_le_at(STATE_OFFSETOF_VIRTUAL_HEAD, 0);
+    state.write_u64_le_at(STATE_OFFSETOF_VIRTUAL_TAIL, 0);
   }
 
   pub fn get_event(
@@ -152,9 +181,14 @@ impl Stream {
       return Ok(None);
     };
 
-    let Some(raw) = self.ring.get(id.0) else {
+    if id < self.head_id {
       return Err(StreamEventExpiredError);
     };
+
+    let raw = self
+      .ring
+      .get(self.offsets[usz!(id - self.head_id)])
+      .unwrap();
 
     let e = StreamEvent { raw };
 
@@ -163,22 +197,37 @@ impl Stream {
 
   /// This event will be written to the device, but won't be available/visible (i.e. retrievable via `get_event`) until it's been durably written to the device.
   pub fn add_event_pending_commit(&mut self, e: StreamEventOwned) {
-    let mut raw = BUFPOOL.allocate_with_zeros(usz!(STREVT_SIZE(u16!(e.key.len()))));
-    raw[usz!(STREVT_OFFSETOF_TYPE)] = e.typ as u8;
-    raw.write_u56_le_at(STREVT_OFFSETOF_TIMESTAMP_MS, e.timestamp_ms);
-    raw.write_u64_le_at(STREVT_OFFSETOF_OBJECT_ID, e.object_id);
-    raw.write_u16_le_at(STREVT_OFFSETOF_KEY_LEN, u16!(e.key.len()));
-    raw.write_at(STREVT_OFFSETOF_KEY, &e.key);
-    self.ring.push(&raw);
+    let id = self.head_id + u64!(self.offsets.len());
+    let mut raw = BUFPOOL.allocate_with_zeros(usz!(EVENT_SIZE(u16!(e.key.len()))));
+    raw[usz!(EVENT_OFFSETOF_TYPE)] = e.typ as u8;
+    raw.write_u56_le_at(EVENT_OFFSETOF_TIMESTAMP_MS, e.timestamp_ms);
+    raw.write_u64_le_at(EVENT_OFFSETOF_OBJECT_ID, e.object_id);
+    raw.write_u16_le_at(EVENT_OFFSETOF_KEY_LEN, u16!(e.key.len()));
+    raw.write_at(EVENT_OFFSETOF_KEY, &e.key);
+    let virtual_item = self.ring.push(&raw);
+    let new_virtual_head =
+      (virtual_item.virtual_offset + virtual_item.len).saturating_sub(self.ring.capacity());
+    // Drop any events from the head if they are now totally **or partially** cut off.
+    while self
+      .offsets
+      .front()
+      .filter(|o| o.virtual_offset < new_virtual_head)
+      .is_some()
+    {
+      self.head_id += 1;
+      self.offsets.pop_front().unwrap();
+    }
+    self.offsets.push_back(virtual_item);
+    assert!(self.pending.insert(id));
   }
 
   /// Provide the return value to `make_available` once durably written to the device.
   pub fn commit(&mut self, txn: &mut Transaction) -> Vec<StreamEventId> {
-    let mut meta = self.pages.allocate_uninitialised(self.pages.spage_size());
-    meta.write_u64_le_at(0, u64!(self.ring.get_virtual_tail()));
-    self.dev.record_in_transaction(txn, 0, meta);
-
-    for (offset, data_slice) in self.ring.commit() {
+    let Some(data_pages_to_commit) = self.ring.commit() else {
+      // Nothing is dirty, so do not rewrite state.
+      return Vec::new();
+    };
+    for (offset, data_slice) in data_pages_to_commit {
       assert_eq!(data_slice.len(), usz!(self.pages.spage_size()));
       let data = self.pages.allocate_from_data(data_slice);
       // The first page is reserved for metadata, so all data pages are shifted down by one page.
@@ -186,7 +235,17 @@ impl Stream {
         .dev
         .record_in_transaction(txn, u64!(offset) + self.pages.spage_size(), data);
     }
-    self.pending.drain().collect_vec()
+
+    let mut state = self.pages.allocate_uninitialised(self.pages.spage_size());
+    state.write_u64_le_at(STATE_OFFSETOF_HEAD_EVENT_ID, u64!(self.head_id));
+    state.write_u64_le_at(
+      STATE_OFFSETOF_VIRTUAL_HEAD,
+      u64!(self.offsets.front().unwrap().virtual_offset),
+    );
+    state.write_u64_le_at(STATE_OFFSETOF_VIRTUAL_TAIL, u64!(self.ring.virtual_tail()));
+    self.dev.record_in_transaction(txn, 0, state);
+
+    self.pending.iter().cloned().collect_vec()
   }
 
   pub fn make_available(&mut self, pending: &[StreamEventId]) {

@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::debug;
+use tracing::trace;
 
 struct Inner {
   dev: UringBounded,
@@ -53,6 +54,7 @@ impl ObjectIdSerial {
     if !self.inner.dirty.swap(false, Ordering::Relaxed) {
       return;
     };
+    trace!("committing changes to object ID serial");
     // This is safe; we don't care if we skip a few IDs.
     let next = self.inner.next.load(Ordering::Relaxed);
 

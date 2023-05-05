@@ -42,26 +42,17 @@ impl Pages {
   /// `len` must be a multiple of the spage size.
   // Prefer this over `allocate_with_zeros` as it's extremely slow. If you need it, use `slow_allocate_with_zeros`.
   pub fn allocate_uninitialised(&self, len: u64) -> Buf {
-    trace!(len, "allocating uninitialised buffer");
-    let res = self.pool.allocate_uninitialised(usz!(len));
-    trace!(len, "allocated uninitialised buffer");
-    res
+    self.pool.allocate_uninitialised(usz!(len))
   }
 
   // This is slow, so avoid it in hot paths.
   pub fn slow_allocate_with_zeros(&self, len: u64) -> Buf {
-    trace!(len, "allocating zeroed buffer");
-    let res = self.pool.allocate_with_zeros(usz!(len));
-    trace!(len, "allocated zeroed buffer");
-    res
+    self.pool.allocate_with_zeros(usz!(len))
   }
 
   /// `data.len()` must be a multiple of the spage size.
   pub fn allocate_from_data(&self, data: &[u8]) -> Buf {
-    trace!(size = data.len(), "copying data into buffer");
-    let res = self.pool.allocate_from_data(data);
-    trace!(size = data.len(), "copied data into buffer");
-    res
+    self.pool.allocate_from_data(data)
   }
 }
 

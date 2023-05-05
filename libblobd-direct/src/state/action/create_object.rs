@@ -13,6 +13,7 @@ use bufpool::buf::Buf;
 use off64::int::Off64WriteMutInt;
 use off64::u64;
 use off64::u8;
+use tracing::trace;
 
 pub(crate) struct ActionCreateObjectInput {
   pub metadata_page_size: u64,
@@ -83,6 +84,14 @@ pub(crate) fn action_create_object(
     .incr_object_metadata_bytes(offsets._total_size());
 
   txn.record(dev_offset, write_page);
+
+  trace!(
+    id = object_id,
+    size = object_size,
+    dev_offset,
+    metadata_page_size,
+    "created object"
+  );
 
   Ok(OpCreateObjectOutput {
     token: IncompleteToken {

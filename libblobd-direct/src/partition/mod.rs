@@ -15,6 +15,7 @@ use crate::util::ceil_pow2;
 use crate::util::floor_pow2;
 use crate::BlobdCfg;
 use std::fs::OpenOptions;
+#[cfg(target_os = "linux")]
 use std::os::unix::prelude::OpenOptionsExt;
 use std::sync::Arc;
 use tokio::join;
@@ -171,7 +172,7 @@ impl PartitionLoader {
       object_id_serial: object_id_serial.clone(),
       pages: pages.clone(),
       partition_idx: self.partition_idx,
-      stream,
+      stream: stream.clone(),
     };
 
     let state_worker = StateWorker::start(state, self.journal);
@@ -185,10 +186,11 @@ impl PartitionLoader {
       state: state_worker,
     });
 
-    Partition { ctx }
+    Partition { ctx, stream }
   }
 }
 
 pub(crate) struct Partition {
   pub ctx: Arc<Ctx>,
+  pub stream: Arc<parking_lot::RwLock<Stream>>,
 }
