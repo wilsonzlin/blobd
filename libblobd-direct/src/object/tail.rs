@@ -89,3 +89,100 @@ impl Iterator for TailPageSizesIter {
     Some((idx, entry))
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::TailPageSizes;
+  use itertools::Itertools;
+
+  #[test]
+  fn test_tail_page_sizes() {
+    let mut tail = TailPageSizes::new();
+    // Check iterator/state is correct when empty.
+    assert_eq!(tail.into_iter().collect_vec(), vec![]);
+
+    tail.push(5);
+    assert_eq!(tail.into_iter().collect_vec(), vec![(0, 5)]);
+
+    tail.push(3);
+    assert_eq!(tail.into_iter().collect_vec(), vec![(0, 5), (1, 3)]);
+
+    tail.push(8);
+    assert_eq!(tail.into_iter().collect_vec(), vec![(0, 5), (1, 3), (2, 8)]);
+    assert_eq!(tail.get(1), Some(3));
+    assert_eq!(tail.get(3), None);
+
+    tail.push(9);
+    assert_eq!(tail.into_iter().collect_vec(), vec![
+      (0, 5),
+      (1, 3),
+      (2, 8),
+      (3, 9),
+    ]);
+    assert_eq!(tail.len(), 4);
+    assert_eq!(tail.get(0), Some(5));
+    assert_eq!(tail.get(4), None);
+
+    tail.push(4);
+    assert_eq!(tail.into_iter().collect_vec(), vec![
+      (0, 5),
+      (1, 3),
+      (2, 8),
+      (3, 9),
+      (4, 4)
+    ]);
+    assert_eq!(tail.len(), 5);
+    assert_eq!(tail.get(3), Some(9));
+    assert_eq!(tail.get(5), None);
+
+    tail.push(11);
+    assert_eq!(tail.into_iter().collect_vec(), vec![
+      (0, 5),
+      (1, 3),
+      (2, 8),
+      (3, 9),
+      (4, 4),
+      (5, 11),
+    ]);
+    assert_eq!(tail.len(), 6);
+    assert_eq!(tail.get(0), Some(5));
+    assert_eq!(tail.get(4), Some(4));
+    assert_eq!(tail.get(5), Some(11));
+    assert_eq!(tail.get(6), None);
+
+    tail.push(14);
+    assert_eq!(tail.into_iter().collect_vec(), vec![
+      (0, 5),
+      (1, 3),
+      (2, 8),
+      (3, 9),
+      (4, 4),
+      (5, 11),
+      (6, 14),
+    ]);
+    assert_eq!(tail.len(), 7);
+    assert_eq!(tail.get(0), Some(5));
+    assert_eq!(tail.get(4), Some(4));
+    assert_eq!(tail.get(5), Some(11));
+    assert_eq!(tail.get(6), Some(14));
+
+    tail.push(2);
+    assert_eq!(tail.into_iter().collect_vec(), vec![
+      (0, 5),
+      (1, 3),
+      (2, 8),
+      (3, 9),
+      (4, 4),
+      (5, 11),
+      (6, 14),
+      (7, 2),
+    ]);
+    assert_eq!(tail.len(), 8);
+    assert_eq!(tail.get(0), Some(5));
+    assert_eq!(tail.get(4), Some(4));
+    assert_eq!(tail.get(5), Some(11));
+    assert_eq!(tail.get(6), Some(14));
+    assert_eq!(tail.get(7), Some(2));
+    assert_eq!(tail.get(8), None);
+  }
+}
