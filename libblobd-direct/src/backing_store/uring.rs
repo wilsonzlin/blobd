@@ -1,18 +1,12 @@
-use crate::journal::Transaction;
+use super::BackingStore;
 use crate::pages::Pages;
+use async_trait::async_trait;
 use bufpool::buf::Buf;
-#[cfg(not(feature = "io-uring"))]
-use bufpool::BUFPOOL;
 use dashmap::DashMap;
-#[cfg(feature = "io-uring")]
 use io_uring::cqueue::Entry as CEntry;
-#[cfg(feature = "io-uring")]
 use io_uring::opcode;
-#[cfg(feature = "io-uring")]
 use io_uring::squeue::Entry as SEntry;
-#[cfg(feature = "io-uring")]
 use io_uring::types;
-#[cfg(feature = "io-uring")]
 use io_uring::IoUring;
 use off64::u32;
 use off64::u64;
@@ -22,27 +16,15 @@ use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
 use std::collections::VecDeque;
 use std::fs::File;
-#[cfg(feature = "io-uring")]
 use std::hash::BuildHasherDefault;
-#[cfg(feature = "io-uring")]
 use std::io;
-#[cfg(feature = "io-uring")]
 use std::os::fd::AsRawFd;
-#[cfg(not(feature = "io-uring"))]
-use std::os::unix::prelude::FileExt;
 use std::sync::Arc;
-#[cfg(feature = "io-uring")]
 use std::thread;
-#[cfg(feature = "io-uring")]
 use strum::Display;
-#[cfg(not(feature = "io-uring"))]
-use tokio::task::spawn_blocking;
-#[cfg(feature = "io-uring")]
 use tokio::time::Instant;
-#[cfg(feature = "io-uring")]
 use tracing::trace;
 
-#[cfg(feature = "io-uring")]
 fn assert_result_is_ok(res: i32) -> u32 {
   if res < 0 {
     panic!("{:?}", io::Error::from_raw_os_error(-res));
@@ -51,16 +33,15 @@ fn assert_result_is_ok(res: i32) -> u32 {
 }
 
 struct ReadRequest {
-  abs_offset: u64,
+  offset: u64,
   len: u32,
 }
 
 struct WriteRequest {
-  abs_offset: u64,
+  offset: u64,
   data: Buf,
 }
 
-#[cfg(feature = "io-uring")]
 #[derive(Display)]
 enum Request {
   Read {
@@ -76,7 +57,6 @@ enum Request {
   },
 }
 
-#[cfg(feature = "io-uring")]
 #[derive(Display)]
 enum Pending {
   Read {
@@ -98,14 +78,9 @@ enum Pending {
 // For now, we just use one ring, with one submitter on one thread and one receiver on another thread. While there are possibly faster ways, like one ring per thread and using one thread for both submitting and receiving (to avoid any locking), the actual I/O should be the bottleneck so we can just stick with this for now.
 /// This can be cheaply cloned.
 #[derive(Clone)]
-pub(crate) struct UringBounded {
-  #[cfg(not(feature = "io-uring"))]
-  file: Arc<File>,
+pub(crate) struct UringBackingStore {
   // We don't use std::sync::mpsc::Sender as it is not Sync, so it's really complicated to use from any async function.
-  #[cfg(feature = "io-uring")]
   sender: crossbeam_channel::Sender<Request>,
-  offset: u64,
-  len: u64,
 }
 
 /// For advanced users only. Some of these may cause EINVAL, or worsen performance.
@@ -118,59 +93,9 @@ pub(crate) struct UringCfg {
   pub sqpoll: Option<u32>,
 }
 
-impl UringBounded {
-  fn assert_in_bounds(&self, offset: u64, len: u64) {
-    assert!(
-      offset + len <= self.len,
-      "attempted to use offset {} with length {}, but device only has length {}",
-      self.offset + offset,
-      len,
-      self.offset + self.len
-    );
-  }
-
-  /// Length of the underlying file range. Note that this may not be the same as the actual file length.
-  pub fn len(&self) -> u64 {
-    self.len
-  }
-
+impl UringBackingStore {
   /// `offset` must be a multiple of the underlying device's sector size.
-  pub fn bounded(&self, offset: u64, len: u64) -> UringBounded {
-    self.assert_in_bounds(offset, len);
-    Self {
-      #[cfg(not(feature = "io-uring"))]
-      file: self.file.clone(),
-      #[cfg(feature = "io-uring")]
-      sender: self.sender.clone(),
-      offset: self.offset + offset,
-      len,
-    }
-  }
-
-  pub fn record_in_transaction(&self, txn: &mut Transaction, offset: u64, data: Buf) {
-    self.assert_in_bounds(offset, u64!(data.len()));
-    txn.record(self.offset + offset, data);
-  }
-}
-
-// Sources:
-// - Example: https://github1s.com/tokio-rs/io-uring/blob/HEAD/examples/tcp_echo.rs
-// - liburing docs: https://unixism.net/loti/ref-liburing/completion.html
-// - Quick high-level overview: https://man.archlinux.org/man/io_uring.7.en
-// - io_uring walkthrough: https://unixism.net/2020/04/io-uring-by-example-part-1-introduction/
-// - Multithreading:
-//   - https://github.com/axboe/liburing/issues/109#issuecomment-1114213402
-//   - https://github.com/axboe/liburing/issues/109#issuecomment-1166378978
-//   - https://github.com/axboe/liburing/issues/109#issuecomment-614911522
-//   - https://github.com/axboe/liburing/issues/125
-//   - https://github.com/axboe/liburing/issues/127
-//   - https://github.com/axboe/liburing/issues/129
-//   - https://github.com/axboe/liburing/issues/571#issuecomment-1106480309
-// - Kernel poller: https://unixism.net/loti/tutorial/sq_poll.html
-#[cfg(feature = "io-uring")]
-impl UringBounded {
-  /// `offset` must be a multiple of the underlying device's sector size.
-  pub fn new(file: File, offset: u64, len: u64, pages: Pages, cfg: UringCfg) -> Self {
+  pub fn new(file: File, pages: Pages, cfg: UringCfg) -> Self {
     let (sender, receiver) = crossbeam_channel::unbounded::<Request>();
     let pending: Arc<DashMap<u64, (Pending, Instant), BuildHasherDefault<FxHasher>>> =
       Default::default();
@@ -225,7 +150,7 @@ impl UringBounded {
                 (
                   Pending::Read { buf, res },
                   opcode::Read::new(types::Fixed(0), ptr, req.len)
-                    .offset(req.abs_offset)
+                    .offset(req.offset)
                     .build()
                     .user_data(id),
                 )
@@ -242,7 +167,7 @@ impl UringBounded {
                     buf: req.data,
                   },
                   opcode::Write::new(types::Fixed(0), ptr, len)
-                    .offset(req.abs_offset)
+                    .offset(req.offset)
                     .build()
                     .user_data(id),
                 )
@@ -305,22 +230,34 @@ impl UringBounded {
       }
     });
 
-    Self {
-      sender,
-      offset,
-      len,
-    }
+    Self { sender }
   }
+}
 
+// Sources:
+// - Example: https://github1s.com/tokio-rs/io-uring/blob/HEAD/examples/tcp_echo.rs
+// - liburing docs: https://unixism.net/loti/ref-liburing/completion.html
+// - Quick high-level overview: https://man.archlinux.org/man/io_uring.7.en
+// - io_uring walkthrough: https://unixism.net/2020/04/io-uring-by-example-part-1-introduction/
+// - Multithreading:
+//   - https://github.com/axboe/liburing/issues/109#issuecomment-1114213402
+//   - https://github.com/axboe/liburing/issues/109#issuecomment-1166378978
+//   - https://github.com/axboe/liburing/issues/109#issuecomment-614911522
+//   - https://github.com/axboe/liburing/issues/125
+//   - https://github.com/axboe/liburing/issues/127
+//   - https://github.com/axboe/liburing/issues/129
+//   - https://github.com/axboe/liburing/issues/571#issuecomment-1106480309
+// - Kernel poller: https://unixism.net/loti/tutorial/sq_poll.html
+#[async_trait]
+impl BackingStore for UringBackingStore {
   /// `offset` and `len` must be multiples of the underlying device's sector size.
-  pub async fn read(&self, offset: u64, len: u64) -> Buf {
-    self.assert_in_bounds(offset, len);
+  async fn read_at(&self, offset: u64, len: u64) -> Buf {
     let (fut, fut_ctl) = SignalFuture::new();
     self
       .sender
       .send(Request::Read {
         req: ReadRequest {
-          abs_offset: self.offset + offset,
+          offset,
           len: u32!(len),
         },
         res: fut_ctl,
@@ -331,16 +268,13 @@ impl UringBounded {
 
   /// `offset` and `data.len()` must be multiples of the underlying device's sector size.
   /// Returns the original `data` so that it can be reused, if desired.
-  pub async fn write(&self, offset: u64, data: Buf) -> Buf {
-    self.assert_in_bounds(offset, u64!(data.len()));
+  async fn write_at(&self, offset: u64, data: Buf) -> Buf {
+    assert!(offset + u64!(data.len()) <= self.len);
     let (fut, fut_ctl) = SignalFuture::new();
     self
       .sender
       .send(Request::Write {
-        req: WriteRequest {
-          abs_offset: self.offset + offset,
-          data,
-        },
+        req: WriteRequest { offset, data },
         res: fut_ctl,
       })
       .unwrap();
@@ -348,67 +282,9 @@ impl UringBounded {
   }
 
   /// Even when using direct I/O, `fsync` is still necessary, as it ensures the device itself has flushed any internal caches.
-  pub async fn sync(&self) {
+  async fn sync(&self) {
     let (fut, fut_ctl) = SignalFuture::new();
     self.sender.send(Request::Sync { res: fut_ctl }).unwrap();
     fut.await
-  }
-}
-
-#[cfg(not(feature = "io-uring"))]
-impl UringBounded {
-  /// `offset` must be a multiple of the underlying device's sector size.
-  pub fn new(file: File, offset: u64, len: u64, _pages: Pages, _cfg: UringCfg) -> Self {
-    Self {
-      file: Arc::new(file),
-      offset,
-      len,
-    }
-  }
-
-  /// `offset` and `len` must be multiples of the underlying device's sector size.
-  pub async fn read(&self, offset: u64, len: u64) -> Buf {
-    self.assert_in_bounds(offset, len);
-    let mut buf = BUFPOOL.allocate_uninitialised(usz!(len));
-    let abs_offset = self.offset + offset;
-    spawn_blocking({
-      let file = self.file.clone();
-      move || {
-        let n = file.read_at(&mut buf, abs_offset).unwrap();
-        assert_eq!(n, usz!(len));
-        buf
-      }
-    })
-    .await
-    .unwrap()
-  }
-
-  /// `offset` and `data.len()` must be multiples of the underlying device's sector size.
-  /// Returns the original `data` so that it can be reused, if desired.
-  pub async fn write(&self, offset: u64, data: Buf) -> Buf {
-    self.assert_in_bounds(offset, u64!(data.len()));
-    let abs_offset = self.offset + offset;
-    spawn_blocking({
-      let file = self.file.clone();
-      move || {
-        let n = file.write_at(&data, abs_offset).unwrap();
-        assert_eq!(n, data.len());
-        data
-      }
-    })
-    .await
-    .unwrap()
-  }
-
-  /// Even when using direct I/O, `fsync` is still necessary, as it ensures the device itself has flushed any internal caches.
-  pub async fn sync(&self) {
-    spawn_blocking({
-      let file = self.file.clone();
-      move || {
-        file.sync_data().unwrap();
-      }
-    })
-    .await
-    .unwrap();
   }
 }

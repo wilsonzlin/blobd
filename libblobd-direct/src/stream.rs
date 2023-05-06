@@ -1,9 +1,9 @@
+use crate::backing_store::BoundedStore;
 use crate::journal::Transaction;
 use crate::pages::Pages;
 use crate::ring_buf::BufOrSlice;
 use crate::ring_buf::RingBuf;
 use crate::ring_buf::RingBufItem;
-use crate::uring::UringBounded;
 use bufpool::BUFPOOL;
 use itertools::Itertools;
 use num_derive::FromPrimitive;
@@ -16,7 +16,6 @@ use off64::usz;
 use off64::Off64Read;
 use off64::Off64WriteMut;
 use rustc_hash::FxHashSet;
-use std::cmp::min;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
@@ -24,6 +23,7 @@ use std::fmt::Display;
 use struct_name::StructName;
 use struct_name_macro::StructName;
 use tinybuf::TinyBuf;
+use tracing::trace;
 
 /**
 
@@ -119,7 +119,7 @@ impl Error for StreamEventExpiredError {}
 pub type StreamEventId = u64;
 
 pub(crate) struct Stream {
-  dev: UringBounded,
+  dev: BoundedStore,
   pages: Pages,
   ring: RingBuf,
   pending: FxHashSet<StreamEventId>,
@@ -129,8 +129,8 @@ pub(crate) struct Stream {
 }
 
 impl Stream {
-  pub async fn load_from_device(dev: UringBounded, pages: Pages) -> Self {
-    let raw = dev.read(0, dev.len()).await;
+  pub async fn load_from_device(dev: BoundedStore, pages: Pages) -> Self {
+    let raw = dev.read_at(0, dev.len()).await;
     let (state, data) = raw.split_at(usz!(pages.spage_size()));
     let head_id = state.read_u64_le_at(STATE_OFFSETOF_HEAD_EVENT_ID);
     let virtual_head = state.read_u64_le_at(STATE_OFFSETOF_VIRTUAL_HEAD);
@@ -166,11 +166,12 @@ impl Stream {
     }
   }
 
-  pub async fn format_device(dev: UringBounded, pages: &Pages) {
+  pub async fn format_device(dev: BoundedStore, pages: &Pages) {
     let mut state = pages.allocate_uninitialised(pages.spage_size());
     state.write_u64_le_at(STATE_OFFSETOF_HEAD_EVENT_ID, 0);
     state.write_u64_le_at(STATE_OFFSETOF_VIRTUAL_HEAD, 0);
     state.write_u64_le_at(STATE_OFFSETOF_VIRTUAL_TAIL, 0);
+    dev.write_at(0, state).await;
   }
 
   pub fn get_event(
@@ -227,6 +228,7 @@ impl Stream {
       // Nothing is dirty, so do not rewrite state.
       return Vec::new();
     };
+    trace!("committing stream state and data");
     for (offset, data_slice) in data_pages_to_commit {
       assert_eq!(data_slice.len(), usz!(self.pages.spage_size()));
       let data = self.pages.allocate_from_data(data_slice);

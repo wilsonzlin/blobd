@@ -1,5 +1,5 @@
+use crate::backing_store::PartitionStore;
 use crate::pages::Pages;
-use crate::uring::UringBounded;
 use crate::util::div_pow2;
 use crate::util::mod_pow2;
 use bufpool::buf::Buf;
@@ -48,6 +48,7 @@ impl Transaction {
   }
 
   pub fn record(&mut self, dev_offset: u64, data: Buf) {
+    trace!(dev_offset, len = data.len(), "adding transaction record");
     assert!(data.len() >= (1 << self.spage_size_pow2));
     assert_eq!(mod_pow2(u64!(data.len()), self.spage_size_pow2), 0);
     self.spages.push((dev_offset, data));
@@ -67,7 +68,7 @@ const JOURNAL_METADATA_RESERVED_SIZE: u64 = JOURNAL_METADATA_OFFSETOF_BYTE_COUNT
 
 pub(crate) struct Journal {
   disabled: bool,
-  dev: UringBounded,
+  dev: PartitionStore,
   // Must be a multiple of spage for direct I/O writing to work.
   state_dev_offset: u64,
   // Must be a multiple of spage for direct I/O writing to work.
@@ -76,7 +77,7 @@ pub(crate) struct Journal {
 }
 
 impl Journal {
-  pub fn new(dev: UringBounded, state_dev_offset: u64, state_size: u64, pages: Pages) -> Self {
+  pub fn new(dev: PartitionStore, state_dev_offset: u64, state_size: u64, pages: Pages) -> Self {
     Self {
       disabled: false,
       dev,
@@ -95,7 +96,10 @@ impl Journal {
   // Do not being writing/recovering until fully checked that journal is not corrupt.
   pub async fn recover(&self) {
     debug!("checking journal");
-    let mut raw = self.dev.read(self.state_dev_offset, self.state_size).await;
+    let mut raw = self
+      .dev
+      .read_at(self.state_dev_offset, self.state_size)
+      .await;
     let byte_count = raw.read_u64_le_at(JOURNAL_METADATA_OFFSETOF_BYTE_COUNT);
     let recorded_hash = raw.read_at(JOURNAL_METADATA_OFFSETOF_HASH, 32).to_vec();
     raw.write_at(JOURNAL_METADATA_OFFSETOF_HASH, &[0u8; 32]);
@@ -129,7 +133,7 @@ impl Journal {
 
     futures::stream::iter(to_write)
       .for_each_concurrent(None, |(dev_offset, buf)| async move {
-        self.dev.write(dev_offset, buf).await;
+        self.dev.write_at(dev_offset, buf).await;
       })
       .await;
     self.dev.sync().await;
@@ -137,7 +141,7 @@ impl Journal {
     // WARNING: Make sure to sync writes BEFORE erasing journal.
     self
       .dev
-      .write(self.state_dev_offset, self.generate_blank_state())
+      .write_at(self.state_dev_offset, self.generate_blank_state())
       .await;
     self.dev.sync().await;
     debug!("journal recovered");
@@ -158,7 +162,7 @@ impl Journal {
   pub async fn format_device(&self) {
     self
       .dev
-      .write(self.state_dev_offset, self.generate_blank_state())
+      .write_at(self.state_dev_offset, self.generate_blank_state())
       .await;
   }
 
@@ -192,14 +196,14 @@ impl Journal {
       jnl.write_at(JOURNAL_METADATA_OFFSETOF_HASH, hash.as_bytes());
 
       trace!(bytes = jnl_byte_count, "writing journal");
-      self.dev.write(self.state_dev_offset, jnl).await;
+      self.dev.write_at(self.state_dev_offset, jnl).await;
       self.dev.sync().await;
     };
 
     trace!(records = txn_records.len(), "writing records");
     iter(txn_records)
       .for_each_concurrent(None, |(dev_offset, buf)| async move {
-        self.dev.write(dev_offset, buf).await;
+        self.dev.write_at(dev_offset, buf).await;
       })
       .await;
     self.dev.sync().await;
@@ -208,7 +212,7 @@ impl Journal {
       trace!("erasing journal");
       self
         .dev
-        .write(self.state_dev_offset, self.generate_blank_state())
+        .write_at(self.state_dev_offset, self.generate_blank_state())
         .await;
       self.dev.sync().await;
       trace!("journal committed");

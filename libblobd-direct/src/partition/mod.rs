@@ -1,3 +1,4 @@
+use crate::backing_store::PartitionStore;
 use crate::ctx::Ctx;
 use crate::journal::Journal;
 use crate::metrics::BlobdMetrics;
@@ -9,14 +10,9 @@ use crate::pages::Pages;
 use crate::state::State;
 use crate::state::StateWorker;
 use crate::stream::Stream;
-use crate::uring::UringBounded;
-use crate::uring::UringCfg;
 use crate::util::ceil_pow2;
 use crate::util::floor_pow2;
 use crate::BlobdCfg;
-use std::fs::OpenOptions;
-#[cfg(target_os = "linux")]
-use std::os::unix::prelude::OpenOptionsExt;
 use std::sync::Arc;
 use tokio::join;
 use tracing::info;
@@ -37,7 +33,7 @@ heap
 */
 
 pub(crate) struct PartitionLoader {
-  dev: UringBounded,
+  dev: PartitionStore,
   journal: Journal,
   pages: Pages,
   metrics: Arc<BlobdMetrics>,
@@ -54,26 +50,12 @@ pub(crate) struct PartitionLoader {
 
 impl PartitionLoader {
   pub fn new(
-    cfg: BlobdCfg,
     partition_idx: usize,
+    partition_store: PartitionStore,
+    cfg: BlobdCfg,
     pages: Pages,
     metrics: Arc<BlobdMetrics>,
   ) -> Self {
-    let part = &cfg.partitions[partition_idx];
-    let part_file = {
-      let mut opt = OpenOptions::new();
-      opt.read(true).write(true);
-      #[cfg(target_os = "linux")]
-      opt.custom_flags(libc::O_DIRECT);
-      opt.open(&part.path).unwrap()
-    };
-    let dev = UringBounded::new(part_file, part.offset, part.len, pages.clone(), UringCfg {
-      coop_taskrun: cfg.uring_coop_taskrun,
-      defer_taskrun: cfg.uring_defer_taskrun,
-      iopoll: cfg.uring_iopoll,
-      sqpoll: cfg.uring_sqpoll,
-    });
-
     let object_id_serial_dev_offset = 0;
     let object_id_serial_size = pages.spage_size();
 
@@ -86,11 +68,16 @@ impl PartitionLoader {
     // `heap_dev_offset` is equivalent to the reserved size.
     let heap_dev_offset = ceil_pow2(min_reserved_space, pages.lpage_size_pow2);
     let metadata_heap_size = floor_pow2(cfg.object_metadata_reserved_space, cfg.lpage_size_pow2);
-    let heap_end = floor_pow2(dev.len(), pages.lpage_size_pow2);
+    let heap_end = floor_pow2(partition_store.len(), pages.lpage_size_pow2);
     assert!(heap_dev_offset + metadata_heap_size < heap_end);
     let journal_size = floor_pow2(heap_dev_offset - journal_dev_offset, pages.spage_size_pow2);
 
-    let mut journal = Journal::new(dev.clone(), journal_dev_offset, journal_size, pages.clone());
+    let mut journal = Journal::new(
+      partition_store.clone(),
+      journal_dev_offset,
+      journal_size,
+      pages.clone(),
+    );
     if cfg.dangerously_disable_journal {
       journal.dangerously_disable_journal();
     };
@@ -99,9 +86,7 @@ impl PartitionLoader {
 
     info!(
       partition_number = partition_idx,
-      partition_file = part.path.to_string_lossy().to_string(),
-      partition_offset = part.offset,
-      partition_size = part.len,
+      partition_size = partition_store.len(),
       journal_size,
       reserved_size = heap_dev_offset,
       metadata_heap_size,
@@ -114,7 +99,7 @@ impl PartitionLoader {
 
     Self {
       data_heap_size,
-      dev,
+      dev: partition_store,
       heap_dev_offset,
       journal,
       metadata_heap_size,

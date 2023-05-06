@@ -11,7 +11,6 @@ use crate::op::OpResult;
 use crate::state::State;
 use bufpool::buf::Buf;
 use off64::int::Off64WriteMutInt;
-use off64::u64;
 use off64::u8;
 use tracing::trace;
 

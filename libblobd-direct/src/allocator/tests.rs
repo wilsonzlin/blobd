@@ -10,9 +10,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rand::Rng;
 use rustc_hash::FxHashMap;
-use rustc_hash::FxHashSet;
 use std::cmp::min;
-use std::panic::catch_unwind;
 use std::sync::Arc;
 
 #[test]

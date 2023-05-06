@@ -123,7 +123,7 @@ pub(crate) async fn op_write_object<
       // Optimisation: fdatasync at end of all writes instead of here.
       let write_data = ctx.pages.allocate_from_data(&buf[..usz!(amount_to_write)]);
       buf.splice(..usz!(amount_to_write), empty());
-      ctx.device.write(page_dev_offset, write_data).await;
+      ctx.device.write_at(page_dev_offset, write_data).await;
       trace!(
         object_id,
         previously_written = written,

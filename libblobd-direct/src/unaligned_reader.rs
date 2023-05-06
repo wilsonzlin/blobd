@@ -1,4 +1,4 @@
-use crate::uring::UringBounded;
+use crate::backing_store::BackingStore;
 use crate::util::floor_pow2;
 use async_trait::async_trait;
 use bufpool::buf::Buf;
@@ -15,13 +15,13 @@ use std::sync::Arc;
 
 /// This is thread safe and can be shared (even mutably), and coalesces simultaneous reads to the same the same underlying page.
 pub(crate) struct UnalignedReader {
-  dev: UringBounded,
+  dev: Arc<dyn BackingStore>,
   page_size_pow2: u8,
   cache: DashMap<u64, Arc<tokio::sync::Mutex<Option<Buf>>>, BuildHasherDefault<FxHasher>>,
 }
 
 impl UnalignedReader {
-  pub fn new(dev: UringBounded, page_size_pow2: u8) -> Self {
+  pub fn new(dev: Arc<dyn BackingStore>, page_size_pow2: u8) -> Self {
     Self {
       dev,
       page_size_pow2,
@@ -46,7 +46,7 @@ impl UnalignedReader {
       } else {
         let page = self
           .dev
-          .read(page_dev_offset, 1 << self.page_size_pow2)
+          .read_at(page_dev_offset, 1 << self.page_size_pow2)
           .await;
         out.extend_from_slice(page.read_at(start_within_page, len_within_page));
         *map_entry = Some(page);
@@ -60,7 +60,7 @@ impl UnalignedReader {
 #[async_trait]
 impl<'a> Off64AsyncRead<'a, Buf> for UnalignedReader {
   async fn read_at(&self, offset: u64, len: u64) -> Buf {
-    self.read(offset, len).await
+    self.dev.read_at(offset, len).await
   }
 }
 

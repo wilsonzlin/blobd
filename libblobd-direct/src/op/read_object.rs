@@ -101,7 +101,7 @@ pub(crate) async fn op_read_object(
         (1 << page_size_pow2) - offset_within_page,
       );
       trace!(idx, page_size_pow2, page_dev_offset, offset_within_page, chunk_len, start, next, end, "reading chunk");
-      let data = ctx.device.read(page_dev_offset + offset_within_page, chunk_len).await;
+      let data = ctx.device.read_at(page_dev_offset + offset_within_page, chunk_len).await;
       idx += 1;
       next += chunk_len;
 

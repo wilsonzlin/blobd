@@ -1,6 +1,6 @@
+use crate::backing_store::BoundedStore;
 use crate::journal::Transaction;
 use crate::pages::Pages;
-use crate::uring::UringBounded;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
 use std::sync::atomic::AtomicBool;
@@ -11,7 +11,7 @@ use tracing::debug;
 use tracing::trace;
 
 struct Inner {
-  dev: UringBounded,
+  dev: BoundedStore,
   dirty: AtomicBool,
   next: AtomicU64,
   pages: Pages,
@@ -24,8 +24,8 @@ pub(crate) struct ObjectIdSerial {
 }
 
 impl ObjectIdSerial {
-  pub async fn load_from_device(dev: UringBounded, pages: Pages) -> Self {
-    let raw = dev.read(0, pages.spage_size()).await;
+  pub async fn load_from_device(dev: BoundedStore, pages: Pages) -> Self {
+    let raw = dev.read_at(0, pages.spage_size()).await;
     let next = raw.read_u64_le_at(0);
     debug!(next_id = next, "object ID serial loaded");
     Self {
@@ -38,9 +38,9 @@ impl ObjectIdSerial {
     }
   }
 
-  pub async fn format_device(dev: UringBounded, pages: &Pages) {
+  pub async fn format_device(dev: BoundedStore, pages: &Pages) {
     dev
-      .write(0, pages.slow_allocate_with_zeros(pages.spage_size()))
+      .write_at(0, pages.slow_allocate_with_zeros(pages.spage_size()))
       .await;
   }
 

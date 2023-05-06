@@ -25,6 +25,8 @@ use signal_future::SignalFutureController;
 use std::fmt;
 use std::fmt::Debug;
 use std::sync::Arc;
+use tracing::info_span;
+use tracing::Instrument;
 
 // We must lock these together instead of individually. Inside a transaction, it will make mutation calls to these subsystems, and transactions get committed in the order they started. However, it's possible during the transaction that the earliest transaction does not reach all subsystems first, which would mean that the changes for some subsystems may get written out of order. For example, consider that request 1 may update incomplete list before request 0, even though request 0 came first, created an earlier transaction, and returned from its call to the free list before request 1, purely because of unfortunate luck with lock acquisition or the Tokio or Linux thread scheduler. (A simpler example would be if request 0 updates incomplete list first then allocator second, while request 1 updates allocator first then incomplete list second.) Request 0's transaction is always committed before request 1's (enforced by WriteJournal), but request 0 contains changes to incomplete list that depend on request 1's changes, so writing request 1 will clobber request 0's changes and corrupt the state.
 pub(crate) struct State {
@@ -114,6 +116,7 @@ impl StateWorker {
     )>();
     tokio::spawn({
       let stream = state.stream.clone();
+      let span = info_span!("journal committer", partition_index = state.partition_idx);
       async move {
         loop {
           let (txn_records, pending_events, mut signals_ready_to_fire) =
@@ -132,11 +135,13 @@ impl StateWorker {
           }
         }
       }
+      .instrument(span)
     });
 
     let (action_sender, action_receiver) = crossbeam_channel::unbounded::<StateAction>();
     std::thread::spawn({
       move || {
+        let _span = info_span!("action worker", partition_index = state.partition_idx).entered();
         // These are outside the loop as we may not commit on an iteration (i.e. `!objects_pending_drop.is_empty()`) and so have not committed these yet.
         let mut signals_ready_to_fire = Vec::new();
         let mut txn = Transaction::new(state.pages.spage_size_pow2);

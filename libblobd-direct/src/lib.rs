@@ -1,10 +1,14 @@
 #![allow(non_snake_case)]
 
+use crate::backing_store::file::FileBackingStore;
+use crate::backing_store::BackingStore;
+use crate::backing_store::PartitionStore;
 use crate::pages::Pages;
 use crate::partition::PartitionLoader;
 use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
+use itertools::Itertools;
 use metrics::BlobdMetrics;
 use off64::usz;
 use op::commit_object::op_commit_object;
@@ -27,7 +31,9 @@ use op::write_object::OpWriteObjectInput;
 use op::write_object::OpWriteObjectOutput;
 use op::OpResult;
 use partition::Partition;
+use rustc_hash::FxHashMap;
 use std::error::Error;
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::sync::Arc;
 use stream::StreamEventExpiredError;
@@ -35,6 +41,7 @@ use stream::StreamEventId;
 use stream::StreamEventOwned;
 
 pub mod allocator;
+pub mod backing_store;
 pub mod ctx;
 pub mod incomplete_token;
 pub mod journal;
@@ -48,7 +55,6 @@ pub mod ring_buf;
 pub mod state;
 pub mod stream;
 pub mod unaligned_reader;
-pub mod uring;
 pub mod util;
 
 #[derive(Clone, Debug)]
@@ -61,8 +67,16 @@ pub struct BlobdCfgPartition {
   pub len: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BlobdCfgBackingStore {
+  #[cfg(target_os = "linux")]
+  Uring,
+  File,
+}
+
 #[derive(Clone, Debug)]
 pub struct BlobdCfg {
+  pub backing_store: BlobdCfgBackingStore,
   /// WARNING: This is dangerous to enable. Only enable this if the blobd instance will be discarded after the process exits.
   /// Disabling this will likely result in corruption on exit, even when terminating normally via SIGINT/SIGTERM, and almost certainly on crash or power loss. Corruption doesn't just mean data loss, it means any possible metadata state, likely invalid.
   pub dangerously_disable_journal: bool,
@@ -75,8 +89,6 @@ pub struct BlobdCfg {
   pub lpage_size_pow2: u8,
   /// The amount of bytes to reserve for storing the metadata of all objects. This can be expanded online later on, but only up to the leftmost object data allocation, so it's worth setting this to a high value. This will be rounded down to the nearest multiple of the lpage size.
   pub object_metadata_reserved_space: u64,
-  /// The amount of partitions must be a power of two.
-  pub partitions: Vec<BlobdCfgPartition>,
   /// It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
   pub spage_size_pow2: u8,
   /// Advanced options, only change if you know what you're doing.
@@ -93,20 +105,47 @@ pub struct BlobdLoader {
 }
 
 impl BlobdLoader {
-  pub fn new(cfg: BlobdCfg) -> Self {
+  /// The amount of partitions must be a power of two.
+  pub fn new(partition_cfg: Vec<BlobdCfgPartition>, cfg: BlobdCfg) -> Self {
     assert!(cfg.expire_incomplete_objects_after_secs > 0);
 
     let pages = Pages::new(cfg.spage_size_pow2, cfg.lpage_size_pow2);
     let metrics = Arc::new(BlobdMetrics::default());
-    let mut partitions = Vec::new();
-    for i in 0..cfg.partitions.len() {
-      partitions.push(PartitionLoader::new(
-        cfg.clone(),
-        i,
-        pages.clone(),
-        metrics.clone(),
-      ));
-    }
+    let mut devices = FxHashMap::<PathBuf, Arc<dyn BackingStore>>::default();
+    let partitions = partition_cfg
+      .into_iter()
+      .enumerate()
+      .map(|(i, part)| {
+        let dev = devices.entry(part.path.clone()).or_insert_with(|| {
+          let file = {
+            let mut opt = OpenOptions::new();
+            opt.read(true).write(true);
+            #[cfg(target_os = "linux")]
+            opt.custom_flags(libc::O_DIRECT);
+            opt.open(&part.path).unwrap()
+          };
+          match cfg.backing_store {
+            #[cfg(target_os = "linux")]
+            BlobdCfgBackingStore::Uring => {
+              Arc::new(UringBackingStore::new(file, pages.clone(), UringCfg {
+                coop_taskrun: cfg.uring_coop_taskrun,
+                defer_taskrun: cfg.uring_defer_taskrun,
+                iopoll: cfg.uring_iopoll,
+                sqpoll: cfg.uring_sqpoll,
+              }))
+            }
+            BlobdCfgBackingStore::File => Arc::new(FileBackingStore::new(file, pages.clone())),
+          }
+        });
+        PartitionLoader::new(
+          i,
+          PartitionStore::new(dev.clone(), part.offset, part.len),
+          cfg.clone(),
+          pages.clone(),
+          metrics.clone(),
+        )
+      })
+      .collect_vec();
 
     Self {
       cfg,

@@ -22,6 +22,7 @@ use libblobd_direct::op::read_object::OpReadObjectInput;
 use libblobd_direct::op::write_object::OpWriteObjectInput;
 use libblobd_direct::Blobd;
 use libblobd_direct::BlobdCfg;
+use libblobd_direct::BlobdCfgBackingStore;
 use libblobd_direct::BlobdCfgPartition;
 use libblobd_direct::BlobdLoader;
 use off64::u64;
@@ -38,18 +39,22 @@ impl Direct {
   pub async fn start(cfg: InitCfg) -> Self {
     let part_count = u64!(num_cpus::get());
     let part_len = cfg.device_size / part_count / cfg.lpage_size * cfg.lpage_size;
-    let blobd = BlobdLoader::new(BlobdCfg {
+    let partitions = (0..cfg.device_size)
+      .step_by(usz!(part_len))
+      .map(|offset| BlobdCfgPartition {
+        path: cfg.device.clone(),
+        len: part_len,
+        offset,
+      })
+      .collect();
+    let blobd = BlobdLoader::new(partitions, BlobdCfg {
+      #[cfg(not(target_os = "linux"))]
+      backing_store: BlobdCfgBackingStore::File,
+      #[cfg(target_os = "linux")]
+      backing_store: BlobdCfgBackingStore::Uring,
       dangerously_disable_journal: false,
       journal_size_min: (1024 * 1024 * 512) / part_count,
       object_metadata_reserved_space: (1024 * 1024 * 1024 * 4) / part_count,
-      partitions: (0..cfg.device_size)
-        .step_by(usz!(part_len))
-        .map(|offset| BlobdCfgPartition {
-          path: cfg.device.clone(),
-          len: part_len,
-          offset,
-        })
-        .collect(),
       event_stream_size: (1024 * 1024 * 1024 * 1) / part_count,
       expire_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
       lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),

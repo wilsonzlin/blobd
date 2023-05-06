@@ -1,11 +1,12 @@
 use crate::allocator::AllocDir;
 use crate::allocator::Allocator;
+use crate::backing_store::BoundedStore;
+use crate::backing_store::PartitionStore;
 use crate::metrics::BlobdMetrics;
 use crate::object::AutoLifecycleObject;
 use crate::object::ObjectMetadata;
 use crate::object::ObjectState;
 use crate::pages::Pages;
-use crate::uring::UringBounded;
 use dashmap::DashMap;
 use num_traits::FromPrimitive;
 use off64::usz;
@@ -28,20 +29,20 @@ pub(crate) struct LoadedObjects {
   pub metadata_allocator: Allocator,
 }
 
-pub(crate) async fn format_device_for_objects(metadata_dev: UringBounded, pages: &Pages) {
+pub(crate) async fn format_device_for_objects(metadata_dev: BoundedStore, pages: &Pages) {
   // We need to erase the entire area so that even when new objects are added the end is always ObjectState::_EndOfObjects.
   const BUFSIZE: u64 = 1024 * 1024 * 1024;
   for offset in (0..metadata_dev.len()).step_by(usz!(BUFSIZE)) {
     let size = min(metadata_dev.len() - offset, BUFSIZE);
     metadata_dev
-      .write(offset, pages.slow_allocate_with_zeros(size))
+      .write_at(offset, pages.slow_allocate_with_zeros(size))
       .await;
   }
 }
 
 pub(crate) async fn load_objects_from_device(
-  // This must not be bounded as we'll use raw absolute offsets.
-  dev: UringBounded,
+  // This must not be bounded as we'll use raw partition absolute offsets.
+  dev: PartitionStore,
   pages: Pages,
   metrics: Arc<BlobdMetrics>,
   heap_dev_offset: u64,
@@ -68,7 +69,7 @@ pub(crate) async fn load_objects_from_device(
   let mut dev_offset = heap_dev_offset;
   // This condition handles the edge case where the entire metadata heap is used.
   'outer: while dev_offset < heap_dev_offset + metadata_space {
-    let raw = dev.read(dev_offset, pages.lpage_size()).await;
+    let raw = dev.read_at(dev_offset, pages.lpage_size()).await;
     let mut cur = &raw[..];
     while !cur.is_empty() {
       let page_size_pow2 = cur[0];

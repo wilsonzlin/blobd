@@ -8,10 +8,6 @@ repository = "https://github.com/wilsonzlin/blobd.git"
 authors = ["Wilson Lin <code@wilsonl.in>"]
 edition = "2021"
 
-[features]
-default = ["io-uring"]
-io-uring = ["dep:io-uring"]
-
 [dependencies]
 async-stream = "0.3.4"
 async-trait = "0.1.68"
@@ -21,7 +17,6 @@ chrono = "0.4.24"
 crossbeam-channel = "0.5.8"
 dashmap = "5.4.0"
 futures = "0.3"
-io-uring = { version = "0.6.0", optional = true }
 itertools = "0.10"
 libc = "0.2.142"
 num = "0.4.0"
@@ -41,6 +36,9 @@ tinybuf = "0.2.3"
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 tracing = "0.1.37"
 twox-hash = "=1.6.3" # Pin the version as the docs mention that outputs could change in future versions, which would be fatal: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { version = "0.6.0" }
 
 [dev-dependencies]
 rand = "0.8.5"
