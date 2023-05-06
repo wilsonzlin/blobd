@@ -269,7 +269,6 @@ impl BackingStore for UringBackingStore {
   /// `offset` and `data.len()` must be multiples of the underlying device's sector size.
   /// Returns the original `data` so that it can be reused, if desired.
   async fn write_at(&self, offset: u64, data: Buf) -> Buf {
-    assert!(offset + u64!(data.len()) <= self.len);
     let (fut, fut_ctl) = SignalFuture::new();
     self
       .sender
