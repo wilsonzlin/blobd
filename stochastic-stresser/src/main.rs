@@ -281,7 +281,6 @@ async fn main() {
           Ok(None) => {
             // Keep this timeout small so that total execution time is accurate.
             sleep(Duration::from_millis(100)).await;
-            trace!(worker_no, "still waiting for task");
             continue;
           }
         };

@@ -3,6 +3,7 @@ use super::OpResult;
 use crate::ctx::Ctx;
 use crate::incomplete_token::IncompleteToken;
 use crate::object::ObjectState;
+use crate::util::ceil_pow2;
 use crate::util::div_pow2;
 use crate::util::is_multiple_of_pow2;
 use futures::Stream;
@@ -122,10 +123,10 @@ pub(crate) async fn op_write_object<
         .lock_for_writing_if_still_valid(ObjectState::Incomplete)
         .await?;
       // Optimisation: fdatasync at end of all writes instead of here.
-      // We cann't use `allocate_from_data` as it won't be sized correctly.
+      // We can't use `allocate_from_data` as it won't be sized correctly.
       let mut write_data = ctx.pages.allocate_uninitialised(max(
         ctx.pages.spage_size(),
-        amount_to_write.next_power_of_two(),
+        ceil_pow2(amount_to_write, ctx.pages.spage_size_pow2),
       ));
       write_data[..usz!(amount_to_write)].copy_from_slice(&buf[..usz!(amount_to_write)]);
       buf.splice(..usz!(amount_to_write), empty());

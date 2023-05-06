@@ -56,12 +56,25 @@ impl PartitionStore {
   }
 
   pub async fn read_at(&self, offset: u64, len: u64) -> Buf {
-    assert!(offset + len <= self.len);
+    assert!(
+      offset + len <= self.len,
+      "attempted to read at {} with length {} but partition has length {}",
+      offset,
+      len,
+      self.len
+    );
     self.backing_store.read_at(self.offset + offset, len).await
   }
 
   pub async fn write_at(&self, offset: u64, data: Buf) {
-    assert!(offset + u64!(data.len()) <= self.len);
+    let len = u64!(data.len());
+    assert!(
+      offset + len <= self.len,
+      "attempted to write at {} with length {} but partition has length {}",
+      offset,
+      len,
+      self.len
+    );
     self
       .backing_store
       .write_at(self.offset + offset, data)

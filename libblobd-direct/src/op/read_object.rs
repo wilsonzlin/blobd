@@ -1,9 +1,13 @@
 use super::OpError;
 use super::OpResult;
+use crate::backing_store::PartitionStore;
 use crate::ctx::Ctx;
 use crate::object::AutoLifecycleObject;
 use crate::object::ObjectState;
+use crate::pages::Pages;
+use crate::util::ceil_pow2;
 use crate::util::div_pow2;
+use crate::util::floor_pow2;
 use crate::util::mod_pow2;
 use bufpool::buf::Buf;
 use futures::Stream;
@@ -33,6 +37,19 @@ pub struct OpReadObjectOutput {
   pub end: u64,
   pub object_size: u64,
   pub object_id: u64,
+}
+
+/// Both `offset` and `len` do not have to be multiples of the spage size.
+async fn unaligned_read(pages: &Pages, dev: &PartitionStore, offset: u64, len: u64) -> Buf {
+  let a_start = floor_pow2(offset, pages.spage_size_pow2);
+  let a_end = max(
+    ceil_pow2(offset + len, pages.spage_size_pow2),
+    pages.spage_size(),
+  );
+  let mut buf = dev.read_at(a_start, a_end - a_start).await;
+  buf.copy_within(usz!(offset - a_start)..usz!(offset - a_start + len), 0);
+  buf.truncate(usz!(len));
+  buf
 }
 
 fn object_is_still_valid(obj: &AutoLifecycleObject) -> OpResult<()> {
@@ -103,8 +120,7 @@ pub(crate) async fn op_read_object(
         (1 << page_size_pow2) - offset_within_page,
       );
       trace!(idx, page_size_pow2, page_dev_offset, offset_within_page, chunk_len, start, next, end, "reading chunk");
-      let mut data = ctx.device.read_at(page_dev_offset + offset_within_page, max(chunk_len.next_power_of_two(), ctx.pages.spage_size())).await;
-      data.truncate(usz!(chunk_len));
+      let data = unaligned_read(&ctx.pages, &ctx.device, page_dev_offset + offset_within_page, chunk_len).await;
       idx += 1;
       next += chunk_len;
 

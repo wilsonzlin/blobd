@@ -42,6 +42,8 @@ use std::sync::Arc;
 use stream::StreamEventExpiredError;
 use stream::StreamEventId;
 use stream::StreamEventOwned;
+use tracing::info_span;
+use tracing::Instrument;
 
 pub mod allocator;
 pub mod backing_store;
@@ -200,11 +202,10 @@ impl Blobd {
     &self.metrics
   }
 
-  fn get_partition_by_object_key(&self, key: &[u8]) -> &Partition {
+  fn get_partition_index_by_object_key(&self, key: &[u8]) -> usize {
     let hash = twox_hash::xxh3::hash64(key);
     // We support partition counts that are not power-of-two because that's too inflexible and costly.
-    let idx = usz!(hash) % self.partitions.len();
-    &self.partitions[idx]
+    usz!(hash) % self.partitions.len()
   }
 
   /// Returns `Err(StreamEventExpiredError)` if the event no longer exists.
@@ -223,48 +224,46 @@ impl Blobd {
   }
 
   pub async fn commit_object(&self, input: OpCommitObjectInput) -> OpResult<OpCommitObjectOutput> {
-    op_commit_object(
-      self.partitions[input.incomplete_token.partition_idx]
-        .ctx
-        .clone(),
-      input,
-    )
-    .await
+    let partition_index = input.incomplete_token.partition_idx;
+    let span = info_span!("commit op", partition_index);
+    op_commit_object(self.partitions[partition_index].ctx.clone(), input)
+      .instrument(span)
+      .await
   }
 
   pub async fn create_object(&self, input: OpCreateObjectInput) -> OpResult<OpCreateObjectOutput> {
-    op_create_object(
-      self.get_partition_by_object_key(&input.key).ctx.clone(),
-      input,
-    )
-    .await
+    let partition_index = self.get_partition_index_by_object_key(&input.key);
+    let span = info_span!("create op", partition_index);
+    op_create_object(self.partitions[partition_index].ctx.clone(), input)
+      .instrument(span)
+      .await
   }
 
   pub async fn delete_object(&self, input: OpDeleteObjectInput) -> OpResult<OpDeleteObjectOutput> {
-    op_delete_object(
-      self.get_partition_by_object_key(&input.key).ctx.clone(),
-      input,
-    )
-    .await
+    let partition_index = self.get_partition_index_by_object_key(&input.key);
+    let span = info_span!("delete op", partition_index);
+    op_delete_object(self.partitions[partition_index].ctx.clone(), input)
+      .instrument(span)
+      .await
   }
 
   pub async fn inspect_object(
     &self,
     input: OpInspectObjectInput,
   ) -> OpResult<OpInspectObjectOutput> {
-    op_inspect_object(
-      self.get_partition_by_object_key(&input.key).ctx.clone(),
-      input,
-    )
-    .await
+    let partition_index = self.get_partition_index_by_object_key(&input.key);
+    let span = info_span!("inspect op", partition_index);
+    op_inspect_object(self.partitions[partition_index].ctx.clone(), input)
+      .instrument(span)
+      .await
   }
 
   pub async fn read_object(&self, input: OpReadObjectInput) -> OpResult<OpReadObjectOutput> {
-    op_read_object(
-      self.get_partition_by_object_key(&input.key).ctx.clone(),
-      input,
-    )
-    .await
+    let partition_index = self.get_partition_index_by_object_key(&input.key);
+    let span = info_span!("read op", partition_index);
+    op_read_object(self.partitions[partition_index].ctx.clone(), input)
+      .instrument(span)
+      .await
   }
 
   pub async fn write_object<
@@ -274,12 +273,10 @@ impl Blobd {
     &self,
     input: OpWriteObjectInput<D, S>,
   ) -> OpResult<OpWriteObjectOutput> {
-    op_write_object(
-      self.partitions[input.incomplete_token.partition_idx]
-        .ctx
-        .clone(),
-      input,
-    )
-    .await
+    let partition_index = input.incomplete_token.partition_idx;
+    let span = info_span!("write op", partition_index);
+    op_write_object(self.partitions[partition_index].ctx.clone(), input)
+      .instrument(span)
+      .await
   }
 }

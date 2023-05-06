@@ -8,6 +8,7 @@ use crate::object::ObjectState;
 use crate::op::key_debug_str;
 use crate::state::action::create_object::ActionCreateObjectInput;
 use crate::state::StateAction;
+use crate::util::ceil_pow2;
 use crate::util::get_now_sec;
 use off64::int::Off64WriteMutInt;
 use off64::u16;
@@ -61,7 +62,10 @@ pub(crate) async fn op_create_object(
 
   let object_id = ctx.object_id_serial.next();
 
-  let metadata_page_size = max(ctx.pages.spage_size(), meta_size.next_power_of_two());
+  let metadata_page_size = max(
+    ctx.pages.spage_size(),
+    ceil_pow2(meta_size, ctx.pages.spage_size_pow2),
+  );
   // This is stored in memory, so don't allocate rounded up to spage if less, as that's a significant waste of memory.
   // When the action writes, it'll copy the data to the page size.
   let mut raw = ctx.pages.allocate_uninitialised(meta_size);
