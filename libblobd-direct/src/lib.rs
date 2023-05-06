@@ -1,7 +1,9 @@
 #![allow(non_snake_case)]
 
 use crate::backing_store::file::FileBackingStore;
+#[cfg(target_os = "linux")]
 use crate::backing_store::uring::UringBackingStore;
+#[cfg(target_os = "linux")]
 use crate::backing_store::uring::UringCfg;
 use crate::backing_store::BackingStore;
 use crate::backing_store::PartitionStore;
@@ -36,6 +38,7 @@ use partition::Partition;
 use rustc_hash::FxHashMap;
 use std::error::Error;
 use std::fs::OpenOptions;
+#[cfg(target_os = "linux")]
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -97,9 +100,13 @@ pub struct BlobdCfg {
   /// It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
   pub spage_size_pow2: u8,
   /// Advanced options, only change if you know what you're doing.
+  #[cfg(target_os = "linux")]
   pub uring_coop_taskrun: bool,
+  #[cfg(target_os = "linux")]
   pub uring_defer_taskrun: bool,
+  #[cfg(target_os = "linux")]
   pub uring_iopoll: bool,
+  #[cfg(target_os = "linux")]
   pub uring_sqpoll: Option<u32>,
 }
 

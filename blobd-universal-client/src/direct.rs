@@ -58,9 +58,13 @@ impl Direct {
       expire_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
       lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
+      #[cfg(target_os = "linux")]
       uring_coop_taskrun: false,
+      #[cfg(target_os = "linux")]
       uring_defer_taskrun: false,
+      #[cfg(target_os = "linux")]
       uring_iopoll: false,
+      #[cfg(target_os = "linux")]
       uring_sqpoll: None,
     });
     blobd.format().await;
