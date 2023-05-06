@@ -69,6 +69,8 @@ pub(crate) async fn op_read_object(
   };
   let object_id = obj.id();
   let object_size = obj.size();
+  let lpage_count = obj.lpage_count();
+  let tail_page_count = obj.tail_page_count();
 
   let start = req.start;
   // Exclusive.
@@ -81,10 +83,10 @@ pub(crate) async fn op_read_object(
   let data_stream = async_stream::try_stream! {
     // This is the lpage index (incremented every lpage) or tail page index (incremented every tail page **which differ in size**).
     let mut idx = u32!(div_pow2(start, ctx.pages.lpage_size_pow2));
-    if idx >= obj.lpage_count() {
+    if idx >= lpage_count {
       // We're starting inside the tail data, but that doesn't mean we're starting from the first tail page.
       // WARNING: Convert values to u64 BEFORE multiplying.
-      let mut accum = u64!(idx) * u64!(obj.lpage_count());
+      let mut accum = u64!(idx) * ctx.pages.lpage_size();
       for (_, sz_pow2) in obj.tail_page_sizes() {
         accum += 1 << sz_pow2;
         // This should be `>` not `>=`. For example, if lpage size is 16 MiB and first tail page is 8 MiB, and `start` is 24 MiB exactly, then it needs to start on the *second* tail page, not the first.
@@ -97,13 +99,13 @@ pub(crate) async fn op_read_object(
     let mut next = start;
     while next < end {
       let (page_dev_offset, page_size_pow2) = {
-        if idx < obj.lpage_count() {
+        if idx < lpage_count {
           let dev_offset = obj.lpage_dev_offset(idx);
           let page_size_pow2 = ctx.pages.lpage_size_pow2;
           (dev_offset, page_size_pow2)
         } else {
-          let tail_idx = u8!(idx - obj.lpage_count());
-          debug_assert!(tail_idx < obj.tail_page_count());
+          let tail_idx = u8!(idx - lpage_count);
+          assert!(tail_idx < tail_page_count);
           let dev_offset = obj.tail_page_dev_offset(tail_idx);
           let page_size_pow2 = obj.tail_page_sizes().get(tail_idx).unwrap();
           (dev_offset, page_size_pow2)
@@ -121,6 +123,7 @@ pub(crate) async fn op_read_object(
       );
       trace!(idx, page_size_pow2, page_dev_offset, offset_within_page, chunk_len, start, next, end, "reading chunk");
       let data = unaligned_read(&ctx.pages, &ctx.device, page_dev_offset + offset_within_page, chunk_len).await;
+      assert_eq!(u64!(data.len()), chunk_len);
       idx += 1;
       next += chunk_len;
 
