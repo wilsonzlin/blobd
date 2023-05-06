@@ -6,12 +6,10 @@ use crate::object::AutoLifecycleObject;
 use crate::object::ObjectMetadata;
 use crate::object::ObjectState;
 use crate::op::create_object::OpCreateObjectOutput;
-use crate::op::OpError;
 use crate::op::OpResult;
 use crate::state::State;
 use bufpool::buf::Buf;
 use off64::int::Off64WriteMutInt;
-use off64::u8;
 use tracing::trace;
 
 pub(crate) struct ActionCreateObjectInput {
@@ -31,21 +29,6 @@ pub(crate) fn action_create_object(
     layout,
   }: ActionCreateObjectInput,
 ) -> OpResult<OpCreateObjectOutput> {
-  // Check that we have enough space first.
-  if !state
-    .metadata_allocator
-    .can_allocate(u8!(metadata_page_size.ilog2()), 1)
-    || !state
-      .data_allocator
-      .can_allocate(state.pages.lpage_size_pow2, layout.lpage_count.into())
-    || !layout
-      .tail_page_sizes_pow2
-      .into_iter()
-      .all(|(_, sz)| state.data_allocator.can_allocate(sz, 1))
-  {
-    return Err(OpError::OutOfSpace);
-  };
-
   for i in 0..layout.lpage_count {
     let lpage_dev_offset = state
       .data_allocator

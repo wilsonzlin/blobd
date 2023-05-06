@@ -5,6 +5,7 @@ use crate::incomplete_token::IncompleteToken;
 use crate::object::layout::calc_object_layout;
 use crate::object::offset::ObjectMetadataOffsets;
 use crate::object::ObjectState;
+use crate::op::key_debug_str;
 use crate::state::action::create_object::ActionCreateObjectInput;
 use crate::state::StateAction;
 use crate::util::get_now_sec;
@@ -17,6 +18,7 @@ use signal_future::SignalFuture;
 use std::cmp::max;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
+use tracing::trace;
 
 pub struct OpCreateObjectInput {
   pub key: TinyBuf,
@@ -32,6 +34,13 @@ pub(crate) async fn op_create_object(
   ctx: Arc<Ctx>,
   req: OpCreateObjectInput,
 ) -> OpResult<OpCreateObjectOutput> {
+  trace!(
+    key = key_debug_str(&req.key),
+    size = req.size,
+    assoc_data_len = req.assoc_data.len(),
+    "creating object"
+  );
+
   let key_len = u16!(req.key.len());
 
   let layout = calc_object_layout(&ctx.pages, req.size);

@@ -115,10 +115,6 @@ impl Allocator {
     self.metrics.incr_used_bytes(1 << page_size_pow2);
   }
 
-  pub fn can_allocate(&self, page_size_pow2: u8, page_count: u64) -> bool {
-    self.bitmap(page_size_pow2).len() >= page_count
-  }
-
   /// Returns the page number.
   fn _allocate(&mut self, page_size_pow2: u8) -> Result<PageNum, OutOfSpaceError> {
     assert!(

@@ -19,7 +19,6 @@ pub enum OpError {
   InexactWriteLength,
   ObjectMetadataTooLarge,
   ObjectNotFound,
-  OutOfSpace,
   RangeOutOfBounds,
   UnalignedWrite,
 }
@@ -37,7 +36,6 @@ impl Display for OpError {
       OpError::InexactWriteLength => write!(f, "data to write is not an exact chunk"),
       OpError::ObjectMetadataTooLarge => write!(f, "object metadata is too large"),
       OpError::ObjectNotFound => write!(f, "object does not exist"),
-      OpError::OutOfSpace => write!(f, "out of space"),
       OpError::RangeOutOfBounds => write!(f, "requested range to read or write is invalid"),
       OpError::UnalignedWrite => {
         write!(f, "data to write does not start at a multiple of TILE_SIZE")
