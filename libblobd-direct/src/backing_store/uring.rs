@@ -9,12 +9,12 @@ use io_uring::squeue::Entry as SEntry;
 use io_uring::types;
 use io_uring::IoUring;
 use off64::u32;
-use off64::u64;
 use off64::usz;
 use rustc_hash::FxHasher;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
 use std::collections::VecDeque;
+use std::fmt;
 use std::fs::File;
 use std::hash::BuildHasherDefault;
 use std::io;
@@ -25,14 +25,19 @@ use strum::Display;
 use tokio::time::Instant;
 use tracing::trace;
 
-fn assert_result_is_ok(res: i32) -> u32 {
+fn assert_result_is_ok(req: &Request, res: i32) -> u32 {
   if res < 0 {
-    panic!("{:?}", io::Error::from_raw_os_error(-res));
+    panic!(
+      "{:?} failed with {:?}",
+      req,
+      io::Error::from_raw_os_error(-res)
+    );
   };
   u32!(res)
 }
 
 struct ReadRequest {
+  out_buf: Buf,
   offset: u64,
   len: u32,
 }
@@ -57,28 +62,21 @@ enum Request {
   },
 }
 
-#[derive(Display)]
-enum Pending {
-  Read {
-    buf: Buf,
-    res: SignalFutureController<Buf>,
-  },
-  Write {
-    // This takes ownership of `buf` to prevent it from being dropped while io_uring is working.
-    // This will also be returned, so that it can be reused.
-    buf: Buf,
-    len: u32,
-    res: SignalFutureController<Buf>,
-  },
-  Sync {
-    res: SignalFutureController<()>,
-  },
+impl fmt::Debug for Request {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::Read { req, .. } => write!(f, "read {} len {}", req.offset, req.len),
+      Self::Write { req, .. } => write!(f, "write {} len {}", req.offset, req.data.len()),
+      Self::Sync { .. } => write!(f, "sync"),
+    }
+  }
 }
 
 // For now, we just use one ring, with one submitter on one thread and one receiver on another thread. While there are possibly faster ways, like one ring per thread and using one thread for both submitting and receiving (to avoid any locking), the actual I/O should be the bottleneck so we can just stick with this for now.
 /// This can be cheaply cloned.
 #[derive(Clone)]
 pub(crate) struct UringBackingStore {
+  pages: Pages,
   // We don't use std::sync::mpsc::Sender as it is not Sync, so it's really complicated to use from any async function.
   sender: crossbeam_channel::Sender<Request>,
 }
@@ -97,7 +95,7 @@ impl UringBackingStore {
   /// `offset` must be a multiple of the underlying device's sector size.
   pub fn new(file: File, pages: Pages, cfg: UringCfg) -> Self {
     let (sender, receiver) = crossbeam_channel::unbounded::<Request>();
-    let pending: Arc<DashMap<u64, (Pending, Instant), BuildHasherDefault<FxHasher>>> =
+    let pending: Arc<DashMap<u64, (Request, Instant), BuildHasherDefault<FxHasher>>> =
       Default::default();
     let ring = {
       let mut builder = IoUring::<SEntry, CEntry>::builder();
@@ -123,7 +121,6 @@ impl UringBackingStore {
     let ring = Arc::new(ring);
     // Submission thread.
     thread::spawn({
-      let pages = pages.clone();
       let pending = pending.clone();
       let ring = ring.clone();
       // This is outside the loop to avoid reallocation each time.
@@ -141,44 +138,29 @@ impl UringBackingStore {
             let id = next_id;
             next_id += 1;
             trace!(id, typ = msg.to_string(), "submitting request");
-            let (pending_entry, submission_entry) = match msg {
-              Request::Read { req, res } => {
-                let buf = pages.allocate_uninitialised(u64!(req.len));
+            let submission_entry = match &msg {
+              Request::Read { req, .. } => {
                 // Using `as_mut_ptr` would require a mutable borrow.
-                let ptr = buf.as_ptr() as *mut u8;
-                // This takes ownership of `buf` which will ensure it doesn't get dropped while waiting for io_uring.
-                (
-                  Pending::Read { buf, res },
-                  opcode::Read::new(types::Fixed(0), ptr, req.len)
-                    .offset(req.offset)
-                    .build()
-                    .user_data(id),
-                )
+                let ptr = req.out_buf.as_ptr() as *mut u8;
+                opcode::Read::new(types::Fixed(0), ptr, req.len)
+                  .offset(req.offset)
+                  .build()
+                  .user_data(id)
               }
-              Request::Write { req, res } => {
+              Request::Write { req, .. } => {
                 // Using `as_mut_ptr` would require a mutable borrow.
                 let ptr = req.data.as_ptr() as *mut u8;
                 // This takes ownership of `buf` which will ensure it doesn't get dropped while waiting for io_uring.
                 let len = u32!(req.data.len());
-                (
-                  Pending::Write {
-                    res,
-                    len,
-                    buf: req.data,
-                  },
-                  opcode::Write::new(types::Fixed(0), ptr, len)
-                    .offset(req.offset)
-                    .build()
-                    .user_data(id),
-                )
+                opcode::Write::new(types::Fixed(0), ptr, len)
+                  .offset(req.offset)
+                  .build()
+                  .user_data(id)
               }
-              Request::Sync { res } => (
-                Pending::Sync { res },
-                opcode::Fsync::new(types::Fixed(0)).build().user_data(id),
-              ),
+              Request::Sync { .. } => opcode::Fsync::new(types::Fixed(0)).build().user_data(id),
             };
             // Insert before submitting.
-            pending.insert(id, (pending_entry, Instant::now()));
+            pending.insert(id, (msg, Instant::now()));
             unsafe {
               submission.push(&submission_entry).unwrap();
             };
@@ -203,26 +185,26 @@ impl UringBackingStore {
             continue;
           };
           let id = e.user_data();
-          let (p, started) = pending.remove(&id).unwrap().1;
+          let (req, started) = pending.remove(&id).unwrap().1;
           trace!(
             id,
-            typ = p.to_string(),
+            typ = req.to_string(),
             exec_us = started.elapsed().as_micros(),
             "completing request"
           );
-          let rv = assert_result_is_ok(e.result());
-          match p {
-            Pending::Read { buf, res } => {
+          let rv = assert_result_is_ok(&req, e.result());
+          match req {
+            Request::Read { req, res } => {
               // We may have read fewer bytes.
-              assert_eq!(usz!(rv), buf.len());
-              res.signal(buf);
+              assert_eq!(usz!(rv), req.out_buf.len());
+              res.signal(req.out_buf);
             }
-            Pending::Write { res, len, buf } => {
+            Request::Write { req, res } => {
               // Assert that all requested bytes to write were written.
-              assert_eq!(rv, len);
-              res.signal(buf);
+              assert_eq!(rv, u32!(req.data.len()));
+              res.signal(req.data);
             }
-            Pending::Sync { res } => {
+            Request::Sync { res } => {
               res.signal(());
             }
           }
@@ -230,7 +212,7 @@ impl UringBackingStore {
       }
     });
 
-    Self { sender }
+    Self { pages, sender }
   }
 }
 
@@ -252,11 +234,13 @@ impl UringBackingStore {
 impl BackingStore for UringBackingStore {
   /// `offset` and `len` must be multiples of the underlying device's sector size.
   async fn read_at(&self, offset: u64, len: u64) -> Buf {
+    let out_buf = self.pages.allocate_uninitialised(len);
     let (fut, fut_ctl) = SignalFuture::new();
     self
       .sender
       .send(Request::Read {
         req: ReadRequest {
+          out_buf,
           offset,
           len: u32!(len),
         },

@@ -10,6 +10,8 @@ use futures::Stream;
 use off64::u32;
 use off64::u64;
 use off64::u8;
+use off64::usz;
+use std::cmp::max;
 use std::cmp::min;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -101,7 +103,8 @@ pub(crate) async fn op_read_object(
         (1 << page_size_pow2) - offset_within_page,
       );
       trace!(idx, page_size_pow2, page_dev_offset, offset_within_page, chunk_len, start, next, end, "reading chunk");
-      let data = ctx.device.read_at(page_dev_offset + offset_within_page, chunk_len).await;
+      let mut data = ctx.device.read_at(page_dev_offset + offset_within_page, max(chunk_len.next_power_of_two(), ctx.pages.spage_size())).await;
+      data.truncate(usz!(chunk_len));
       idx += 1;
       next += chunk_len;
 

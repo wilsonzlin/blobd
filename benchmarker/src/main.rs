@@ -99,6 +99,7 @@ async fn main() {
   let cli = Cli::parse();
 
   let device_size = get_file_len_via_seek(&cli.device).await.unwrap();
+  info!(size = device_size, "device");
 
   let init_cfg = InitCfg {
     bucket_count: cli.buckets,

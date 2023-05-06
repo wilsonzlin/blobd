@@ -47,6 +47,10 @@ impl PartitionStore {
     }
   }
 
+  pub fn offset(&self) -> u64 {
+    self.offset
+  }
+
   pub fn len(&self) -> u64 {
     self.len
   }

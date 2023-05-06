@@ -27,7 +27,6 @@ use libblobd_direct::BlobdCfgPartition;
 use libblobd_direct::BlobdLoader;
 use off64::u64;
 use off64::u8;
-use off64::usz;
 use std::sync::Arc;
 use tracing::info;
 
@@ -39,12 +38,12 @@ impl Direct {
   pub async fn start(cfg: InitCfg) -> Self {
     let part_count = u64!(num_cpus::get());
     let part_len = cfg.device_size / part_count / cfg.lpage_size * cfg.lpage_size;
-    let partitions = (0..cfg.device_size)
-      .step_by(usz!(part_len))
-      .map(|offset| BlobdCfgPartition {
+    // Don't use step_by as `part_len` will likely be slightly less than `device_size / part_count` so there will end up being more partitions than wanted.
+    let partitions = (0..part_count)
+      .map(|part_no| BlobdCfgPartition {
         path: cfg.device.clone(),
         len: part_len,
-        offset,
+        offset: part_no * part_len,
       })
       .collect();
     let blobd = BlobdLoader::new(partitions, BlobdCfg {

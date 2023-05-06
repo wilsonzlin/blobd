@@ -86,6 +86,7 @@ impl PartitionLoader {
 
     info!(
       partition_number = partition_idx,
+      partition_offset = partition_store.offset(),
       partition_size = partition_store.len(),
       journal_size,
       reserved_size = heap_dev_offset,

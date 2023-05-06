@@ -1,10 +1,10 @@
 #![allow(non_snake_case)]
 
 use crate::backing_store::file::FileBackingStore;
-use crate::backing_store::BackingStore;
-use crate::backing_store::PartitionStore;
 use crate::backing_store::uring::UringBackingStore;
 use crate::backing_store::uring::UringCfg;
+use crate::backing_store::BackingStore;
+use crate::backing_store::PartitionStore;
 use crate::pages::Pages;
 use crate::partition::PartitionLoader;
 use futures::future::join_all;

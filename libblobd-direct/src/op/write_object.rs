@@ -12,6 +12,7 @@ use off64::u32;
 use off64::u64;
 use off64::u8;
 use off64::usz;
+use std::cmp::max;
 use std::cmp::min;
 use std::error::Error;
 use std::iter::empty;
@@ -121,7 +122,12 @@ pub(crate) async fn op_write_object<
         .lock_for_writing_if_still_valid(ObjectState::Incomplete)
         .await?;
       // Optimisation: fdatasync at end of all writes instead of here.
-      let write_data = ctx.pages.allocate_from_data(&buf[..usz!(amount_to_write)]);
+      // We cann't use `allocate_from_data` as it won't be sized correctly.
+      let mut write_data = ctx.pages.allocate_uninitialised(max(
+        ctx.pages.spage_size(),
+        amount_to_write.next_power_of_two(),
+      ));
+      write_data[..usz!(amount_to_write)].copy_from_slice(&buf[..usz!(amount_to_write)]);
       buf.splice(..usz!(amount_to_write), empty());
       ctx.device.write_at(page_dev_offset, write_data).await;
       trace!(

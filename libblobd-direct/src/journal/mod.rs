@@ -1,5 +1,6 @@
 use crate::backing_store::PartitionStore;
 use crate::pages::Pages;
+use crate::util::ceil_pow2;
 use crate::util::div_pow2;
 use crate::util::mod_pow2;
 use bufpool::buf::Buf;
@@ -173,7 +174,7 @@ impl Journal {
       // WARNING: We must fit all records in one journal write, and cannot have iterations, as otherwise it's no longer atomic.
       trace!(records = txn_records.len(), "beginning commit");
 
-      // Don't use `allocate_with_zeros`, as it takes a really long time to allocate then fill a huge slice of memory (especially in this hot path, as a lot of writes have to go through the journal), and it's unnecessary.
+      // Don't use `allocate_with_zeros`, as it takes a really long time to allocate then fill a huge slice of memory (especially in this hot path, as a lot of writes have to go through the journal), and it's unnecessary. Also, we don't want to rewrite the entire state area, as most will be unused.
       let mut jnl = self.pages.allocate(self.state_size);
       jnl.extend_from_slice(&[0u8; JOURNAL_METADATA_RESERVED_SIZE as usize]);
 
@@ -194,6 +195,9 @@ impl Journal {
         .await
         .unwrap();
       jnl.write_at(JOURNAL_METADATA_OFFSETOF_HASH, hash.as_bytes());
+
+      // Ensure length is a multiple of spage for writing.
+      unsafe { jnl.set_len(usz!(ceil_pow2(u64!(jnl.len()), self.pages.spage_size_pow2))) };
 
       trace!(bytes = jnl_byte_count, "writing journal");
       self.dev.write_at(self.state_dev_offset, jnl).await;
