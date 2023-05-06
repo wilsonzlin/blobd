@@ -4,7 +4,7 @@ Extremely fast and parallel object storage, performing at raw device speeds. Des
 
 - All the good stuff: shared-nothing architecture, io_uring, async Rust for I/O, no page cache, direct I/O.
 - Guaranteed durability: safe to crash at any time, and a success result means the data has been 100% persisted.
-- Create partitions to locally shard per CPU core for extremely high create and delete throughput.
+- Create partitions to locally shard within or across block devices or files for extremely high create and delete throughput.
 - Available as embedded library, RPC server, or HTTP RESTful server with CORS, range requests, presigned URLs, and HTTP/2.
 - Asynchronous replication and event streaming.
 
