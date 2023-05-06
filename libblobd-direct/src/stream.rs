@@ -122,7 +122,9 @@ pub(crate) struct Stream {
   dev: BoundedStore,
   pages: Pages,
   ring: RingBuf,
-  pending: FxHashSet<StreamEventId>,
+  // We use two as we need to drain when returning from `commit`, but there could be multiple `commit` calls before `make_available`.
+  pending_commit: FxHashSet<StreamEventId>,
+  pending_flush: FxHashSet<StreamEventId>,
 
   head_id: StreamEventId,
   offsets: VecDeque<RingBufItem>,
@@ -158,7 +160,8 @@ impl Stream {
     Self {
       dev,
       pages,
-      pending: Default::default(),
+      pending_commit: Default::default(),
+      pending_flush: Default::default(),
       ring,
 
       head_id,
@@ -178,7 +181,7 @@ impl Stream {
     &self,
     id: StreamEventId,
   ) -> Result<Option<StreamEvent>, StreamEventExpiredError> {
-    if self.pending.contains(&id) {
+    if self.pending_commit.contains(&id) || self.pending_flush.contains(&id) {
       return Ok(None);
     };
 
@@ -219,7 +222,7 @@ impl Stream {
       self.offsets.pop_front().unwrap();
     }
     self.offsets.push_back(virtual_item);
-    assert!(self.pending.insert(id));
+    assert!(self.pending_commit.insert(id));
   }
 
   /// Provide the return value to `make_available` once durably written to the device.
@@ -247,12 +250,14 @@ impl Stream {
     state.write_u64_le_at(STATE_OFFSETOF_VIRTUAL_TAIL, u64!(self.ring.virtual_tail()));
     self.dev.record_in_transaction(txn, 0, state);
 
-    self.pending.iter().cloned().collect_vec()
+    let ids = self.pending_commit.drain().collect_vec();
+    self.pending_flush.extend(ids.iter().cloned());
+    ids
   }
 
-  pub fn make_available(&mut self, pending: &[StreamEventId]) {
-    for id in pending {
-      assert!(self.pending.remove(id));
+  pub fn make_available(&mut self, pending_flush: &[StreamEventId]) {
+    for id in pending_flush {
+      assert!(self.pending_flush.remove(id));
     }
   }
 }
