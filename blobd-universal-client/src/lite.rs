@@ -58,8 +58,7 @@ impl Lite {
       reap_objects_after_secs: 60 * 60 * 24 * 7,
       lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
-      // We must enable versioning as some objects will have duplicate keys, and then their derived tasks won't work unless they were the last to commit.
-      versioning: true,
+      versioning: false,
     });
     blobd.format().await;
     info!("formatted device");

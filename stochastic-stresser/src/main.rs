@@ -12,6 +12,7 @@ use blobd_universal_client::WriteObjectInput;
 use clap::Parser;
 use clap::ValueEnum;
 use futures::StreamExt;
+use off64::int::create_u64_le;
 use off64::u64;
 use off64::usz;
 use rand::thread_rng;
@@ -117,17 +118,25 @@ impl Pool {
     let end = usz!(offset + len);
     &self.data[start..end]
   }
+
+  fn get_then_prefix(&self, offset: u64, len: u64, prefix: u64) -> TinyBuf {
+    let mut out = create_u64_le(prefix).to_vec();
+    out.extend_from_slice(self.get(offset, len));
+    out.into()
+  }
 }
 
 #[derive(Display)]
 enum Task {
   Create {
+    key_prefix: u64,
     key_len: u64,
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
   },
   Write {
+    key_prefix: u64,
     key_len: u64,
     key_offset: u64,
     data_len: u64,
@@ -136,6 +145,7 @@ enum Task {
     chunk_offset: u64,
   },
   Commit {
+    key_prefix: u64,
     key_len: u64,
     key_offset: u64,
     data_len: u64,
@@ -143,6 +153,7 @@ enum Task {
     incomplete_token: IncompleteToken,
   },
   Inspect {
+    key_prefix: u64,
     key_len: u64,
     key_offset: u64,
     data_len: u64,
@@ -150,6 +161,7 @@ enum Task {
     object_id: u64,
   },
   Read {
+    key_prefix: u64,
     key_len: u64,
     key_offset: u64,
     data_len: u64,
@@ -158,6 +170,7 @@ enum Task {
     object_id: u64,
   },
   Delete {
+    key_prefix: u64,
     key_len: u64,
     key_offset: u64,
     object_id: u64,
@@ -228,6 +241,8 @@ async fn main() {
         total_data_bytes += data_len;
         tasks_sender
           .send(Task::Create {
+            // We use a prefix as some random keys will be short enough that there will be conflicts.
+            key_prefix: i,
             key_len,
             key_offset,
             data_len,
@@ -287,6 +302,7 @@ async fn main() {
         trace!(worker_no, task_type = t.to_string(), "received task");
         match t {
           Task::Create {
+            key_prefix,
             key_len,
             key_offset,
             data_len,
@@ -294,13 +310,14 @@ async fn main() {
           } => {
             let res = blobd
               .create_object(CreateObjectInput {
-                key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
+                key: pool.get_then_prefix(key_offset, key_len, key_prefix),
                 size: data_len,
                 assoc_data: TinyBuf::empty(),
               })
               .await;
             tasks_sender
               .send(Task::Write {
+                key_prefix,
                 key_len,
                 key_offset,
                 data_len,
@@ -311,6 +328,7 @@ async fn main() {
               .unwrap();
           }
           Task::Write {
+            key_prefix,
             key_len,
             key_offset,
             data_len,
@@ -334,6 +352,7 @@ async fn main() {
             tasks_sender
               .send(if next_chunk_offset < data_len {
                 Task::Write {
+                  key_prefix,
                   key_len,
                   key_offset,
                   data_len,
@@ -343,6 +362,7 @@ async fn main() {
                 }
               } else {
                 Task::Commit {
+                  key_prefix,
                   key_len,
                   key_offset,
                   data_len,
@@ -353,6 +373,7 @@ async fn main() {
               .unwrap();
           }
           Task::Commit {
+            key_prefix,
             key_len,
             key_offset,
             data_len,
@@ -364,6 +385,7 @@ async fn main() {
               .await;
             tasks_sender
               .send(Task::Inspect {
+                key_prefix,
                 key_len,
                 key_offset,
                 data_len,
@@ -373,6 +395,7 @@ async fn main() {
               .unwrap();
           }
           Task::Inspect {
+            key_prefix,
             key_len,
             key_offset,
             data_len,
@@ -381,7 +404,7 @@ async fn main() {
           } => {
             let res = blobd
               .inspect_object(InspectObjectInput {
-                key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
+                key: pool.get_then_prefix(key_offset, key_len, key_prefix),
                 id: Some(object_id),
               })
               .await;
@@ -389,6 +412,7 @@ async fn main() {
             assert_eq!(res.size, data_len);
             tasks_sender
               .send(Task::Read {
+                key_prefix,
                 key_len,
                 key_offset,
                 data_len,
@@ -399,6 +423,7 @@ async fn main() {
               .unwrap();
           }
           Task::Read {
+            key_prefix,
             key_len,
             key_offset,
             data_len,
@@ -412,7 +437,7 @@ async fn main() {
               .read_object(ReadObjectInput {
                 end: Some(end),
                 start: chunk_offset,
-                key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
+                key: pool.get_then_prefix(key_offset, key_len, key_prefix),
                 stream_buffer_size: 1024 * 16,
                 id: Some(object_id),
               })
@@ -428,6 +453,7 @@ async fn main() {
             if end < data_len {
               tasks_sender
                 .send(Task::Read {
+                  key_prefix,
                   key_len,
                   key_offset,
                   data_len,
@@ -439,6 +465,7 @@ async fn main() {
             } else {
               tasks_sender
                 .send(Task::Delete {
+                  key_prefix,
                   key_len,
                   key_offset,
                   object_id,
@@ -447,13 +474,14 @@ async fn main() {
             };
           }
           Task::Delete {
+            key_prefix,
             key_len,
             key_offset,
             object_id,
           } => {
             blobd
               .delete_object(DeleteObjectInput {
-                key: TinyBuf::from_slice(pool.get(key_offset, key_len)),
+                key: pool.get_then_prefix(key_offset, key_len, key_prefix),
                 id: Some(object_id),
               })
               .await;
