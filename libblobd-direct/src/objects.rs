@@ -58,7 +58,7 @@ pub(crate) async fn load_objects_from_device(
   let mut next_object_id = 0;
   let mut incomplete = BTreeMap::new();
   let committed: CommittedObjects = Default::default();
-  let mut tuples = Vec::<(usize, ObjectTuple)>::new();
+  let mut tuples = Vec::<Vec<ObjectTuple>>::new();
   let mut heap_allocator = Allocator::new(
     heap_dev_offset,
     heap_size,
@@ -67,17 +67,14 @@ pub(crate) async fn load_objects_from_device(
     statsd.clone(),
   );
 
-  // This condition handles the edge case where the entire tuples area is used.
-  'outer: for bundle_id in 0..usz!(heap_dev_offset / pages.spage_size()) {
+  for bundle_id in 0..usz!(heap_dev_offset / pages.spage_size()) {
     let raw = dev
       .read_at(u64!(bundle_id) * pages.spage_size(), pages.spage_size())
       .await;
 
+    let mut bundle_tuples = Vec::new();
     for tuple_raw in raw.chunks(usz!(OBJECT_TUPLE_SERIALISED_LEN)) {
       let object_state = ObjectState::from_u8(tuple_raw[0]).unwrap();
-      if object_state == ObjectState::_EndOfPartitionTuples {
-        break 'outer;
-      };
       if object_state == ObjectState::_EndOfBundleTuples {
         break;
       };
@@ -107,7 +104,7 @@ pub(crate) async fn load_objects_from_device(
         heap_allocator.mark_as_allocated(page_dev_offset, sz);
       }
 
-      tuples.push((bundle_id, tuple));
+      bundle_tuples.push(tuple);
       assert!(match object_state {
         ObjectState::Incomplete => incomplete.insert(obj.id(), obj),
         ObjectState::Committed => committed.insert(obj.key.clone(), obj),
@@ -115,6 +112,7 @@ pub(crate) async fn load_objects_from_device(
       }
       .is_none());
     }
+    tuples.push(bundle_tuples);
   }
 
   LoadedObjects {
@@ -122,6 +120,6 @@ pub(crate) async fn load_objects_from_device(
     heap_allocator,
     incomplete_objects: Arc::new(parking_lot::RwLock::new(incomplete)),
     next_object_id,
-    tuples: Tuples::new(pages, tuples),
+    tuples: Tuples::new(dev.bounded(0, heap_dev_offset), pages, tuples),
   }
 }

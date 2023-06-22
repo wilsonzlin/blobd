@@ -29,9 +29,8 @@ pub mod tail;
 #[repr(u8)]
 pub(crate) enum ObjectState {
   // These are used when scanning the device and aren't actually object states.
-  // `_EndOfObjects` must be zero so that a zero filled device is already in that state.
-  _EndOfPartitionTuples = 0,
-  _EndOfBundleTuples,
+  // `_EndOfBundleTuples` must be zero so that a zero filled device is already in that state.
+  _EndOfBundleTuples = 0,
   // These are also used in-memory and are actually object states.
   Incomplete,
   Committed,
@@ -68,7 +67,7 @@ const TUPLE_OFFSETOF_METADATA_DEV_OFFSET: u64 = TUPLE_OFFSETOF_ID + 8;
 const TUPLE_OFFSETOF_METADATA_PAGE_SIZE_POW2: u64 = TUPLE_OFFSETOF_METADATA_DEV_OFFSET + 6;
 pub(crate) const OBJECT_TUPLE_SERIALISED_LEN: u64 = TUPLE_OFFSETOF_METADATA_PAGE_SIZE_POW2 + 1;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct ObjectTuple {
   pub state: ObjectState,
   pub id: u64,
