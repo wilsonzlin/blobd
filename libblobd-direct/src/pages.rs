@@ -45,7 +45,7 @@ impl Pages {
     self.pool.allocate_uninitialised(usz!(len))
   }
 
-  // This is slow, so avoid it in hot paths.
+  /// This is slow, so avoid it in hot paths.
   pub fn slow_allocate_with_zeros(&self, len: u64) -> Buf {
     self.pool.allocate_with_zeros(usz!(len))
   }

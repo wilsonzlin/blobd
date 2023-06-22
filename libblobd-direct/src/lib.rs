@@ -117,7 +117,6 @@ pub struct BlobdLoader {
 }
 
 impl BlobdLoader {
-  /// The amount of partitions must be a power of two.
   pub fn new(partition_cfg: Vec<BlobdCfgPartition>, cfg: BlobdCfg) -> Self {
     assert!(cfg.expire_incomplete_objects_after_secs > 0);
 
