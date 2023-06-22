@@ -52,7 +52,7 @@ impl Direct {
         backing_store: BlobdCfgBackingStore::File,
         #[cfg(target_os = "linux")]
         backing_store: BlobdCfgBackingStore::Uring,
-        dangerously_disable_journal: false,
+        dangerously_disable_journal: cfg.disable_journal,
         journal_size_min: (1024 * 1024 * 512) / part_count,
         object_metadata_reserved_space: (1024 * 1024 * 1024 * 4) / part_count,
         event_stream_size: (1024 * 1024 * 1024 * 1) / part_count,

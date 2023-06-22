@@ -88,6 +88,10 @@ struct Config {
 
   /// Spage size. Defaults to 512 bytes.
   spage_size: Option<ByteSize>,
+
+  /// Disable the journal. This is not normal and would not represent typical usage.
+  #[serde(default)]
+  disable_journal: bool,
 }
 
 #[tokio::main]
@@ -113,6 +117,7 @@ async fn main() {
 
   let init_cfg = InitCfg {
     bucket_count,
+    disable_journal: cli.disable_journal,
     lpage_size,
     object_count,
     spage_size,

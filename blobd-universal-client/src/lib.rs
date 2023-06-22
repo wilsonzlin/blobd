@@ -17,6 +17,7 @@ pub struct InitCfgPartition {
 
 pub struct InitCfg {
   pub bucket_count: u64,
+  pub disable_journal: bool,
   pub lpage_size: u64,
   pub object_count: u64,
   pub partitions: Vec<InitCfgPartition>,
