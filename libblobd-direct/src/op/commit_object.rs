@@ -1,11 +1,9 @@
+use super::delete_object::reap_object;
 use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
 use crate::incomplete_token::IncompleteToken;
 use crate::object::ObjectState;
-use crate::state::action::commit_object::ActionCommitObjectInput;
-use crate::state::StateAction;
-use signal_future::SignalFuture;
 use std::sync::Arc;
 
 pub struct OpCommitObjectInput {
@@ -23,16 +21,23 @@ pub(crate) async fn op_commit_object(
   let Some(obj) = ctx.incomplete_objects.write().remove(&req.incomplete_token.object_id) else {
     return Err(OpError::ObjectNotFound);
   };
+  let object_id = obj.id();
 
   obj
     .update_state_then_ensure_no_writers(ObjectState::Committed)
     .await;
 
-  let (fut, fut_ctl) = SignalFuture::new();
-  ctx.state.send_action(StateAction::Commit(
-    ActionCommitObjectInput { obj },
-    fut_ctl,
-  ));
+  ctx
+    .tuples
+    .update_object_state(obj.id(), ObjectState::Committed)
+    .await;
 
-  fut.await
+  // TODO Handle crash consistency: new object is committed but existing object isn't deleted.
+  let existing = ctx.committed_objects.insert(obj.key.clone(), obj);
+  if let Some(existing) = existing {
+    // See `op_delete_object` for why this is safe to do now.
+    reap_object(&ctx, &existing).await;
+  };
+
+  Ok(OpCommitObjectOutput { object_id })
 }

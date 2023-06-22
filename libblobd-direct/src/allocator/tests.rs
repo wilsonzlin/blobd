@@ -1,7 +1,6 @@
 use super::AllocDir;
 use super::Allocator;
 use crate::allocator::OutOfSpaceError;
-use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
 use itertools::Itertools;
 use off64::u32;
@@ -11,7 +10,6 @@ use rand::thread_rng;
 use rand::Rng;
 use rustc_hash::FxHashMap;
 use std::cmp::min;
-use std::sync::Arc;
 
 #[test]
 fn test_allocator_from_left() {
@@ -21,9 +19,8 @@ fn test_allocator_from_left() {
   let heap_dev_offset = lpage_size * 31;
   let heap_size = lpage_size * 7;
   let pages = Pages::new(spage_size_pow2, lpage_size_pow2);
-  let metrics = Arc::new(BlobdMetrics::default());
 
-  let mut alloc = Allocator::new(heap_dev_offset, heap_size, pages, AllocDir::Left, metrics);
+  let mut alloc = Allocator::new(heap_dev_offset, heap_size, pages, AllocDir::Left, None);
   assert!(alloc.bitmap(9).is_empty());
   assert!(alloc.bitmap(10).is_empty());
   assert!(alloc.bitmap(11).is_empty());
@@ -85,9 +82,8 @@ fn test_allocator_from_right() {
   let heap_dev_offset = lpage_size * 31;
   let heap_size = lpage_size * 7;
   let pages = Pages::new(spage_size_pow2, lpage_size_pow2);
-  let metrics = Arc::new(BlobdMetrics::default());
 
-  let mut alloc = Allocator::new(heap_dev_offset, heap_size, pages, AllocDir::Right, metrics);
+  let mut alloc = Allocator::new(heap_dev_offset, heap_size, pages, AllocDir::Right, None);
 
   // Allocate all space.
   let mut last_seen_for_size = FxHashMap::default();

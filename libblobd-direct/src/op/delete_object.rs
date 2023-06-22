@@ -1,11 +1,30 @@
 use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
-use crate::state::action::delete_object::ActionDeleteObjectInput;
-use crate::state::StateAction;
-use signal_future::SignalFuture;
+use crate::object::calc_object_layout;
+use crate::object::Object;
+use off64::usz;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
+
+pub(crate) async fn reap_object(ctx: &Ctx, obj: &Object) {
+  let tuple = ctx.tuples.delete_object(obj.id()).await;
+
+  let layout = calc_object_layout(&ctx.pages, obj.size);
+
+  {
+    let mut allocator = ctx.heap_allocator.lock();
+
+    for &page_dev_offset in obj.lpage_dev_offsets.iter() {
+      allocator.release(page_dev_offset, ctx.pages.lpage_size_pow2);
+    }
+    for (i, tail_page_size_pow2) in layout.tail_page_sizes_pow2 {
+      let page_dev_offset = obj.tail_page_dev_offsets[usz!(i)];
+      allocator.release(page_dev_offset, tail_page_size_pow2);
+    }
+    allocator.release(tuple.metadata_dev_offset, tuple.metadata_page_size_pow2);
+  }
+}
 
 pub struct OpDeleteObjectInput {
   pub key: TinyBuf,
@@ -23,11 +42,9 @@ pub(crate) async fn op_delete_object(
     return Err(OpError::ObjectNotFound);
   };
 
-  let (fut, fut_ctl) = SignalFuture::new();
-  ctx.state.send_action(StateAction::Delete(
-    ActionDeleteObjectInput { obj },
-    fut_ctl,
-  ));
+  // We can reap the object now, as there should only be other readers (it's committed, so there shouldn't be any writers), and readers will double check the state after reading and discard the read if necessary (the object metadata still exists in memory due to Arc, so it's safe to check).
 
-  fut.await
+  reap_object(&ctx, &obj).await;
+
+  Ok(OpDeleteObjectOutput {})
 }

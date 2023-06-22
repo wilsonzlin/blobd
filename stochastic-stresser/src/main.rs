@@ -95,10 +95,6 @@ struct Config {
 
   /// Spage size. Defaults to 512 bytes.
   spage_size: Option<ByteSize>,
-
-  /// Disable the journal. This is not normal and would not represent typical usage.
-  #[serde(default)]
-  disable_journal: bool,
 }
 
 #[derive(Clone)]
@@ -205,7 +201,6 @@ async fn main() {
 
   let cfg = InitCfg {
     bucket_count,
-    disable_journal: cli.disable_journal,
     lpage_size,
     object_count,
     spage_size,
@@ -281,16 +276,12 @@ async fn main() {
 
   // Background loop to regularly prinit out metrics and progress.
   spawn({
-    let blobd = blobd.clone();
     let completed = completed.clone();
     async move {
       loop {
         sleep(Duration::from_secs(10)).await;
         let completed = completed.load(Ordering::Relaxed);
         info!(completed, "progress");
-        for (k, v) in blobd.metrics() {
-          info!(value = v, "metric: {k}");
-        }
         if completed == object_count {
           break;
         };
@@ -334,7 +325,6 @@ async fn main() {
               .create_object(CreateObjectInput {
                 key: pool.get_then_prefix(key_offset, key_len, key_prefix),
                 size: data_len,
-                assoc_data: TinyBuf::empty(),
               })
               .await;
             tasks_sender

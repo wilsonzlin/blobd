@@ -2,7 +2,6 @@ pub mod file;
 #[cfg(target_os = "linux")]
 pub mod uring;
 
-use crate::journal::Transaction;
 use async_trait::async_trait;
 use bufpool::buf::Buf;
 use off64::u64;
@@ -96,6 +95,7 @@ impl PartitionStore {
   }
 }
 
+#[derive(Clone)]
 pub(crate) struct BoundedStore {
   partition_store: PartitionStore,
   offset: u64,
@@ -121,11 +121,5 @@ impl BoundedStore {
       .partition_store
       .write_at(self.offset + offset, data)
       .await;
-  }
-
-  pub fn record_in_transaction(&self, txn: &mut Transaction, offset: u64, data: Buf) {
-    assert!(offset + u64!(data.len()) <= self.len);
-    // There's one journal per partition and they use offsets relative to the partition (not device).
-    txn.record(self.offset + offset, data);
   }
 }

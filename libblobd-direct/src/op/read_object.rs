@@ -2,7 +2,8 @@ use super::OpError;
 use super::OpResult;
 use crate::backing_store::PartitionStore;
 use crate::ctx::Ctx;
-use crate::object::AutoLifecycleObject;
+use crate::object::calc_object_layout;
+use crate::object::Object;
 use crate::object::ObjectState;
 use crate::pages::Pages;
 use crate::util::ceil_pow2;
@@ -52,7 +53,7 @@ async fn unaligned_read(pages: &Pages, dev: &PartitionStore, offset: u64, len: u
   buf
 }
 
-fn object_is_still_valid(obj: &AutoLifecycleObject) -> OpResult<()> {
+fn object_is_still_valid(obj: &Object) -> OpResult<()> {
   if obj.get_state() == ObjectState::Committed {
     Ok(())
   } else {
@@ -68,9 +69,10 @@ pub(crate) async fn op_read_object(
     return Err(OpError::ObjectNotFound);
   };
   let object_id = obj.id();
-  let object_size = obj.size();
-  let lpage_count = obj.lpage_count();
-  let tail_page_count = obj.tail_page_count();
+  let object_size = obj.size;
+  let layout = calc_object_layout(&ctx.pages, object_size);
+  let lpage_count = layout.lpage_count;
+  let tail_page_count = layout.tail_page_sizes_pow2.len();
 
   let start = req.start;
   // Exclusive.
@@ -87,7 +89,7 @@ pub(crate) async fn op_read_object(
       // We're starting inside the tail data, but that doesn't mean we're starting from the first tail page.
       // WARNING: Convert values to u64 BEFORE multiplying.
       let mut accum = u64!(idx) * ctx.pages.lpage_size();
-      for (_, sz_pow2) in obj.tail_page_sizes() {
+      for (_, sz_pow2) in layout.tail_page_sizes_pow2 {
         accum += 1 << sz_pow2;
         // This should be `>` not `>=`. For example, if lpage size is 16 MiB and first tail page is 8 MiB, and `start` is 24 MiB exactly, then it needs to start on the *second* tail page, not the first.
         if accum > start {
@@ -100,14 +102,14 @@ pub(crate) async fn op_read_object(
     while next < end {
       let (page_dev_offset, page_size_pow2) = {
         if idx < lpage_count {
-          let dev_offset = obj.lpage_dev_offset(idx);
+          let dev_offset = obj.lpage_dev_offsets[usz!(idx)];
           let page_size_pow2 = ctx.pages.lpage_size_pow2;
           (dev_offset, page_size_pow2)
         } else {
           let tail_idx = u8!(idx - lpage_count);
           assert!(tail_idx < tail_page_count);
-          let dev_offset = obj.tail_page_dev_offset(tail_idx);
-          let page_size_pow2 = obj.tail_page_sizes().get(tail_idx).unwrap();
+          let dev_offset = obj.tail_page_dev_offsets[usz!(tail_idx)];
+          let page_size_pow2 = layout.tail_page_sizes_pow2.get(tail_idx).unwrap();
           (dev_offset, page_size_pow2)
         }
       };

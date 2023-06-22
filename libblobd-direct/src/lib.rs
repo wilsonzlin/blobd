@@ -9,11 +9,11 @@ use crate::backing_store::BackingStore;
 use crate::backing_store::PartitionStore;
 use crate::pages::Pages;
 use crate::partition::PartitionLoader;
+use cadence::StatsdClient;
 use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
 use itertools::Itertools;
-use metrics::BlobdMetrics;
 use off64::usz;
 use op::commit_object::op_commit_object;
 use op::commit_object::OpCommitObjectInput;
@@ -42,9 +42,6 @@ use std::fs::OpenOptions;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use stream::StreamEventExpiredError;
-use stream::StreamEventId;
-use stream::StreamEventOwned;
 use tracing::info_span;
 use tracing::Instrument;
 
@@ -52,7 +49,6 @@ pub mod allocator;
 pub mod backing_store;
 pub mod ctx;
 pub mod incomplete_token;
-pub mod journal;
 pub mod metrics;
 pub mod object;
 pub mod objects;
@@ -60,8 +56,7 @@ pub mod op;
 pub mod pages;
 pub mod partition;
 pub mod ring_buf;
-pub mod state;
-pub mod stream;
+pub mod tuples;
 pub mod unaligned_reader;
 pub mod util;
 
@@ -85,20 +80,14 @@ pub enum BlobdCfgBackingStore {
 #[derive(Clone, Debug)]
 pub struct BlobdCfg {
   pub backing_store: BlobdCfgBackingStore,
-  /// WARNING: This is dangerous to enable. Only enable this if the blobd instance will be discarded after the process exits.
-  /// Disabling this will likely result in corruption on exit, even when terminating normally via SIGINT/SIGTERM, and almost certainly on crash or power loss. Corruption doesn't just mean data loss, it means any possible metadata state, likely invalid.
-  pub dangerously_disable_journal: bool,
-  /// This will be rounded down to the nearest multiple of the spage size.
-  pub event_stream_size: u64,
   /// This must be much greater than zero.
   pub expire_incomplete_objects_after_secs: u64,
-  /// This should be at least 1 GiB; the more the better.
-  pub journal_size_min: u64,
   pub lpage_size_pow2: u8,
   /// The amount of bytes to reserve for storing the metadata of all objects. This can be expanded online later on, but only up to the leftmost object data allocation, so it's worth setting this to a high value. This will be rounded down to the nearest multiple of the lpage size.
-  pub object_metadata_reserved_space: u64,
+  pub object_tuples_area_reserved_space: u64,
   /// It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
   pub spage_size_pow2: u8,
+  pub statsd: Option<Arc<StatsdClient>>,
   /// Advanced options, only change if you know what you're doing.
   #[cfg(target_os = "linux")]
   pub uring_coop_taskrun: bool,
@@ -112,7 +101,6 @@ pub struct BlobdCfg {
 
 pub struct BlobdLoader {
   cfg: BlobdCfg,
-  metrics: Arc<BlobdMetrics>,
   partitions: Vec<PartitionLoader>,
 }
 
@@ -121,7 +109,6 @@ impl BlobdLoader {
     assert!(cfg.expire_incomplete_objects_after_secs > 0);
 
     let pages = Pages::new(cfg.spage_size_pow2, cfg.lpage_size_pow2);
-    let metrics = Arc::new(BlobdMetrics::default());
     let mut devices = FxHashMap::<PathBuf, Arc<dyn BackingStore>>::default();
     let partitions = partition_cfg
       .into_iter()
@@ -153,16 +140,11 @@ impl BlobdLoader {
           PartitionStore::new(dev.clone(), part.offset, part.len),
           cfg.clone(),
           pages.clone(),
-          metrics.clone(),
         )
       })
       .collect_vec();
 
-    Self {
-      cfg,
-      metrics,
-      partitions,
-    }
+    Self { cfg, partitions }
   }
 
   pub async fn format(&self) {
@@ -184,7 +166,6 @@ impl BlobdLoader {
 
     Blobd {
       cfg: self.cfg,
-      metrics: self.metrics,
       partitions: Arc::new(partitions),
     }
   }
@@ -193,7 +174,6 @@ impl BlobdLoader {
 #[derive(Clone)]
 pub struct Blobd {
   cfg: BlobdCfg,
-  metrics: Arc<BlobdMetrics>,
   partitions: Arc<Vec<Partition>>,
 }
 
@@ -204,29 +184,10 @@ impl Blobd {
     &self.cfg
   }
 
-  pub fn metrics(&self) -> &Arc<BlobdMetrics> {
-    &self.metrics
-  }
-
   fn get_partition_index_by_object_key(&self, key: &[u8]) -> usize {
     let hash = twox_hash::xxh3::hash64(key);
     // We support partition counts that are not power-of-two because that's too inflexible and costly.
     usz!(hash) % self.partitions.len()
-  }
-
-  /// Returns `Err(StreamEventExpiredError)` if the event no longer exists.
-  /// Returns `Ok(None)` if the event is not yet ready.
-  pub fn get_stream_event(
-    &self,
-    partition_idx: usize,
-    event_id: StreamEventId,
-  ) -> Result<Option<StreamEventOwned>, StreamEventExpiredError> {
-    // We must copy it to an owned value, as otherwise we'll hold the lock the entire time.
-    self.partitions[partition_idx]
-      .stream
-      .read()
-      .get_event(event_id)
-      .map(|e| e.map(|e| e.to_owned()))
   }
 
   pub async fn commit_object(&self, input: OpCommitObjectInput) -> OpResult<OpCommitObjectOutput> {

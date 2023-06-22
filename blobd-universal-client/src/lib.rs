@@ -17,7 +17,6 @@ pub struct InitCfgPartition {
 
 pub struct InitCfg {
   pub bucket_count: u64,
-  pub disable_journal: bool,
   pub lpage_size: u64,
   pub object_count: u64,
   pub partitions: Vec<InitCfgPartition>,
@@ -29,7 +28,6 @@ pub type IncompleteToken = Arc<dyn Any + Send + Sync>;
 pub struct CreateObjectInput {
   pub key: TinyBuf,
   pub size: u64,
-  pub assoc_data: TinyBuf,
 }
 
 pub struct CreateObjectOutput {
@@ -79,8 +77,6 @@ pub struct DeleteObjectInput {
 
 #[async_trait]
 pub trait BlobdProvider: Send + Sync {
-  fn metrics(&self) -> Vec<(&'static str, u64)>;
-
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput;
   async fn write_object<'a>(&'a self, input: WriteObjectInput<'a>);
   async fn commit_object(&self, input: CommitObjectInput) -> CommitObjectOutput;

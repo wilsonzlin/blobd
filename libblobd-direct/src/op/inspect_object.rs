@@ -2,7 +2,6 @@ use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
 use chrono::DateTime;
-use chrono::TimeZone;
 use chrono::Utc;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
@@ -28,9 +27,7 @@ pub(crate) async fn op_inspect_object(
   };
   Ok(OpInspectObjectOutput {
     id: obj.id(),
-    size: obj.size(),
-    created: Utc
-      .timestamp_opt(obj.created_sec().try_into().unwrap(), 0)
-      .unwrap(),
+    size: obj.size,
+    created: obj.created,
   })
 }
