@@ -6,12 +6,14 @@ publish = false
 
 [dependencies]
 blobd-universal-client = { version = "0.1.0", path = "../blobd-universal-client" }
-clap = { version = "4.1.14", features = ["derive"] }
+bytesize = { version = "1.2.0", features = ["serde"] }
 futures = "0.3.27"
 off64 = "0.6.0"
 parking_lot = "0.12.1"
 rand = "0.8.5"
 seekable-async-file = "0.11.1"
+serde = { version = "1.0.164", features = ["derive"] }
+serde_yaml = "0.9.21"
 tinybuf = "0.2.3"
 tokio = { version = "1.27.0", features = ["full"] }
 tracing = "0.1.37"

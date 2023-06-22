@@ -36,37 +36,39 @@ pub struct Direct {
 
 impl Direct {
   pub async fn start(cfg: InitCfg) -> Self {
-    let part_count = u64!(num_cpus::get());
-    let part_len = cfg.device_size / part_count / cfg.lpage_size * cfg.lpage_size;
-    // Don't use step_by as `part_len` will likely be slightly less than `device_size / part_count` so there will end up being more partitions than wanted.
-    let partitions = (0..part_count)
-      .map(|part_no| BlobdCfgPartition {
-        path: cfg.device.clone(),
-        len: part_len,
-        offset: part_no * part_len,
-      })
-      .collect();
-    let blobd = BlobdLoader::new(partitions, BlobdCfg {
-      #[cfg(not(target_os = "linux"))]
-      backing_store: BlobdCfgBackingStore::File,
-      #[cfg(target_os = "linux")]
-      backing_store: BlobdCfgBackingStore::Uring,
-      dangerously_disable_journal: false,
-      journal_size_min: (1024 * 1024 * 512) / part_count,
-      object_metadata_reserved_space: (1024 * 1024 * 1024 * 4) / part_count,
-      event_stream_size: (1024 * 1024 * 1024 * 1) / part_count,
-      expire_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
-      lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
-      spage_size_pow2: u8!(cfg.spage_size.ilog2()),
-      #[cfg(target_os = "linux")]
-      uring_coop_taskrun: false,
-      #[cfg(target_os = "linux")]
-      uring_defer_taskrun: false,
-      #[cfg(target_os = "linux")]
-      uring_iopoll: false,
-      #[cfg(target_os = "linux")]
-      uring_sqpoll: None,
-    });
+    let part_count = u64!(cfg.partitions.len());
+    let blobd = BlobdLoader::new(
+      cfg
+        .partitions
+        .into_iter()
+        .map(|p| BlobdCfgPartition {
+          path: p.path,
+          offset: p.offset,
+          len: p.len,
+        })
+        .collect(),
+      BlobdCfg {
+        #[cfg(not(target_os = "linux"))]
+        backing_store: BlobdCfgBackingStore::File,
+        #[cfg(target_os = "linux")]
+        backing_store: BlobdCfgBackingStore::Uring,
+        dangerously_disable_journal: false,
+        journal_size_min: (1024 * 1024 * 512) / part_count,
+        object_metadata_reserved_space: (1024 * 1024 * 1024 * 4) / part_count,
+        event_stream_size: (1024 * 1024 * 1024 * 1) / part_count,
+        expire_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
+        lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
+        spage_size_pow2: u8!(cfg.spage_size.ilog2()),
+        #[cfg(target_os = "linux")]
+        uring_coop_taskrun: false,
+        #[cfg(target_os = "linux")]
+        uring_defer_taskrun: false,
+        #[cfg(target_os = "linux")]
+        uring_iopoll: false,
+        #[cfg(target_os = "linux")]
+        uring_sqpoll: None,
+      },
+    );
     blobd.format().await;
     info!("formatted device");
     let blobd = blobd.load_and_start().await;

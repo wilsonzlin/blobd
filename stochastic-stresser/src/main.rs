@@ -6,11 +6,11 @@ use blobd_universal_client::CreateObjectInput;
 use blobd_universal_client::DeleteObjectInput;
 use blobd_universal_client::IncompleteToken;
 use blobd_universal_client::InitCfg;
+use blobd_universal_client::InitCfgPartition;
 use blobd_universal_client::InspectObjectInput;
 use blobd_universal_client::ReadObjectInput;
 use blobd_universal_client::WriteObjectInput;
-use clap::Parser;
-use clap::ValueEnum;
+use bytesize::ByteSize;
 use futures::StreamExt;
 use off64::int::create_u64_le;
 use off64::u64;
@@ -18,7 +18,9 @@ use off64::usz;
 use rand::thread_rng;
 use rand::Rng;
 use rand::RngCore;
-use seekable_async_file::get_file_len_via_seek;
+use serde::Deserialize;
+use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -50,53 +52,49 @@ Use [tokio-console](https://github.com/tokio-rs/console#running-the-console) to 
 
 */
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize)]
 enum TargetType {
   Direct,
   Lite,
 }
 
-#[derive(Debug, Parser)]
-#[command(author, version, about)]
-struct Cli {
-  #[arg(long)]
+#[derive(Deserialize)]
+struct ConfigPartition {
+  path: PathBuf,
+  offset: u64,
+  len: u64,
+}
+
+#[derive(Deserialize)]
+struct Config {
   target: TargetType,
 
-  /// Path to the device or regular file to use as the underlying storage.
-  #[arg(long)]
-  device: PathBuf,
+  /// For the "lite" target, there must only be one partition and its offset must be zero.
+  partitions: Vec<ConfigPartition>,
 
-  // How many buckets to allocate. Defaults to 131,072.
-  #[arg(long, default_value_t = 131_072)]
-  buckets: u64,
+  // How many buckets to allocate. Only applicable for the "lite" target. Defaults to `objects * 2`.
+  buckets: Option<u64>,
 
   /// Maximum object key length. Defaults to 480.
-  #[arg(long, default_value_t = 480)]
-  object_key_len_max: u64,
+  object_key_len_max: Option<u64>,
 
-  /// Objects to create. Defaults to 100,000.
-  #[arg(long, default_value_t = 100_000)]
+  /// Objects to create.
   objects: u64,
 
-  /// Maximum size of a created object. Defaults to 150 MiB.
-  #[arg(long, default_value_t = 1024 * 1024 * 150)]
-  maximum_object_size: u64,
+  /// Maximum size of a created object.
+  maximum_object_size: ByteSize,
 
   /// Concurrency level. Defaults to 64.
-  #[arg(long, default_value_t = 64)]
-  concurrency: u64,
+  concurrency: Option<u64>,
 
   /// Size of random bytes pool. Defaults to 1 GiB.
-  #[arg(long, default_value_t = 1024 * 1024 * 1024)]
-  pool_size: u64,
+  pool_size: Option<ByteSize>,
 
   /// Lpage size. Defaults to 16 MiB.
-  #[arg(long, default_value_t = 1024 * 1024 * 16)]
-  lpage_size: u64,
+  lpage_size: Option<ByteSize>,
 
   /// Spage size. Defaults to 512 bytes.
-  #[arg(long, default_value_t = 512)]
-  spage_size: u64,
+  spage_size: Option<ByteSize>,
 }
 
 #[derive(Clone)]
@@ -184,30 +182,48 @@ async fn main() {
   #[cfg(not(feature = "instrumentation"))]
   tracing_subscriber::fmt::init();
 
-  let cli = Cli::parse();
+  let cli: Config = serde_yaml::from_str(
+    &fs::read_to_string(env::args().nth(1).expect("config file path argument"))
+      .expect("read config file"),
+  )
+  .expect("parse config file");
+  let object_count = cli.objects;
+  let bucket_count = cli.buckets.unwrap_or(object_count * 2);
+  let concurrency = cli.concurrency.unwrap_or(64);
+  let lpage_size = cli.lpage_size.map(|s| s.as_u64()).unwrap_or(16_777_216);
+  let maximum_object_size = cli.maximum_object_size.as_u64();
+  let object_key_len_max = cli.object_key_len_max.unwrap_or(480);
+  let pool_size = cli
+    .pool_size
+    .map(|s| s.as_u64())
+    .unwrap_or(1024 * 1024 * 1024 * 1);
+  let spage_size = cli.spage_size.map(|s| s.as_u64()).unwrap_or(512);
 
-  let device_size = get_file_len_via_seek(&cli.device).await.unwrap();
-
-  let completed = Arc::new(AtomicU64::new(0));
-
-  let init_cfg = InitCfg {
-    bucket_count: cli.buckets,
-    device_size,
-    device: cli.device,
-    lpage_size: cli.lpage_size,
-    object_count: cli.objects,
-    spage_size: cli.spage_size,
+  let cfg = InitCfg {
+    bucket_count,
+    lpage_size,
+    object_count,
+    spage_size,
+    partitions: cli
+      .partitions
+      .into_iter()
+      .map(|p| InitCfgPartition {
+        len: p.len,
+        offset: p.offset,
+        path: p.path,
+      })
+      .collect(),
   };
   let blobd: Arc<dyn BlobdProvider> = match cli.target {
-    TargetType::Direct => Arc::new(Direct::start(init_cfg).await),
-    TargetType::Lite => Arc::new(Lite::start(init_cfg).await),
+    TargetType::Direct => Arc::new(Direct::start(cfg).await),
+    TargetType::Lite => Arc::new(Lite::start(cfg).await),
   };
 
   info!(
-    "initialising pool of size {} MiB, this may take a while",
-    (cli.pool_size as f64) / 1024.0 / 1024.0
+    "initialising pool of size {}, this may take a while",
+    ByteSize(pool_size)
   );
-  let pool = Pool::new(cli.pool_size);
+  let pool = Pool::new(pool_size);
   info!("pool initialised");
   let key_len_seed = thread_rng().next_u64();
   let key_offset_seed = thread_rng().next_u64();
@@ -217,27 +233,28 @@ async fn main() {
   // Progress bars would look nice and fancy, but we are more likely to want logs/traces than in-flight animations, and a summary of performance metrics at the end will be enough. Using progress bars will clash with the logger.
 
   let started = Instant::now();
+  let completed = Arc::new(AtomicU64::new(0));
 
   let (tasks_sender, tasks_receiver) = stochastic_channel::<Task>();
   let total_data_bytes = spawn_blocking({
     let tasks_sender = tasks_sender.clone();
     move || {
       info!(
-        object_count = cli.objects,
-        maximum_object_size = cli.maximum_object_size,
+        object_count = object_count,
+        maximum_object_size = ByteSize(maximum_object_size).to_string(),
         "objects"
       );
       let mut total_data_bytes = 0;
-      for i in 0..cli.objects {
+      for i in 0..object_count {
         let key_len = (hash64_with_seed(&i.to_be_bytes(), key_len_seed)
-          % u64::from(cli.object_key_len_max - 1))
+          % u64::from(object_key_len_max - 1))
           + 1;
         let key_offset =
-          hash64_with_seed(&i.to_be_bytes(), key_offset_seed) % (cli.pool_size - key_len);
+          hash64_with_seed(&i.to_be_bytes(), key_offset_seed) % (pool_size - key_len);
         let data_len =
-          (hash64_with_seed(&i.to_be_bytes(), data_len_seed) % (cli.maximum_object_size - 1)) + 1;
+          (hash64_with_seed(&i.to_be_bytes(), data_len_seed) % (maximum_object_size - 1)) + 1;
         let data_offset =
-          hash64_with_seed(&i.to_be_bytes(), data_offset_seed) % (cli.pool_size - data_len);
+          hash64_with_seed(&i.to_be_bytes(), data_offset_seed) % (pool_size - data_len);
         total_data_bytes += data_len;
         tasks_sender
           .send(Task::Create {
@@ -269,7 +286,7 @@ async fn main() {
         for (k, v) in blobd.metrics() {
           info!(value = v, "metric: {k}");
         }
-        if completed == cli.objects {
+        if completed == object_count {
           break;
         };
       }
@@ -277,7 +294,7 @@ async fn main() {
   });
 
   let mut workers = Vec::new();
-  for worker_no in 0..cli.concurrency {
+  for worker_no in 0..concurrency {
     let blobd = blobd.clone();
     let pool = pool.clone();
     let completed = completed.clone();
@@ -285,7 +302,7 @@ async fn main() {
     let tasks_receiver = tasks_receiver.clone();
     workers.push(spawn(async move {
       loop {
-        if completed.load(Ordering::Relaxed) == cli.objects {
+        if completed.load(Ordering::Relaxed) == object_count {
           break;
         };
         // We must use a timeout and regularly check the completion count, as we hold a sender so the channel won't naturally end.
@@ -336,9 +353,9 @@ async fn main() {
             chunk_offset,
             incomplete_token,
           } => {
-            let next_chunk_offset = chunk_offset + cli.lpage_size;
+            let next_chunk_offset = chunk_offset + lpage_size;
             let chunk_len = if next_chunk_offset <= data_len {
-              cli.lpage_size
+              lpage_size
             } else {
               data_len - chunk_offset
             };
@@ -504,7 +521,7 @@ async fn main() {
     execution_seconds = exec_sec,
     total_data_bytes,
     data_mib_written_per_sec = (total_data_bytes as f64) / exec_sec / 1024.0 / 1024.0,
-    objects_processed_per_sec = (cli.objects as f64) / exec_sec,
+    objects_processed_per_sec = (object_count as f64) / exec_sec,
     "all done"
   );
 }

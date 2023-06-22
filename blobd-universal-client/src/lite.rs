@@ -42,17 +42,21 @@ impl Lite {
     assert!(cfg.bucket_count.is_power_of_two());
     let bucket_count_log2: u8 = cfg.bucket_count.ilog2().try_into().unwrap();
 
+    assert_eq!(cfg.partitions.len(), 1);
+    let device_cfg = &cfg.partitions[0];
+    assert_eq!(device_cfg.offset, 0);
+
     let io_metrics = Arc::new(SeekableAsyncFileMetrics::default());
     let device = SeekableAsyncFile::open(
-      &cfg.device,
-      cfg.device_size,
+      &device_cfg.path,
+      device_cfg.len,
       io_metrics,
       Duration::from_micros(200),
       0,
     )
     .await;
 
-    let blobd = BlobdLoader::new(device.clone(), cfg.device_size, BlobdCfg {
+    let blobd = BlobdLoader::new(device.clone(), device_cfg.len, BlobdCfg {
       bucket_count_log2,
       bucket_lock_count_log2: bucket_count_log2,
       reap_objects_after_secs: 60 * 60 * 24 * 7,

@@ -9,12 +9,17 @@ use tinybuf::TinyBuf;
 pub mod direct;
 pub mod lite;
 
+pub struct InitCfgPartition {
+  pub path: PathBuf,
+  pub offset: u64,
+  pub len: u64,
+}
+
 pub struct InitCfg {
   pub bucket_count: u64,
-  pub device_size: u64,
-  pub device: PathBuf,
   pub lpage_size: u64,
   pub object_count: u64,
+  pub partitions: Vec<InitCfgPartition>,
   pub spage_size: u64,
 }
 
