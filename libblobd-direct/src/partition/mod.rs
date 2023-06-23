@@ -11,6 +11,7 @@ use cadence::StatsdClient;
 use parking_lot::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use tokio::spawn;
 use tracing::info;
 
 pub(crate) struct PartitionLoader {
@@ -87,7 +88,13 @@ impl PartitionLoader {
       pages: pages.clone(),
       partition_idx: self.partition_idx,
       statsd: self.statsd,
-      tuples,
+      tuples: tuples.clone(),
+    });
+
+    spawn({
+      let dev = dev.bounded(0, self.heap_dev_offset);
+      let pages = pages.clone();
+      async move { tuples.start_background_commit_loop(dev, pages).await }
     });
 
     Partition { ctx }

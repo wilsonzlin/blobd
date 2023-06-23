@@ -42,7 +42,6 @@ use std::fs::OpenOptions;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::info;
 use tracing::info_span;
 use tracing::Instrument;
 

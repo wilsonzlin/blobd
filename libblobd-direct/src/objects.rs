@@ -121,6 +121,6 @@ pub(crate) async fn load_objects_from_device(
     heap_allocator,
     incomplete_objects: Arc::new(parking_lot::RwLock::new(incomplete)),
     next_object_id,
-    tuples: Tuples::load_and_start(dev.bounded(0, heap_dev_offset), pages, tuples),
+    tuples: Tuples::new(pages, tuples),
   }
 }
