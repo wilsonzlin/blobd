@@ -128,9 +128,10 @@ impl UringBackingStore {
       move || {
         let mut submission = unsafe { ring.submission_shared() };
         let mut next_id = 0;
-        loop {
+        // If this loop exits, it means we've dropped the `UringBackingStore` and can safely stop.
+        while let Ok(init_msg) = receiver.recv() {
           // Process multiple messages at once to avoid too many io_uring submits.
-          msgbuf.push_back(receiver.recv().unwrap());
+          msgbuf.push_back(init_msg);
           while let Ok(msg) = receiver.try_recv() {
             msgbuf.push_back(msg);
           }
@@ -178,6 +179,7 @@ impl UringBackingStore {
       let ring = ring.clone();
       move || {
         let mut completion = unsafe { ring.completion_shared() };
+        // TODO Stop this loop if `UringBackingStore` has been dropped.
         loop {
           let Some(e) = completion.next() else {
             ring.submit_and_wait(1).unwrap();

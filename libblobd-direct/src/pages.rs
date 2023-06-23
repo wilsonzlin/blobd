@@ -14,6 +14,7 @@ pub(crate) struct Inner {
 #[derive(Clone)]
 pub(crate) struct Pages(Arc<Inner>);
 
+#[allow(unused)]
 impl Pages {
   pub fn new(spage_size_pow2: u8, lpage_size_pow2: u8) -> Self {
     Self(Arc::new(Inner {

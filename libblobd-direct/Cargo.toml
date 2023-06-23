@@ -13,7 +13,9 @@ async-stream = "0.3.4"
 async-trait = "0.1.68"
 blake3 = "1.3.3"
 bufpool = "0.2.3"
-chrono = "0.4.24"
+cadence = "0.29.1"
+chrono = { version = "0.4.24", features = ["serde"] }
+croaring = "0.8.1"
 crossbeam-channel = "0.5.8"
 dashmap = "5.4.0"
 futures = "0.3"
@@ -25,6 +27,7 @@ num-traits = "0.2"
 off64 = "0.6"
 once_cell = "1.17.1"
 parking_lot = "0.12.1"
+rmp-serde = "1.1.1"
 roaring = "0.10.1"
 rustc-hash = "1.1"
 serde = { version = "1.0.160", features = ["derive"] }
@@ -32,7 +35,7 @@ signal-future = "0.1.1"
 struct-name = "0.0.1"
 struct-name-macro = "0.0.2"
 strum = { version = "0.24", features = ["derive"] }
-tinybuf = "0.2.3"
+tinybuf = { version = "0.3.0", features = ["serde"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 tracing = "0.1.37"
 twox-hash = "=1.6.3" # Pin the version as the docs mention that outputs could change in future versions, which would be fatal: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html

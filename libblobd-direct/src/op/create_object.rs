@@ -1,22 +1,20 @@
-use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
 use crate::incomplete_token::IncompleteToken;
-use crate::object::layout::calc_object_layout;
-use crate::object::offset::ObjectMetadataOffsets;
+use crate::object::calc_object_layout;
+use crate::object::Object;
+use crate::object::ObjectMetadata;
 use crate::object::ObjectState;
+use crate::object::ObjectTuple;
 use crate::op::key_debug_str;
-use crate::state::action::create_object::ActionCreateObjectInput;
-use crate::state::StateAction;
 use crate::util::ceil_pow2;
-use crate::util::get_now_sec;
-use off64::int::Off64WriteMutInt;
-use off64::u16;
+use chrono::Utc;
+use off64::u64;
 use off64::u8;
-use off64::usz;
 use off64::Off64WriteMut;
-use signal_future::SignalFuture;
+use serde::Serialize;
 use std::cmp::max;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
 use tracing::trace;
@@ -24,7 +22,6 @@ use tracing::trace;
 pub struct OpCreateObjectInput {
   pub key: TinyBuf,
   pub size: u64,
-  pub assoc_data: TinyBuf,
 }
 
 pub struct OpCreateObjectOutput {
@@ -38,56 +35,78 @@ pub(crate) async fn op_create_object(
   trace!(
     key = key_debug_str(&req.key),
     size = req.size,
-    assoc_data_len = req.assoc_data.len(),
     "creating object"
   );
 
-  let key_len = u16!(req.key.len());
-
   let layout = calc_object_layout(&ctx.pages, req.size);
 
-  let offsets = ObjectMetadataOffsets {
-    key_len,
-    lpage_count: layout.lpage_count,
-    tail_page_count: layout.tail_page_sizes_pow2.len(),
-    assoc_data_len: u16!(req.assoc_data.len()),
+  let mut lpage_dev_offsets = Vec::new();
+  let mut tail_page_dev_offsets = Vec::new();
+  {
+    let mut allocator = ctx.heap_allocator.lock();
+    for _ in 0..layout.lpage_count {
+      let lpage_dev_offset = allocator.allocate(ctx.pages.lpage_size()).unwrap();
+      lpage_dev_offsets.push(lpage_dev_offset);
+    }
+    for (_, tail_page_size_pow2) in layout.tail_page_sizes_pow2 {
+      let page_dev_offset = allocator.allocate(1 << tail_page_size_pow2).unwrap();
+      tail_page_dev_offsets.push(page_dev_offset);
+    }
   };
 
-  let meta_size = offsets._total_size();
-  if meta_size > ctx.pages.lpage_size() {
-    return Err(OpError::ObjectMetadataTooLarge);
+  let metadata = ObjectMetadata {
+    created: Utc::now(),
+    key: req.key,
+    size: req.size,
+    lpage_dev_offsets,
+    tail_page_dev_offsets,
   };
 
-  let created_sec = get_now_sec();
-
-  let object_id = ctx.object_id_serial.next();
-
+  let mut metadata_raw = Vec::new();
+  metadata
+    .serialize(&mut rmp_serde::Serializer::new(&mut metadata_raw))
+    .unwrap();
+  let metadata_size = u64!(metadata_raw.len());
+  // TODO Check before allocating space and return `OpError::ObjectMetadataTooLarge`.
+  assert!(metadata_size <= ctx.pages.lpage_size());
   let metadata_page_size = max(
     ctx.pages.spage_size(),
-    ceil_pow2(meta_size, ctx.pages.spage_size_pow2),
+    ceil_pow2(metadata_size, ctx.pages.spage_size_pow2),
   );
-  // This is stored in memory, so don't allocate rounded up to spage if less, as that's a significant waste of memory.
-  // When the action writes, it'll copy the data to the page size.
-  let mut raw = ctx.pages.allocate_uninitialised(meta_size);
-  raw[usz!(offsets.page_size_pow2())] = u8!(metadata_page_size.ilog2());
-  raw[usz!(offsets.state())] = ObjectState::Incomplete as u8;
-  raw.write_u64_le_at(offsets.id(), object_id);
-  raw.write_u40_le_at(offsets.size(), req.size);
-  raw.write_u48_le_at(offsets.created_sec(), created_sec);
-  raw.write_u16_le_at(offsets.key_len(), key_len);
-  raw.write_at(offsets.key(), &req.key);
-  raw.write_u16_le_at(offsets.assoc_data_len(), u16!(req.assoc_data.len()));
-  raw.write_at(offsets.assoc_data(), &req.assoc_data);
+  let metadata_dev_offset = ctx.heap_allocator.lock().allocate(metadata_size).unwrap();
 
-  let (fut, fut_ctl) = SignalFuture::new();
-  ctx.state.send_action(StateAction::Create(
-    ActionCreateObjectInput {
-      metadata_page_size,
-      layout,
-      offsets,
-      raw,
+  let object_id = ctx.next_object_id.fetch_add(1, Ordering::Relaxed);
+  let tuple = ObjectTuple {
+    id: object_id,
+    state: ObjectState::Incomplete,
+    metadata_dev_offset,
+    metadata_page_size_pow2: u8!(metadata_page_size.ilog2()),
+  };
+
+  // NOTE: This is not the same as `allocate_from_data` as `metadata_page_size` may be much larger than the actual `metadata_size`.
+  let mut write_page = ctx.pages.allocate_uninitialised(metadata_page_size);
+  write_page.write_at(0, &metadata_raw);
+
+  let None = ctx.incomplete_objects.write().insert(object_id, Object::new(object_id, ObjectState::Incomplete, metadata)) else {
+    unreachable!();
+  };
+
+  ctx.device.write_at(metadata_dev_offset, write_page).await;
+
+  ctx.tuples.insert_object(tuple).await;
+
+  trace!(
+    id = object_id,
+    size = req.size,
+    metadata_dev_offset = metadata_dev_offset,
+    metadata_page_size = metadata_page_size,
+    "created object"
+  );
+
+  Ok(OpCreateObjectOutput {
+    token: IncompleteToken {
+      partition_idx: ctx.partition_idx,
+      object_id,
     },
-    fut_ctl,
-  ));
-  fut.await
+  })
 }

@@ -2,6 +2,7 @@ use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
 use crate::incomplete_token::IncompleteToken;
+use crate::object::calc_object_layout;
 use crate::object::ObjectState;
 use crate::util::ceil_pow2;
 use crate::util::div_pow2;
@@ -11,7 +12,6 @@ use futures::StreamExt;
 use itertools::Itertools;
 use off64::u32;
 use off64::u64;
-use off64::u8;
 use off64::usz;
 use std::cmp::max;
 use std::cmp::min;
@@ -56,30 +56,32 @@ pub(crate) async fn op_write_object<
     return Err(OpError::InexactWriteLength);
   };
 
-  if req.offset + len > obj.size() {
+  if req.offset + len > obj.size {
     // Offset is past size.
     return Err(OpError::RangeOutOfBounds);
   };
 
-  if req.offset + len != min(req.offset + ctx.pages.lpage_size(), obj.size()) {
+  if req.offset + len != min(req.offset + ctx.pages.lpage_size(), obj.size) {
     // Write does not fully fill lpage or entire tail. All writes must fill as otherwise uninitialised data will get exposed.
     return Err(OpError::InexactWriteLength);
   };
 
+  let layout = calc_object_layout(&ctx.pages, obj.size);
+
   // Vec of (page_size, page_dev_offset).
   let write_dev_offsets = {
     let idx = u32!(div_pow2(req.offset, ctx.pages.lpage_size_pow2));
-    if idx < obj.lpage_count() {
-      vec![(ctx.pages.lpage_size(), obj.lpage_dev_offset(idx))]
+    if idx < layout.lpage_count {
+      vec![(ctx.pages.lpage_size(), obj.lpage_dev_offsets[usz!(idx)])]
     } else {
-      let mut offsets = obj
-        .tail_page_sizes()
+      let mut offsets = layout
+        .tail_page_sizes_pow2
         .into_iter()
-        .map(|(i, sz)| (1 << sz, obj.tail_page_dev_offset(u8!(i))))
+        .map(|(i, sz)| (1 << sz, obj.tail_page_dev_offsets[usz!(i)]))
         .collect_vec();
       // For the very last tail page, we don't write a full page amount of bytes, unless the object just happens to be a multiple of that page's size. Use `.map` as there may not even be any tail pages at all.
       offsets.last_mut().map(|(page_size, _page_dev_offset)| {
-        let mod_ = obj.size() % *page_size;
+        let mod_ = obj.size % *page_size;
         if mod_ != 0 {
           *page_size = mod_;
         };

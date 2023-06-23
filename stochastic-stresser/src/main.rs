@@ -22,6 +22,7 @@ use serde::Deserialize;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -95,10 +96,6 @@ struct Config {
 
   /// Spage size. Defaults to 512 bytes.
   spage_size: Option<ByteSize>,
-
-  /// Disable the journal. This is not normal and would not represent typical usage.
-  #[serde(default)]
-  disable_journal: bool,
 }
 
 #[derive(Clone)]
@@ -179,6 +176,16 @@ enum Task {
   },
 }
 
+#[derive(Default)]
+struct TaskProgress {
+  create: AtomicU64,
+  write: AtomicU64,
+  commit: AtomicU64,
+  inspect: AtomicU64,
+  read: AtomicU64,
+  delete: AtomicU64,
+}
+
 #[tokio::main]
 async fn main() {
   #[cfg(feature = "instrumentation")]
@@ -205,7 +212,6 @@ async fn main() {
 
   let cfg = InitCfg {
     bucket_count,
-    disable_journal: cli.disable_journal,
     lpage_size,
     object_count,
     spage_size,
@@ -238,7 +244,8 @@ async fn main() {
   // Progress bars would look nice and fancy, but we are more likely to want logs/traces than in-flight animations, and a summary of performance metrics at the end will be enough. Using progress bars will clash with the logger.
 
   let started = Instant::now();
-  let completed = Arc::new(AtomicU64::new(0));
+  let completed_by_type = Arc::new(TaskProgress::default());
+  let complete = Arc::new(AtomicBool::new(false));
 
   let (tasks_sender, tasks_receiver) = stochastic_channel::<Task>();
   let total_data_bytes = spawn_blocking({
@@ -281,19 +288,20 @@ async fn main() {
 
   // Background loop to regularly prinit out metrics and progress.
   spawn({
-    let blobd = blobd.clone();
-    let completed = completed.clone();
+    let complete = complete.clone();
+    let task_progress = completed_by_type.clone();
     async move {
-      loop {
+      while !complete.load(Ordering::Relaxed) {
         sleep(Duration::from_secs(10)).await;
-        let completed = completed.load(Ordering::Relaxed);
-        info!(completed, "progress");
-        for (k, v) in blobd.metrics() {
-          info!(value = v, "metric: {k}");
-        }
-        if completed == object_count {
-          break;
-        };
+        info!(
+          create = task_progress.create.load(Ordering::Relaxed),
+          write = task_progress.write.load(Ordering::Relaxed),
+          commit = task_progress.commit.load(Ordering::Relaxed),
+          inspect = task_progress.inspect.load(Ordering::Relaxed),
+          read = task_progress.read.load(Ordering::Relaxed),
+          delete = task_progress.delete.load(Ordering::Relaxed),
+          "progress"
+        );
       }
     }
   });
@@ -302,14 +310,12 @@ async fn main() {
   for worker_no in 0..concurrency {
     let blobd = blobd.clone();
     let pool = pool.clone();
-    let completed = completed.clone();
+    let complete = complete.clone();
+    let completed_by_type = completed_by_type.clone();
     let tasks_sender = tasks_sender.clone();
     let tasks_receiver = tasks_receiver.clone();
     workers.push(spawn(async move {
-      loop {
-        if completed.load(Ordering::Relaxed) == object_count {
-          break;
-        };
+      while !complete.load(Ordering::Relaxed) {
         // We must use a timeout and regularly check the completion count, as we hold a sender so the channel won't naturally end.
         // WARNING: We cannot use `recv_timeout` as it's blocking.
         let t = match tasks_receiver.try_recv() {
@@ -334,9 +340,9 @@ async fn main() {
               .create_object(CreateObjectInput {
                 key: pool.get_then_prefix(key_offset, key_len, key_prefix),
                 size: data_len,
-                assoc_data: TinyBuf::empty(),
               })
               .await;
+            completed_by_type.create.fetch_add(1, Ordering::Relaxed);
             tasks_sender
               .send(Task::Write {
                 key_prefix,
@@ -383,6 +389,7 @@ async fn main() {
                   chunk_offset: next_chunk_offset,
                 }
               } else {
+                completed_by_type.write.fetch_add(1, Ordering::Relaxed);
                 Task::Commit {
                   key_prefix,
                   key_len,
@@ -405,6 +412,7 @@ async fn main() {
             let res = blobd
               .commit_object(CommitObjectInput { incomplete_token })
               .await;
+            completed_by_type.commit.fetch_add(1, Ordering::Relaxed);
             tasks_sender
               .send(Task::Inspect {
                 key_prefix,
@@ -430,6 +438,7 @@ async fn main() {
                 id: Some(object_id),
               })
               .await;
+            completed_by_type.inspect.fetch_add(1, Ordering::Relaxed);
             assert_eq!(res.id, object_id);
             assert_eq!(res.size, data_len);
             tasks_sender
@@ -485,6 +494,7 @@ async fn main() {
                 })
                 .unwrap();
             } else {
+              completed_by_type.delete.fetch_add(1, Ordering::Relaxed);
               tasks_sender
                 .send(Task::Delete {
                   key_prefix,
@@ -507,7 +517,9 @@ async fn main() {
                 id: Some(object_id),
               })
               .await;
-            completed.fetch_add(1, Ordering::Relaxed);
+            if completed_by_type.delete.fetch_add(1, Ordering::Relaxed) + 1 == object_count {
+              complete.store(true, Ordering::Relaxed);
+            }
           }
         };
       }

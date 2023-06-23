@@ -26,9 +26,9 @@ off64 = "0.6"
 percent-encoding = "2.2"
 rand = "0.8.5"
 rmp-serde = "1.1.1"
-seekable-async-file = "0.11.1"
+seekable-async-file = "0.11.2"
 serde = { version = "1.0", features = ["derive"] }
-tinybuf = "0.2.3"
+tinybuf = "0.3.0"
 tokio = { version = "1", features = ["full"] }
 toml = "0.7"
 tower-http = { version = "0.4.0", features = ["cors", "trace"] }

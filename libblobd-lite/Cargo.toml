@@ -21,17 +21,17 @@ num-traits = "0.2"
 off64 = "0.6"
 parking_lot = "0.12.1"
 rustc-hash = "1.1"
-seekable-async-file = "0.11.1"
+seekable-async-file = "0.11.2"
 serde = { version = "1.0.160", features = ["derive"] }
 signal-future = "0.1.1"
 struct-name = "0.0.1"
 struct-name-macro = "0.0.2"
 strum = { version = "0.24", features = ["derive"] }
-tinybuf = "0.2.3"
+tinybuf = "0.3.0"
 tokio = { version = "1", features = ["macros", "sync"] }
 tracing = "0.1.37"
 twox-hash = "=1.6.3" # Pin the version as the docs mention that outputs could change in future versions, which would be fatal: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
-write-journal = "0.10.1"
+write-journal = "0.10.2"
 
 [dev-dependencies]
 rand = "0.8.5"
