@@ -130,6 +130,7 @@ impl Tuples {
   pub async fn start_background_commit_loop(&self, dev: BoundedStore, pages: Pages) {
     loop {
       let mut changes = Vec::new();
+      // TODO Coalesce writes if nearest aligned power of two has high ration of changed tuples. For example, if bundles 9, 10, 11, 12, 13, and 15 have changed, write bundles 8 to 15 (inclusive) as one page to offset of bundle 8, including bundles 8 and 14 even though they haven't changed.
       let signals = {
         let mut state = self.state.lock();
         for bundle_id in state.dirty_bundles.iter() {
