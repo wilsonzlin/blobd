@@ -4,6 +4,7 @@ use crate::objects::format_device_for_objects;
 use crate::objects::load_objects_from_device;
 use crate::objects::LoadedObjects;
 use crate::pages::Pages;
+use crate::util::ceil_pow2;
 use crate::util::floor_pow2;
 use crate::BlobdCfg;
 use cadence::StatsdClient;
@@ -28,7 +29,7 @@ impl PartitionLoader {
     cfg: BlobdCfg,
     pages: Pages,
   ) -> Self {
-    let tuples_area_size = floor_pow2(cfg.object_tuples_area_reserved_space, cfg.lpage_size_pow2);
+    let tuples_area_size = ceil_pow2(cfg.object_tuples_area_reserved_space, cfg.lpage_size_pow2);
     let heap_dev_offset = tuples_area_size;
     let heap_end = floor_pow2(partition_store.len(), pages.lpage_size_pow2);
     let heap_size = heap_end - heap_dev_offset;

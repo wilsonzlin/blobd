@@ -42,6 +42,7 @@ use std::fs::OpenOptions;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::info;
 use tracing::info_span;
 use tracing::Instrument;
 
@@ -55,9 +56,7 @@ pub mod objects;
 pub mod op;
 pub mod pages;
 pub mod partition;
-pub mod ring_buf;
 pub mod tuples;
-pub mod unaligned_reader;
 pub mod util;
 
 #[derive(Clone, Debug)]
@@ -83,9 +82,9 @@ pub struct BlobdCfg {
   /// This must be much greater than zero.
   pub expire_incomplete_objects_after_secs: u64,
   pub lpage_size_pow2: u8,
-  /// The amount of bytes to reserve for storing the metadata of all objects. This can be expanded online later on, but only up to the leftmost object data allocation, so it's worth setting this to a high value. This will be rounded down to the nearest multiple of the lpage size.
+  /// The amount of bytes per partition to reserve for storing object tuples. This can be expanded online later on, but only up to the leftmost heap allocation, so it's worth setting this to a high value. This will be rounded up to the nearest multiple of the lpage size.
   pub object_tuples_area_reserved_space: u64,
-  /// It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
+  /// The device must support atomic writes of this size. It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
   pub spage_size_pow2: u8,
   pub statsd: Option<Arc<StatsdClient>>,
   /// Advanced options, only change if you know what you're doing.

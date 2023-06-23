@@ -14,6 +14,7 @@ use signal_future::SignalFutureController;
 use std::collections::BTreeMap;
 use tokio::spawn;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 type ObjectId = u64;
 
@@ -41,7 +42,7 @@ pub(crate) struct Tuples {
 }
 
 impl Tuples {
-  pub fn new(
+  pub fn load_and_start(
     dev: BoundedStore,
     pages: Pages,
     bundles_with_initial_data: Vec<Vec<ObjectTuple>>,
@@ -69,10 +70,10 @@ impl Tuples {
         let dev = dev.clone();
         let pages = pages.clone();
         async move {
-          loop {
+          // If this loop exits, it means we've dropped the `Tuple` and can safely stop.
+          while let Some(msg) = receiver.recv().await {
             let mut changes = Vec::new();
             let mut signals = Vec::new();
-            let msg = receiver.recv().await.unwrap();
             changes.push(msg.0);
             signals.push(msg.1);
             while let Some((change, signal)) = receiver.try_recv().ok() {

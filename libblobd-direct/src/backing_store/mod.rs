@@ -102,6 +102,7 @@ pub(crate) struct BoundedStore {
   len: u64,
 }
 
+#[allow(unused)]
 impl BoundedStore {
   pub fn len(&self) -> u64 {
     self.len

@@ -15,6 +15,7 @@ use dashmap::DashMap;
 use num_traits::FromPrimitive;
 use off64::u64;
 use off64::usz;
+use off64::Off64Read;
 use std::cmp::max;
 use std::cmp::min;
 use std::collections::BTreeMap;
@@ -67,13 +68,13 @@ pub(crate) async fn load_objects_from_device(
     statsd.clone(),
   );
 
-  for bundle_id in 0..usz!(heap_dev_offset / pages.spage_size()) {
-    let raw = dev
-      .read_at(u64!(bundle_id) * pages.spage_size(), pages.spage_size())
-      .await;
+  let entire_tuples_area_raw = dev.read_at(0, heap_dev_offset).await;
 
+  for bundle_id in 0..usz!(heap_dev_offset / pages.spage_size()) {
+    let raw =
+      entire_tuples_area_raw.read_at(u64!(bundle_id) * pages.spage_size(), pages.spage_size());
     let mut bundle_tuples = Vec::new();
-    for tuple_raw in raw.chunks(usz!(OBJECT_TUPLE_SERIALISED_LEN)) {
+    for tuple_raw in raw.chunks_exact(usz!(OBJECT_TUPLE_SERIALISED_LEN)) {
       let object_state = ObjectState::from_u8(tuple_raw[0]).unwrap();
       if object_state == ObjectState::_EndOfBundleTuples {
         break;
@@ -120,6 +121,6 @@ pub(crate) async fn load_objects_from_device(
     heap_allocator,
     incomplete_objects: Arc::new(parking_lot::RwLock::new(incomplete)),
     next_object_id,
-    tuples: Tuples::new(dev.bounded(0, heap_dev_offset), pages, tuples),
+    tuples: Tuples::load_and_start(dev.bounded(0, heap_dev_offset), pages, tuples),
   }
 }

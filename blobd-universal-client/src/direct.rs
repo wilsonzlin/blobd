@@ -34,6 +34,11 @@ pub struct Direct {
   blobd: Blobd,
 }
 
+fn div_ceil(v: u64, d: u64) -> u64 {
+  let (div, rem) = (v / d, v % d);
+  div + if rem > 0 { 1 } else { 0 }
+}
+
 impl Direct {
   pub async fn start(cfg: InitCfg) -> Self {
     let part_count = u64!(cfg.partitions.len());
@@ -54,7 +59,8 @@ impl Direct {
         backing_store: BlobdCfgBackingStore::Uring,
         expire_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
         lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
-        object_tuples_area_reserved_space: (1024 * 1024 * 1024 * 4) / part_count,
+        // Each tuple requires around 20 bytes.
+        object_tuples_area_reserved_space: div_ceil(cfg.object_count * 20, part_count),
         spage_size_pow2: u8!(cfg.spage_size.ilog2()),
         statsd: None,
         #[cfg(target_os = "linux")]
