@@ -10,6 +10,8 @@ use crate::backing_store::PartitionStore;
 use crate::pages::Pages;
 use crate::partition::PartitionLoader;
 use cadence::StatsdClient;
+use chrono::DateTime;
+use chrono::Utc;
 use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
@@ -42,6 +44,7 @@ use std::fs::OpenOptions;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tinybuf::TinyBuf;
 use tracing::info_span;
 use tracing::Instrument;
 
@@ -175,7 +178,13 @@ pub struct Blobd {
   partitions: Arc<Vec<Partition>>,
 }
 
-// TODO get_stream_event
+pub struct BlobdListObjectsOutputObject {
+  pub key: TinyBuf,
+  pub created: DateTime<Utc>,
+  pub size: u64,
+  pub id: u64,
+}
+
 impl Blobd {
   // Provide getter to prevent mutating BlobdCfg.
   pub fn cfg(&self) -> &BlobdCfg {
@@ -221,6 +230,26 @@ impl Blobd {
     op_inspect_object(self.partitions[partition_index].ctx.clone(), input)
       .instrument(span)
       .await
+  }
+
+  /// WARNING: Use this method sparingly and with awareness of its behaviour:
+  /// - Deadlocks could occur if iteration occurs across threads, locks, or await points.
+  /// - There could be significant performance drops; some or all state operations (e.g. create, commit, delete) may be locked for the entirety of the iteration.
+  /// - There is no guarantee of consistency; object entries could be duplicated or skipped, and how entries for objects that are created, committed, or deleted during iteration are iterated is undefined.
+  /// - There is definitely no defined order.
+  pub fn list_objects(&self) -> impl Iterator<Item = BlobdListObjectsOutputObject> + '_ {
+    self.partitions.iter().flat_map(|partition| {
+      partition
+        .ctx
+        .committed_objects
+        .iter()
+        .map(|o| BlobdListObjectsOutputObject {
+          created: o.created,
+          id: o.id(),
+          key: o.key.clone(),
+          size: o.size,
+        })
+    })
   }
 
   pub async fn read_object(&self, input: OpReadObjectInput) -> OpResult<OpReadObjectOutput> {
