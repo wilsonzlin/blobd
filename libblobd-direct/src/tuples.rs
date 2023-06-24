@@ -92,12 +92,23 @@ impl Tuples {
     fut.await;
   }
 
-  pub async fn update_object_state(&self, object_id: u64, new_object_state: ObjectState) {
+  pub async fn update_object_state_if_exists_and_matches(
+    &self,
+    object_id: u64,
+    expected_object_state: ObjectState,
+    new_object_state: ObjectState,
+  ) {
     let fut = {
       let mut state = self.state.lock();
-      let bundle_id = *state.object_id_to_bundle.get(&object_id).unwrap();
+      let Some(&bundle_id) = state.object_id_to_bundle.get(&object_id) else {
+        return;
+      };
       let bundle = &mut state.bundle_tuples[usz!(bundle_id)];
-      bundle.get_mut(&object_id).unwrap().state = new_object_state;
+      let tuple = bundle.get_mut(&object_id).unwrap();
+      if tuple.state != expected_object_state {
+        return;
+      }
+      tuple.state = new_object_state;
       if u16!(bundle.len()) < self.max_tuples_per_bundle {
         state.free_and_dirty_bundles.add(bundle_id);
       }

@@ -118,12 +118,12 @@ pub(crate) async fn op_read_object(
 
       // Can't read past current page, as we'll need to switch to a different page then.
       // TODO We could read in smaller amounts instead, to avoid higher memory usage from buffering.
-      object_is_still_valid(&obj)?;
       let chunk_len = min(
         end - next,
         (1 << page_size_pow2) - offset_within_page,
       );
       trace!(idx, page_size_pow2, page_dev_offset, offset_within_page, chunk_len, start, next, end, "reading chunk");
+      object_is_still_valid(&obj)?;
       let data = unaligned_read(&ctx.pages, &ctx.device, page_dev_offset + offset_within_page, chunk_len).await;
       assert_eq!(u64!(data.len()), chunk_len);
       idx += 1;

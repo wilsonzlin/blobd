@@ -27,17 +27,21 @@ pub(crate) async fn op_commit_object(
     .update_state_then_ensure_no_writers(ObjectState::Committed)
     .await;
 
-  ctx
-    .tuples
-    .update_object_state(obj.id(), ObjectState::Committed)
-    .await;
-
-  // TODO Handle crash consistency: new object is committed but existing object isn't deleted.
-  let existing = ctx.committed_objects.insert(obj.key.clone(), obj);
-  if let Some(existing) = existing {
+  // For crash consistency, delete any existing object first; otherwise, we may have two objects with the same key, and if versioning isn't enabled then it isn't clear which is the winner (objects can be committed in a different order than creation i.e. object ID).
+  if let Some(existing) = ctx.committed_objects.insert(obj.key.clone(), obj) {
     // See `op_delete_object` for why this is safe to do now.
     reap_object(&ctx, &existing).await;
   };
+
+  // Double check the state again, in case someone deleted it in the microseconds since we inserted it into `ctx.committed_objects`.
+  ctx
+    .tuples
+    .update_object_state_if_exists_and_matches(
+      object_id,
+      ObjectState::Incomplete,
+      ObjectState::Committed,
+    )
+    .await;
 
   Ok(OpCommitObjectOutput { object_id })
 }
