@@ -1,20 +1,18 @@
 use crate::endpoint::HttpCtx;
+use crate::libblobd::BlobdCfg;
+use crate::libblobd::BlobdLoader;
 use crate::server::start_http_server_loop;
 use blobd_token::BlobdTokens;
 use clap::Parser;
 use conf::Conf;
 use data_encoding::BASE64;
-use libblobd_lite::BlobdCfg;
-use libblobd_lite::BlobdLoader;
-use off64::u8;
-use seekable_async_file::get_file_len_via_seek;
-use seekable_async_file::SeekableAsyncFile;
-use seekable_async_file::SeekableAsyncFileMetrics;
+#[cfg(feature = "blobd-direct")]
+pub(crate) use libblobd_direct as libblobd;
+#[cfg(feature = "blobd-lite")]
+pub(crate) use libblobd_lite as libblobd;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::fs::read_to_string;
-use tokio::join;
 use tracing::info;
 
 pub mod conf;
@@ -42,24 +40,27 @@ async fn main() {
   let conf_raw = read_to_string(cli.config).await.expect("read config file");
   let conf: Conf = toml::from_str(&conf_raw).expect("parse config file");
 
-  let io_metrics = Arc::new(SeekableAsyncFileMetrics::default());
-
-  let dev_size = get_file_len_via_seek(&conf.device_path)
+  #[cfg(feature = "blobd-lite")]
+  let dev = {
+    let io_metrics = Arc::new(seekable_async_file::SeekableAsyncFileMetrics::default());
+    assert_eq!(conf.partitions.len(), 1);
+    assert_eq!(conf.partitions[0].offset, 0);
+    seekable_async_file::SeekableAsyncFile::open(
+      &conf.partitions[0].path,
+      conf.partitions[0].len,
+      io_metrics,
+      std::time::Duration::from_micros(200),
+      0,
+    )
     .await
-    .expect("seek device file");
-  let dev = SeekableAsyncFile::open(
-    &conf.device_path,
-    dev_size,
-    io_metrics,
-    Duration::from_micros(200),
-    0,
-  )
-  .await;
+  };
 
+  #[cfg(feature = "blobd-lite")]
   assert!(
     conf.bucket_count.is_power_of_two(),
     "bucket count must be a power of 2"
   );
+  #[cfg(feature = "blobd-lite")]
   assert!(
     conf.bucket_count >= 4096 && conf.bucket_count <= 281474976710656,
     "bucket count must be in the range [4096, 281474976710656]"
@@ -72,14 +73,39 @@ async fn main() {
     .expect("configured token secret must have length of 32");
   let tokens = BlobdTokens::new(token_secret.clone());
 
-  let blobd = BlobdLoader::new(dev.clone(), dev_size, BlobdCfg {
-    bucket_count_log2: u8!(conf.bucket_count.ilog2()),
+  #[cfg(feature = "blobd-lite")]
+  let blobd = BlobdLoader::new(dev.clone(), conf.partitions[0].len, BlobdCfg {
+    bucket_count_log2: conf.bucket_count.ilog2().try_into().unwrap(),
     bucket_lock_count_log2: conf.bucket_lock_count_log2,
     lpage_size_pow2: conf.lpage_size_pow2,
     spage_size_pow2: conf.spage_size_pow2,
     reap_objects_after_secs: conf.reap_objects_after_secs,
     versioning: conf.versioning,
   });
+  #[cfg(feature = "blobd-direct")]
+  let blobd = BlobdLoader::new(
+    conf
+      .partitions
+      .into_iter()
+      .map(|p| libblobd::BlobdCfgPartition {
+        len: p.len,
+        offset: p.offset,
+        path: p.path,
+      })
+      .collect(),
+    BlobdCfg {
+      backing_store: libblobd::BlobdCfgBackingStore::Uring,
+      expire_incomplete_objects_after_secs: conf.reap_objects_after_secs,
+      lpage_size_pow2: conf.lpage_size_pow2,
+      object_tuples_area_reserved_space: conf.object_tuples_area_reserved_space,
+      spage_size_pow2: conf.spage_size_pow2,
+      statsd: None, // TODO
+      uring_coop_taskrun: false,
+      uring_defer_taskrun: false,
+      uring_iopoll: false,
+      uring_sqpoll: None,
+    },
+  );
 
   if cli.format {
     blobd.format().await;
@@ -87,7 +113,25 @@ async fn main() {
     return;
   };
 
-  let blobd = blobd.load().await;
+  #[cfg(feature = "blobd-lite")]
+  let blobd = {
+    let blobd = blobd.load().await;
+    tokio::spawn({
+      let dev = dev.clone();
+      async move {
+        dev.start_delayed_data_sync_background_loop().await;
+      }
+    });
+    tokio::spawn({
+      let blobd = blobd.clone();
+      async move {
+        blobd.clone().start().await;
+      }
+    });
+    blobd
+  };
+  #[cfg(feature = "blobd-direct")]
+  let blobd = blobd.load_and_start().await;
 
   let ctx = Arc::new(HttpCtx {
     authentication_is_enabled: !conf.disable_authentication,
@@ -96,9 +140,5 @@ async fn main() {
     tokens,
   });
 
-  join! {
-    blobd.start(),
-    dev.start_delayed_data_sync_background_loop(),
-    start_http_server_loop(conf.interface, conf.port, ctx),
-  };
+  start_http_server_loop(conf.interface, conf.port, ctx).await;
 }

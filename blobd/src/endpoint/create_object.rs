@@ -1,6 +1,7 @@
 use super::parse_key;
 use super::transform_op_error;
 use super::HttpCtx;
+use crate::libblobd::op::create_object::OpCreateObjectInput;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -8,11 +9,9 @@ use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use blobd_token::AuthTokenAction;
-use libblobd_lite::op::create_object::OpCreateObjectInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
@@ -39,7 +38,8 @@ pub async fn endpoint_create_object(
     .create_object(OpCreateObjectInput {
       key,
       size: req.size,
-      assoc_data: TinyBuf::empty(),
+      #[cfg(feature = "blobd-lite")]
+      assoc_data: tinybuf::TinyBuf::empty(),
     })
     .await;
 

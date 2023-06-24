@@ -153,6 +153,7 @@ impl BlobdProvider for Direct {
         id: input.id,
         key: input.key,
         start: input.start,
+        stream_buffer_size: input.stream_buffer_size,
       })
       .await
       .unwrap();

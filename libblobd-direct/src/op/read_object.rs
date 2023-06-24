@@ -17,7 +17,6 @@ use off64::u64;
 use off64::u8;
 use off64::usz;
 use std::cmp::max;
-use std::cmp::min;
 use std::pin::Pin;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
@@ -30,6 +29,7 @@ pub struct OpReadObjectInput {
   pub start: u64,
   // Exclusive.
   pub end: Option<u64>,
+  pub stream_buffer_size: u64,
 }
 
 pub struct OpReadObjectOutput {
@@ -113,20 +113,21 @@ pub(crate) async fn op_read_object(
           (dev_offset, page_size_pow2)
         }
       };
-      // The device offset of the current lpage or tail page changes each lpage amount, so this is not the same as `next`. Think of `next` as the virtual pointer within a contiguous span of the object's data bytes, and this as the physical offset within the physical page that backs the current position of the virtual pointer within the object's data made from many pages of different sizes.
+      // The device offset of the current lpage or tail page changes each lpage amount, so this is not the same as `next`. Think of `next` as the virtual pointer within a contiguous span of the object's data bytes, and this as the physical offset within the physical page that backs the current position of the virtual pointer within the object's data made from many pages at random device locations of different sizes.
       let offset_within_page = mod_pow2(next, page_size_pow2);
+      let rem_within_page = (1 << page_size_pow2) - offset_within_page;
 
       // Can't read past current page, as we'll need to switch to a different page then.
-      // TODO We could read in smaller amounts instead, to avoid higher memory usage from buffering.
-      let chunk_len = min(
-        end - next,
-        (1 << page_size_pow2) - offset_within_page,
-      );
+      let chunk_len = req.stream_buffer_size
+        .min(end - next)
+        .min(rem_within_page);
       trace!(idx, page_size_pow2, page_dev_offset, offset_within_page, chunk_len, start, next, end, "reading chunk");
       object_is_still_valid(&obj)?;
       let data = unaligned_read(&ctx.pages, &ctx.device, page_dev_offset + offset_within_page, chunk_len).await;
       assert_eq!(u64!(data.len()), chunk_len);
-      idx += 1;
+      if chunk_len == rem_within_page {
+        idx += 1;
+      };
       next += chunk_len;
 
       // Check again before yielding; we may have read junk.

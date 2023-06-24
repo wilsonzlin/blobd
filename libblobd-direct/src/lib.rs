@@ -100,6 +100,16 @@ pub struct BlobdCfg {
   pub uring_sqpoll: Option<u32>,
 }
 
+impl BlobdCfg {
+  pub fn lpage_size(&self) -> u64 {
+    1 << self.lpage_size_pow2
+  }
+
+  pub fn spage_size(&self) -> u64 {
+    1 << self.spage_size_pow2
+  }
+}
+
 pub struct BlobdLoader {
   cfg: BlobdCfg,
   partitions: Vec<PartitionLoader>,

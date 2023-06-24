@@ -1,6 +1,7 @@
 use super::parse_key;
 use super::transform_op_error;
 use super::HttpCtx;
+use crate::libblobd::op::inspect_object::OpInspectObjectInput;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::http::header::CONTENT_LENGTH;
@@ -8,7 +9,6 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use blobd_token::AuthTokenAction;
-use libblobd_lite::op::inspect_object::OpInspectObjectInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;

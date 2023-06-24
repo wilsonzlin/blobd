@@ -1,6 +1,7 @@
 use super::parse_key;
 use super::transform_op_error;
 use super::HttpCtx;
+use crate::libblobd::op::write_object::OpWriteObjectInput;
 use axum::extract::BodyStream;
 use axum::extract::Query;
 use axum::extract::State;
@@ -12,7 +13,6 @@ use axum::http::Uri;
 use axum::TypedHeader;
 use blobd_token::AuthTokenAction;
 use futures::StreamExt;
-use libblobd_lite::op::write_object::OpWriteObjectInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;

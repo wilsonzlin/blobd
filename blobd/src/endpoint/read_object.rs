@@ -1,6 +1,8 @@
 use super::parse_key;
 use super::transform_op_error;
 use super::HttpCtx;
+use crate::libblobd::op::read_object::OpReadObjectInput;
+use crate::libblobd::op::read_object::OpReadObjectOutput;
 use axum::body::StreamBody;
 use axum::extract::Query;
 use axum::extract::State;
@@ -14,8 +16,6 @@ use bytes::Bytes;
 use futures::Stream;
 use futures::StreamExt;
 use itertools::Itertools;
-use libblobd_lite::op::read_object::OpReadObjectInput;
-use libblobd_lite::op::read_object::OpReadObjectOutput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io;

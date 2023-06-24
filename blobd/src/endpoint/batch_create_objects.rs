@@ -1,4 +1,7 @@
 use super::HttpCtx;
+use crate::libblobd::op::commit_object::OpCommitObjectInput;
+use crate::libblobd::op::create_object::OpCreateObjectInput;
+use crate::libblobd::op::write_object::OpWriteObjectInput;
 use axum::extract::BodyStream;
 use axum::extract::Query;
 use axum::extract::State;
@@ -9,9 +12,6 @@ use futures::stream::once;
 use futures::AsyncReadExt;
 use futures::StreamExt;
 use futures::TryStreamExt;
-use libblobd_lite::op::commit_object::OpCommitObjectInput;
-use libblobd_lite::op::create_object::OpCreateObjectInput;
-use libblobd_lite::op::write_object::OpWriteObjectInput;
 use off64::int::Off64ReadInt;
 use off64::usz;
 use serde::Deserialize;
@@ -19,7 +19,6 @@ use serde::Serialize;
 use std::cmp::min;
 use std::io::ErrorKind;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 #[derive(Serialize, Deserialize)]
 pub struct InputQueryParams {
@@ -28,7 +27,7 @@ pub struct InputQueryParams {
 }
 
 // This is extremely fast for creating lots of small objects, as there's no overhead of having to make multiple requests (create + n * write + commit) and using many parallel connections, all of which only have very small transfer sizes. This is really to avoid the overhead of HTTP (pipelining, multiplexing, parsing).
-// This endpoint will never return a bad status. However, as soon as there's an error, the processing stops immediately. The amount of successfully created objects is returned in a header, and objects are created in order. This endpoint is not atomic, not even at the individual object level.
+// This endpoint will never return a bad status when processing the objects. However, as soon as there's an error, the processing stops immediately. The amount of successfully created objects is returned in a header, and objects are created in order. This endpoint is not atomic, not even at the individual object level.
 pub async fn endpoint_batch_create_objects(
   State(ctx): State<Arc<HttpCtx>>,
   req: Query<InputQueryParams>,
@@ -65,7 +64,8 @@ pub async fn endpoint_batch_create_objects(
     let Ok(creation) = ctx.blobd.create_object(OpCreateObjectInput {
       key: key.into(),
       size,
-      assoc_data: TinyBuf::empty(),
+      #[cfg(feature = "blobd-lite")]
+      assoc_data: tinybuf::TinyBuf::empty(),
     }).await else {
       break;
     };
@@ -85,7 +85,7 @@ pub async fn endpoint_batch_create_objects(
       };
     }
 
-    let Ok(_) = ctx.blobd.commit_object(OpCommitObjectInput{ incomplete_token: creation.token}).await else {
+    let Ok(_) = ctx.blobd.commit_object(OpCommitObjectInput { incomplete_token: creation.token }).await else {
       break;
     };
 
