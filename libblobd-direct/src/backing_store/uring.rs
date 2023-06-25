@@ -135,7 +135,11 @@ impl UringBackingStore {
           while let Ok(msg) = receiver.try_recv() {
             msgbuf.push_back(msg);
           }
-          for msg in msgbuf.drain(..) {
+          // How the io_uring submission queue work:
+          // - The buffer is shared between the kernel and userspace.
+          // - There are atomic head and tail indices that allow them to be shared mutably between kernel and userspace safely.
+          // - The Rust library we're using abstracts over this by caching the head and tail as local values. Once we've made our inserts, we update the atomic tail and then tell the kernel to consume some of the queue. When we update the atomic tail, we also check the atomic head and update our local cached value; some entries may have been consumed by the kernel in some other thread since we last checked and we may actually have more free space than we thought.
+          while let Some(msg) = msgbuf.pop_front() {
             let id = next_id;
             next_id += 1;
             trace!(id, typ = msg.to_string(), "submitting request");
@@ -162,7 +166,12 @@ impl UringBackingStore {
             };
             // Insert before submitting.
             pending.insert(id, (msg, Instant::now()));
+            if submission.is_full() {
+              submission.sync();
+              ring.submit_and_wait(1).unwrap();
+            }
             unsafe {
+              // This call only has one error: queue is full. It should never happen because we just checked that it's not.
               submission.push(&submission_entry).unwrap();
             };
           }
