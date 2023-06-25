@@ -11,6 +11,7 @@ use crate::util::div_pow2;
 use crate::util::floor_pow2;
 use crate::util::mod_pow2;
 use bufpool::buf::Buf;
+use futures::stream::empty;
 use futures::Stream;
 use off64::u32;
 use off64::u64;
@@ -77,10 +78,19 @@ pub(crate) async fn op_read_object(
   let start = req.start;
   // Exclusive.
   let end = req.end.unwrap_or(object_size);
-  // Note: disallow empty ranges.
-  if start >= end || start >= object_size || end > object_size {
+  if start > end || start >= object_size || end > object_size {
     return Err(OpError::RangeOutOfBounds);
   };
+  // Special handling for empty ranges. Note that we must handle this in case object has size of zero.
+  if start == end {
+    return Ok(OpReadObjectOutput {
+      data_stream: Box::pin(empty()),
+      start,
+      end,
+      object_size,
+      object_id,
+    });
+  }
 
   let data_stream = async_stream::try_stream! {
     // This is the lpage index (incremented every lpage) or tail page index (incremented every tail page **which differ in size**).
