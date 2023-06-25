@@ -2,6 +2,7 @@ use crate::backing_store::PartitionStore;
 use crate::ctx::Ctx;
 use crate::objects::format_device_for_objects;
 use crate::objects::load_objects_from_device;
+use crate::objects::ClusterLoadProgress;
 use crate::objects::LoadedObjects;
 use crate::pages::Pages;
 use crate::util::ceil_pow2;
@@ -60,7 +61,7 @@ impl PartitionLoader {
     self.dev.sync().await;
   }
 
-  pub async fn load_and_start(self) -> Partition {
+  pub async fn load_and_start(self, load_progress: Arc<ClusterLoadProgress>) -> Partition {
     let dev = &self.dev;
     let pages = &self.pages;
 
@@ -71,6 +72,7 @@ impl PartitionLoader {
       next_object_id,
       tuples,
     } = load_objects_from_device(
+      load_progress,
       dev.clone(),
       pages.clone(),
       self.statsd.clone(),

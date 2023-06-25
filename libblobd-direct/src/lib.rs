@@ -16,6 +16,7 @@ use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
 use itertools::Itertools;
+use objects::ClusterLoadProgress;
 use off64::usz;
 use op::commit_object::op_commit_object;
 use op::commit_object::OpCommitObjectInput;
@@ -43,8 +44,12 @@ use std::fs::OpenOptions;
 #[cfg(target_os = "linux")]
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
+use tokio::spawn;
+use tokio::time::sleep;
+use tracing::info;
 use tracing::info_span;
 use tracing::Instrument;
 
@@ -167,12 +172,30 @@ impl BlobdLoader {
   }
 
   pub async fn load_and_start(self) -> Blobd {
-    let partitions = join_all(
-      self
-        .partitions
-        .into_iter()
-        .map(|p| async move { p.load_and_start().await }),
-    )
+    let progress: Arc<ClusterLoadProgress> = Default::default();
+
+    spawn({
+      let partition_count = self.partitions.len();
+      let progress = progress.clone();
+      async move {
+        loop {
+          sleep(std::time::Duration::from_secs(3)).await;
+          if progress.partitions_completed.load(Ordering::Relaxed) >= partition_count {
+            break;
+          };
+          info!(
+            objects_loaded = progress.objects_loaded.load(Ordering::Relaxed),
+            objects_total = progress.objects_total.load(Ordering::Relaxed),
+            "initial loading progress"
+          );
+        }
+      }
+    });
+
+    let partitions = join_all(self.partitions.into_iter().map(|p| {
+      let progress = progress.clone();
+      async move { p.load_and_start(progress).await }
+    }))
     .await;
 
     Blobd {

@@ -43,11 +43,14 @@ pub(crate) struct Tuples {
 }
 
 impl Tuples {
-  pub fn new(pages: Pages, bundles_with_initial_data: Vec<Vec<ObjectTuple>>) -> Self {
+  pub fn new(
+    pages: Pages,
+    bundles_with_initial_data: FxHashMap<BundleId, Vec<ObjectTuple>>,
+  ) -> Self {
     let max_tuples_per_bundle = u16!(pages.spage_size() / OBJECT_TUPLE_SERIALISED_LEN);
 
     let mut state = TuplesState::default();
-    for (bundle_id, tuples_init) in bundles_with_initial_data.into_iter().enumerate() {
+    for (bundle_id, tuples_init) in bundles_with_initial_data.into_iter() {
       let bundle_id = u32!(bundle_id);
       let tuple_count = u16!(tuples_init.len());
       assert!(tuple_count <= max_tuples_per_bundle);
