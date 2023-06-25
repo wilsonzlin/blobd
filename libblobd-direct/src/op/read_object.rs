@@ -78,11 +78,11 @@ pub(crate) async fn op_read_object(
   let start = req.start;
   // Exclusive.
   let end = req.end.unwrap_or(object_size);
-  if start > end || start >= object_size || end > object_size {
+  if start > end || start > object_size || end > object_size {
     return Err(OpError::RangeOutOfBounds);
   };
   // Special handling for empty ranges. Note that we must handle this in case object has size of zero.
-  if start == end {
+  if start == end || start == object_size {
     return Ok(OpReadObjectOutput {
       data_stream: Box::pin(empty()),
       start,
