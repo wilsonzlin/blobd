@@ -32,6 +32,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
+use tracing::warn;
 
 // Map from object ID to bucket ID. It just happens so that object IDs are also chronological, so this map allows removing objects when they're committed and also popping chronologically.
 pub(crate) type IncompleteObjects = Arc<RwLock<BTreeMap<u64, Object>>>;
@@ -153,12 +154,33 @@ pub(crate) async fn load_objects_from_device(
           }
 
           // We'll increment metrics for object counts at the end, in one addition.
-          assert!(match object_state {
-            ObjectState::Incomplete => incomplete.write().insert(object_id, obj),
-            ObjectState::Committed => committed.lock().insert(obj.key.clone(), obj),
+          match object_state {
+            ObjectState::Incomplete => {
+              assert!(incomplete.write().insert(object_id, obj).is_none());
+            }
+            ObjectState::Committed => {
+              match committed.lock().entry(obj.key.clone()) {
+                dashmap::mapref::entry::Entry::Occupied(mut ent) => {
+                  let existing_id = ent.get().id();
+                  assert_ne!(existing_id, object_id);
+                  let key_hex = hex::encode(&obj.key);
+                  warn!(
+                    key_hex,
+                    older_object_id = min(existing_id, object_id),
+                    newer_object_id = max(existing_id, object_id),
+                    "multiple committed objects found with the same key, will only keep the latest committed one"
+                  );
+                  if existing_id < object_id {
+                    ent.insert(obj);
+                  };
+                }
+                dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                  vacant.insert(obj);
+                }
+              };
+            }
             _ => unreachable!(),
-          }
-          .is_none());
+          };
 
           metrics
             .0
