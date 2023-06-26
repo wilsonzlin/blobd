@@ -50,7 +50,15 @@ impl Tuples {
     let max_tuples_per_bundle = u16!(pages.spage_size() / OBJECT_TUPLE_SERIALISED_LEN);
 
     let mut state = TuplesState::default();
-    for (bundle_id, tuples_init) in bundles_with_initial_data.into_iter() {
+    let mut next_expected_bundle_id = 0;
+    // WARNING: We must sort as we insert into `bundle_tuples` by pushing.
+    for (bundle_id, tuples_init) in bundles_with_initial_data
+      .into_iter()
+      .sorted_unstable_by_key(|(bundle_id, _)| *bundle_id)
+    {
+      // Sanity check: assert we have all bundles and there are no holes.
+      assert_eq!(bundle_id, next_expected_bundle_id);
+      next_expected_bundle_id += 1;
       let bundle_id = u32!(bundle_id);
       let tuple_count = u16!(tuples_init.len());
       assert!(tuple_count <= max_tuples_per_bundle);
@@ -126,7 +134,7 @@ impl Tuples {
   pub async fn delete_object(&self, object_id: u64) -> ObjectTuple {
     let (tuple, fut) = {
       let mut state = self.state.lock();
-      let bundle_id = *state.object_id_to_bundle.get(&object_id).unwrap();
+      let bundle_id = state.object_id_to_bundle.remove(&object_id).unwrap();
       let tuple = state.bundle_tuples[usz!(bundle_id)]
         .remove(&object_id)
         .unwrap();
@@ -144,7 +152,7 @@ impl Tuples {
   pub async fn start_background_commit_loop(&self, dev: BoundedStore, pages: Pages) {
     loop {
       let mut changes = Vec::new();
-      // TODO Coalesce writes if nearest aligned power of two has high ration of changed tuples. For example, if bundles 9, 10, 11, 12, 13, and 15 have changed, write bundles 8 to 15 (inclusive) as one page to offset of bundle 8, including bundles 8 and 14 even though they haven't changed.
+      // TODO Coalesce writes if nearest aligned power of two has high ratio of changed tuples. For example, if bundles 9, 10, 11, 12, 13, and 15 have changed, write bundles 8 to 15 (inclusive) as one page to offset of bundle 8, including bundles 8 and 14 even though they haven't changed.
       let signals = {
         let mut state = self.state.lock();
         for bundle_id in state.dirty_bundles.iter() {
@@ -160,7 +168,7 @@ impl Tuples {
       };
       if changes.is_empty() {
         // TODO Tune, allow configuration.
-        sleep(std::time::Duration::from_micros(100)).await;
+        sleep(std::time::Duration::from_micros(10)).await;
         continue;
       };
       iter(changes)
