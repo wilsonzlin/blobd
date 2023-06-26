@@ -62,7 +62,6 @@ impl Direct {
         // Each tuple requires around 20 bytes.
         object_tuples_area_reserved_space: div_ceil(cfg.object_count * 20, part_count),
         spage_size_pow2: u8!(cfg.spage_size.ilog2()),
-        statsd: None,
         #[cfg(target_os = "linux")]
         uring_coop_taskrun: false,
         #[cfg(target_os = "linux")]

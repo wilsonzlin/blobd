@@ -1,6 +1,7 @@
 use super::AllocDir;
 use super::Allocator;
 use crate::allocator::OutOfSpaceError;
+use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
 use itertools::Itertools;
 use off64::u32;
@@ -20,7 +21,13 @@ fn test_allocator_from_left() {
   let heap_size = lpage_size * 7;
   let pages = Pages::new(spage_size_pow2, lpage_size_pow2);
 
-  let mut alloc = Allocator::new(heap_dev_offset, heap_size, pages, AllocDir::Left, None);
+  let mut alloc = Allocator::new(
+    heap_dev_offset,
+    heap_size,
+    pages,
+    AllocDir::Left,
+    BlobdMetrics::default(),
+  );
   assert!(alloc.bitmap(9).is_empty());
   assert!(alloc.bitmap(10).is_empty());
   assert!(alloc.bitmap(11).is_empty());
@@ -83,7 +90,13 @@ fn test_allocator_from_right() {
   let heap_size = lpage_size * 7;
   let pages = Pages::new(spage_size_pow2, lpage_size_pow2);
 
-  let mut alloc = Allocator::new(heap_dev_offset, heap_size, pages, AllocDir::Right, None);
+  let mut alloc = Allocator::new(
+    heap_dev_offset,
+    heap_size,
+    pages,
+    AllocDir::Right,
+    BlobdMetrics::default(),
+  );
 
   // Allocate all space.
   let mut last_seen_for_size = FxHashMap::default();

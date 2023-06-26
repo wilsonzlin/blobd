@@ -3,6 +3,7 @@ use super::OpResult;
 use crate::ctx::Ctx;
 use chrono::DateTime;
 use chrono::Utc;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
 
@@ -25,6 +26,7 @@ pub(crate) async fn op_inspect_object(
   let Some(obj) = ctx.committed_objects.get(&req.key).filter(|o| req.id.is_none() || Some(o.id()) == req.id).map(|e| e.value().clone()) else {
     return Err(OpError::ObjectNotFound);
   };
+  ctx.metrics.0.inspect_op_count.fetch_add(1, Relaxed);
   Ok(OpInspectObjectOutput {
     id: obj.id(),
     size: obj.size,

@@ -1,11 +1,9 @@
 use super::OpError;
 use super::OpResult;
-use crate::backing_store::PartitionStore;
 use crate::ctx::Ctx;
 use crate::object::calc_object_layout;
 use crate::object::Object;
 use crate::object::ObjectState;
-use crate::pages::Pages;
 use crate::util::ceil_pow2;
 use crate::util::div_pow2;
 use crate::util::floor_pow2;
@@ -19,6 +17,7 @@ use off64::u8;
 use off64::usz;
 use std::cmp::max;
 use std::pin::Pin;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
 use tracing::trace;
@@ -42,13 +41,18 @@ pub struct OpReadObjectOutput {
 }
 
 /// Both `offset` and `len` do not have to be multiples of the spage size.
-async fn unaligned_read(pages: &Pages, dev: &PartitionStore, offset: u64, len: u64) -> Buf {
-  let a_start = floor_pow2(offset, pages.spage_size_pow2);
+async fn unaligned_read(ctx: &Ctx, offset: u64, len: u64) -> Buf {
+  let a_start = floor_pow2(offset, ctx.pages.spage_size_pow2);
   let a_end = max(
-    ceil_pow2(offset + len, pages.spage_size_pow2),
-    pages.spage_size(),
+    ceil_pow2(offset + len, ctx.pages.spage_size_pow2),
+    ctx.pages.spage_size(),
   );
-  let mut buf = dev.read_at(a_start, a_end - a_start).await;
+  let mut buf = ctx.device.read_at(a_start, a_end - a_start).await;
+  ctx
+    .metrics
+    .0
+    .read_op_bytes_discarded
+    .fetch_add((a_end - a_start) - len, Relaxed);
   buf.copy_within(usz!(offset - a_start)..usz!(offset - a_start + len), 0);
   buf.truncate(usz!(len));
   buf
@@ -81,6 +85,14 @@ pub(crate) async fn op_read_object(
   if start > end || start > object_size || end > object_size {
     return Err(OpError::RangeOutOfBounds);
   };
+
+  ctx.metrics.0.read_op_count.fetch_add(1, Relaxed);
+  ctx
+    .metrics
+    .0
+    .read_op_bytes_requested
+    .fetch_add(end - start, Relaxed);
+
   // Special handling for empty ranges. Note that we must handle this in case object has size of zero.
   if start == end || start == object_size {
     return Ok(OpReadObjectOutput {
@@ -133,7 +145,7 @@ pub(crate) async fn op_read_object(
         .min(rem_within_page);
       trace!(idx, page_size_pow2, page_dev_offset, offset_within_page, chunk_len, start, next, end, "reading chunk");
       object_is_still_valid(&obj)?;
-      let data = unaligned_read(&ctx.pages, &ctx.device, page_dev_offset + offset_within_page, chunk_len).await;
+      let data = unaligned_read(&ctx, page_dev_offset + offset_within_page, chunk_len).await;
       assert_eq!(u64!(data.len()), chunk_len);
       if chunk_len == rem_within_page {
         idx += 1;
@@ -142,6 +154,7 @@ pub(crate) async fn op_read_object(
 
       // Check again before yielding; we may have read junk.
       object_is_still_valid(&obj)?;
+      ctx.metrics.0.read_op_bytes_sent.fetch_add(chunk_len, Relaxed);
       yield data;
     };
   };

@@ -9,13 +9,13 @@ use crate::backing_store::BackingStore;
 use crate::backing_store::PartitionStore;
 use crate::pages::Pages;
 use crate::partition::PartitionLoader;
-use cadence::StatsdClient;
 use chrono::DateTime;
 use chrono::Utc;
 use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
 use itertools::Itertools;
+use metrics::BlobdMetrics;
 use objects::ClusterLoadProgress;
 use off64::usz;
 use op::commit_object::op_commit_object;
@@ -93,7 +93,6 @@ pub struct BlobdCfg {
   pub object_tuples_area_reserved_space: u64,
   /// The device must support atomic writes of this size. It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
   pub spage_size_pow2: u8,
-  pub statsd: Option<Arc<StatsdClient>>,
   /// Advanced options, only change if you know what you're doing.
   #[cfg(target_os = "linux")]
   pub uring_coop_taskrun: bool,
@@ -118,12 +117,14 @@ impl BlobdCfg {
 pub struct BlobdLoader {
   cfg: BlobdCfg,
   partitions: Vec<PartitionLoader>,
+  metrics: BlobdMetrics,
 }
 
 impl BlobdLoader {
   pub fn new(partition_cfg: Vec<BlobdCfgPartition>, cfg: BlobdCfg) -> Self {
     assert!(cfg.expire_incomplete_objects_after_secs > 0);
 
+    let metrics = BlobdMetrics::default();
     let pages = Pages::new(cfg.spage_size_pow2, cfg.lpage_size_pow2);
     let mut devices = FxHashMap::<PathBuf, Arc<dyn BackingStore>>::default();
     let partitions = partition_cfg
@@ -156,11 +157,16 @@ impl BlobdLoader {
           PartitionStore::new(dev.clone(), part.offset, part.len),
           cfg.clone(),
           pages.clone(),
+          metrics.clone(),
         )
       })
       .collect_vec();
 
-    Self { cfg, partitions }
+    Self {
+      cfg,
+      partitions,
+      metrics,
+    }
   }
 
   pub async fn format(&self) {
@@ -201,6 +207,7 @@ impl BlobdLoader {
     Blobd {
       cfg: self.cfg,
       partitions: Arc::new(partitions),
+      metrics: self.metrics,
     }
   }
 }
@@ -209,6 +216,7 @@ impl BlobdLoader {
 pub struct Blobd {
   cfg: BlobdCfg,
   partitions: Arc<Vec<Partition>>,
+  metrics: BlobdMetrics,
 }
 
 pub struct BlobdListObjectsOutputObject {
@@ -222,6 +230,10 @@ impl Blobd {
   // Provide getter to prevent mutating BlobdCfg.
   pub fn cfg(&self) -> &BlobdCfg {
     &self.cfg
+  }
+
+  pub fn metrics(&self) -> &BlobdMetrics {
+    &self.metrics
   }
 
   fn get_partition_index_by_object_key(&self, key: &[u8]) -> usize {

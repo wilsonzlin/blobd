@@ -1,13 +1,11 @@
 #[cfg(test)]
 pub mod tests;
 
-use crate::metrics::METRIC_ALLOCATED_BYTES;
+use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
 use crate::util::div_pow2;
 use crate::util::mod_pow2;
 use crate::util::mul_pow2;
-use cadence::Counted;
-use cadence::StatsdClient;
 use off64::u32;
 use off64::u8;
 use off64::usz;
@@ -16,7 +14,7 @@ use std::cmp::max;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
-use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 use struct_name::StructName;
 use struct_name_macro::StructName;
 
@@ -45,7 +43,7 @@ pub(crate) struct Allocator {
   // One for each page size.
   free: Vec<RoaringBitmap>,
   pages: Pages,
-  statsd: Option<Arc<StatsdClient>>,
+  metrics: BlobdMetrics,
 }
 
 impl Allocator {
@@ -54,7 +52,7 @@ impl Allocator {
     heap_size: u64,
     pages: Pages,
     dir: AllocDir,
-    statsd: Option<Arc<StatsdClient>>,
+    metrics: BlobdMetrics,
   ) -> Self {
     assert_eq!(mod_pow2(heap_dev_offset, pages.lpage_size_pow2), 0);
     assert_eq!(mod_pow2(heap_size, pages.lpage_size_pow2), 0);
@@ -72,7 +70,7 @@ impl Allocator {
         })
         .collect(),
       pages,
-      statsd,
+      metrics,
     }
   }
 
@@ -114,10 +112,11 @@ impl Allocator {
       page_size_pow2,
     );
 
-    self.statsd.as_ref().map(|s| {
-      s.count(METRIC_ALLOCATED_BYTES, 1 << page_size_pow2)
-        .unwrap()
-    });
+    self
+      .metrics
+      .0
+      .allocated_bytes
+      .fetch_add(1 << page_size_pow2, Relaxed);
   }
 
   /// Returns the page number.
@@ -164,10 +163,7 @@ impl Allocator {
     );
     assert!(pow2 <= self.pages.lpage_size_pow2);
     // We increment these metrics here instead of in `Pages::*`, `Allocator::insert_into_free_list`, `Allocator::allocate_page`, etc. as many of those are called during intermediate states, like merging/splitting pages, which aren't actual allocations.
-    self
-      .statsd
-      .as_ref()
-      .map(|s| s.count(METRIC_ALLOCATED_BYTES, 1 << pow2).unwrap());
+    self.metrics.0.allocated_bytes.fetch_add(1 << pow2, Relaxed);
     let page_num = self._allocate(pow2)?;
     Ok(self.to_page_dev_offset(page_num, pow2))
   }
@@ -192,10 +188,11 @@ impl Allocator {
   pub fn release(&mut self, page_dev_offset: u64, page_size_pow2: u8) {
     let page_num = self.to_page_num(page_dev_offset, page_size_pow2);
     // Similar to `allocate`, we need to change metrics here and use an internal function. See `allocate` for comment explaining why.
-    self.statsd.as_ref().map(|s| {
-      s.count(METRIC_ALLOCATED_BYTES, -(1 << page_size_pow2))
-        .unwrap()
-    });
+    self
+      .metrics
+      .0
+      .allocated_bytes
+      .fetch_sub(1 << page_size_pow2, Relaxed);
     self._release(page_num, page_size_pow2);
   }
 }

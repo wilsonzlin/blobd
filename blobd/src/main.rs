@@ -99,7 +99,6 @@ async fn main() {
       lpage_size_pow2: conf.lpage_size_pow2,
       object_tuples_area_reserved_space: conf.object_tuples_area_reserved_space,
       spage_size_pow2: conf.spage_size_pow2,
-      statsd: None, // TODO
       uring_coop_taskrun: false,
       uring_defer_taskrun: false,
       uring_iopoll: false,

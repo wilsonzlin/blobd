@@ -1,5 +1,6 @@
 use crate::backing_store::PartitionStore;
 use crate::ctx::Ctx;
+use crate::metrics::BlobdMetrics;
 use crate::objects::format_device_for_objects;
 use crate::objects::load_objects_from_device;
 use crate::objects::ClusterLoadProgress;
@@ -8,7 +9,6 @@ use crate::pages::Pages;
 use crate::util::ceil_pow2;
 use crate::util::floor_pow2;
 use crate::BlobdCfg;
-use cadence::StatsdClient;
 use parking_lot::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use tracing::info;
 pub(crate) struct PartitionLoader {
   dev: PartitionStore,
   pages: Pages,
-  statsd: Option<Arc<StatsdClient>>,
+  metrics: BlobdMetrics,
   partition_idx: usize,
   heap_dev_offset: u64,
   heap_size: u64,
@@ -30,6 +30,7 @@ impl PartitionLoader {
     partition_store: PartitionStore,
     cfg: BlobdCfg,
     pages: Pages,
+    metrics: BlobdMetrics,
   ) -> Self {
     let tuples_area_size = ceil_pow2(cfg.object_tuples_area_reserved_space, cfg.lpage_size_pow2);
     let heap_dev_offset = tuples_area_size;
@@ -50,9 +51,9 @@ impl PartitionLoader {
       dev: partition_store,
       heap_dev_offset,
       heap_size,
+      metrics,
       pages,
       partition_idx,
-      statsd: cfg.statsd.clone(),
     }
   }
 
@@ -75,7 +76,7 @@ impl PartitionLoader {
       load_progress,
       dev.clone(),
       pages.clone(),
-      self.statsd.clone(),
+      self.metrics.clone(),
       self.heap_dev_offset,
       self.heap_size,
     )
@@ -86,10 +87,10 @@ impl PartitionLoader {
       device: self.dev.clone(),
       heap_allocator: Mutex::new(heap_allocator),
       incomplete_objects,
+      metrics: self.metrics.clone(),
       next_object_id: AtomicU64::new(next_object_id),
       pages: pages.clone(),
       partition_idx: self.partition_idx,
-      statsd: self.statsd,
       tuples: tuples.clone(),
     });
 

@@ -107,6 +107,7 @@ pub(crate) struct ObjectMetadata {
 
 struct ObjectInner {
   id: u64,
+  metadata_size: u64, // How large the `metadata` is in bytes when serialised.
   state: AtomicU8,
   lock: RwLock<()>,
   metadata: ObjectMetadata,
@@ -118,23 +119,33 @@ pub(crate) struct Object {
 }
 
 impl Object {
-  pub fn new(id: u64, state: ObjectState, metadata: ObjectMetadata) -> Self {
+  pub fn new(id: u64, state: ObjectState, metadata: ObjectMetadata, metadata_size: u64) -> Self {
     Self {
       inner: Arc::new(ObjectInner {
         id,
         lock: RwLock::new(()),
         metadata,
+        metadata_size,
         state: AtomicU8::new(state as u8),
       }),
     }
   }
 
   pub fn with_new_id(self, new_id: u64) -> Self {
-    Self::new(new_id, self.get_state(), self.inner.metadata.clone())
+    Self::new(
+      new_id,
+      self.get_state(),
+      self.inner.metadata.clone(),
+      self.inner.metadata_size,
+    )
   }
 
   pub fn id(&self) -> u64 {
     self.inner.id
+  }
+
+  pub fn metadata_size(&self) -> u64 {
+    self.inner.metadata_size
   }
 
   pub fn get_state(&self) -> ObjectState {

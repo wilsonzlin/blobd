@@ -87,13 +87,35 @@ pub(crate) async fn op_create_object(
   let mut write_page = ctx.pages.allocate_uninitialised(metadata_page_size);
   write_page.write_at(0, &metadata_raw);
 
-  let None = ctx.incomplete_objects.write().insert(object_id, Object::new(object_id, ObjectState::Incomplete, metadata)) else {
-    unreachable!();
-  };
-
   ctx.device.write_at(metadata_dev_offset, write_page).await;
 
   ctx.tuples.insert_object(tuple).await;
+
+  // Out of abundance of caution, insert AFTER tuple is certain to have persisted.
+  let None = ctx.incomplete_objects.write().insert(object_id, Object::new(object_id, ObjectState::Incomplete, metadata, metadata_size)) else {
+    unreachable!();
+  };
+
+  ctx
+    .metrics
+    .0
+    .create_op_count
+    .fetch_add(1, Ordering::Relaxed);
+  ctx
+    .metrics
+    .0
+    .incomplete_object_count
+    .fetch_add(1, Ordering::Relaxed);
+  ctx
+    .metrics
+    .0
+    .object_metadata_bytes
+    .fetch_add(metadata_size, Ordering::Relaxed);
+  ctx
+    .metrics
+    .0
+    .object_data_bytes
+    .fetch_add(req.size, Ordering::Relaxed);
 
   trace!(
     id = object_id,

@@ -4,6 +4,7 @@ use crate::ctx::Ctx;
 use crate::object::calc_object_layout;
 use crate::object::Object;
 use off64::usz;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
 
@@ -23,7 +24,14 @@ pub(crate) async fn reap_object(ctx: &Ctx, obj: &Object) {
       allocator.release(page_dev_offset, tail_page_size_pow2);
     }
     allocator.release(tuple.metadata_dev_offset, tuple.metadata_page_size_pow2);
-  }
+  };
+
+  ctx
+    .metrics
+    .0
+    .object_metadata_bytes
+    .fetch_sub(obj.metadata_size(), Relaxed);
+  ctx.metrics.0.object_data_bytes.fetch_sub(obj.size, Relaxed);
 }
 
 pub struct OpDeleteObjectInput {
@@ -43,8 +51,10 @@ pub(crate) async fn op_delete_object(
   };
 
   // We can reap the object now, as there should only be other readers (it's committed, so there shouldn't be any writers), and readers will double check the state after reading and discard the read if necessary (the object metadata still exists in memory due to Arc, so it's safe to check).
-
   reap_object(&ctx, &obj).await;
+
+  ctx.metrics.0.delete_op_count.fetch_add(1, Relaxed);
+  ctx.metrics.0.committed_object_count.fetch_sub(1, Relaxed);
 
   Ok(OpDeleteObjectOutput {})
 }

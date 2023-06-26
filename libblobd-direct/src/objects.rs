@@ -2,6 +2,7 @@ use crate::allocator::AllocDir;
 use crate::allocator::Allocator;
 use crate::backing_store::BoundedStore;
 use crate::backing_store::PartitionStore;
+use crate::metrics::BlobdMetrics;
 use crate::object::calc_object_layout;
 use crate::object::Object;
 use crate::object::ObjectMetadata;
@@ -10,7 +11,6 @@ use crate::object::ObjectTuple;
 use crate::object::OBJECT_TUPLE_SERIALISED_LEN;
 use crate::pages::Pages;
 use crate::tuples::Tuples;
-use cadence::StatsdClient;
 use dashmap::DashMap;
 use futures::stream::iter;
 use futures::StreamExt;
@@ -21,10 +21,12 @@ use off64::Off64Read;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
+use serde::Deserialize;
 use std::cmp::max;
 use std::cmp::min;
 use std::collections::BTreeMap;
 use std::hash::BuildHasherDefault;
+use std::io::Cursor;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -69,7 +71,7 @@ pub(crate) async fn load_objects_from_device(
   // This must not be bounded as we'll use raw partition absolute offsets.
   dev: PartitionStore,
   pages: Pages,
-  statsd: Option<Arc<StatsdClient>>,
+  metrics: BlobdMetrics,
   heap_dev_offset: u64,
   heap_size: u64,
 ) -> LoadedObjects {
@@ -82,7 +84,7 @@ pub(crate) async fn load_objects_from_device(
     heap_size,
     pages.clone(),
     AllocDir::Right,
-    statsd.clone(),
+    metrics.clone(),
   )));
 
   let entire_tuples_area_raw = dev.read_at(0, heap_dev_offset).await;
@@ -116,6 +118,7 @@ pub(crate) async fn load_objects_from_device(
         let heap_allocator = heap_allocator.clone();
         let incomplete = incomplete.clone();
         let pages = pages.clone();
+        let metrics = metrics.clone();
         let progress = progress.clone();
         async move {
           let object_state = tuple.state;
@@ -128,12 +131,16 @@ pub(crate) async fn load_objects_from_device(
             )
             .await;
           progress.objects_loaded.fetch_add(1, Ordering::Relaxed);
-          // TODO Does rmp_serde know to stop at the end of the object, even if there's more bytes? Alternatively, we could use rmp_serde::from_read().
-          let metadata: ObjectMetadata = rmp_serde::from_slice(metadata_raw.as_slice()).unwrap();
+          // Use a custom deserialiser so we can use a cursor, which will allow access to the rmp_serde::Deserializer::position method so we can determine the metadata byte size.
+          let mut de = rmp_serde::Deserializer::new(Cursor::new(metadata_raw));
+          // Yes, rmp_serde stops reading once fully deserialised, and doesn't error if there is extra junk afterwards.
+          let metadata = ObjectMetadata::deserialize(&mut de).unwrap();
+          let object_size = metadata.size;
+          let metadata_size = de.position();
 
-          let layout = calc_object_layout(&pages, metadata.size);
+          let layout = calc_object_layout(&pages, object_size);
 
-          let obj = Object::new(object_id, object_state, metadata);
+          let obj = Object::new(object_id, object_state, metadata, metadata_size);
           {
             let mut heap_allocator = heap_allocator.lock();
             for &page_dev_offset in obj.lpage_dev_offsets.iter() {
@@ -145,12 +152,22 @@ pub(crate) async fn load_objects_from_device(
             }
           }
 
+          // We'll increment metrics for object counts at the end, in one addition.
           assert!(match object_state {
             ObjectState::Incomplete => incomplete.write().insert(object_id, obj),
             ObjectState::Committed => committed.lock().insert(obj.key.clone(), obj),
             _ => unreachable!(),
           }
           .is_none());
+
+          metrics
+            .0
+            .object_metadata_bytes
+            .fetch_add(metadata_size, Ordering::Relaxed);
+          metrics
+            .0
+            .object_data_bytes
+            .fetch_add(object_size, Ordering::Relaxed);
         }
       })
     })
@@ -158,6 +175,14 @@ pub(crate) async fn load_objects_from_device(
   progress
     .partitions_completed
     .fetch_add(1, Ordering::Relaxed);
+  metrics
+    .0
+    .incomplete_object_count
+    .fetch_add(u64!(incomplete.read().len()), Ordering::Relaxed);
+  metrics
+    .0
+    .committed_object_count
+    .fetch_add(u64!(committed.lock().len()), Ordering::Relaxed);
 
   fn unwrap_arc_mutex<T>(v: Arc<Mutex<T>>) -> T {
     let Ok(v) = Arc::try_unwrap(v) else {

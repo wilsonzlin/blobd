@@ -17,6 +17,7 @@ use std::cmp::max;
 use std::cmp::min;
 use std::error::Error;
 use std::iter::empty;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use tracing::trace;
 use tracing::warn;
@@ -65,6 +66,13 @@ pub(crate) async fn op_write_object<
     // Write does not fully fill lpage or entire tail. All writes must fill as otherwise uninitialised data will get exposed.
     return Err(OpError::InexactWriteLength);
   };
+
+  ctx.metrics.0.write_op_count.fetch_add(1, Relaxed);
+  ctx
+    .metrics
+    .0
+    .write_op_bytes_requested
+    .fetch_add(len, Relaxed);
 
   let layout = calc_object_layout(&ctx.pages, obj.size);
 
@@ -132,7 +140,13 @@ pub(crate) async fn op_write_object<
       ));
       write_data[..usz!(amount_to_write)].copy_from_slice(&buf[..usz!(amount_to_write)]);
       buf.splice(..usz!(amount_to_write), empty());
+      let write_data_len = write_data.len();
       ctx.device.write_at(page_dev_offset, write_data).await;
+      ctx
+        .metrics
+        .0
+        .write_op_bytes_written
+        .fetch_add(u64!(write_data_len), Relaxed);
       trace!(
         object_id,
         previously_written = written,

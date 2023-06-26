@@ -42,10 +42,28 @@ pub(crate) async fn op_commit_object(
     )
     .await;
 
-  // Only delete AFTER we're certain the object we're committing has been committed.
+  // Only delete AFTER we're certain the updated object tuple we're committing has been persisted to disk.
   // See `op_delete_object` for why this is safe to do at any time for a committed object.
-  if let Some(existing) = existing {
+  if let Some(existing) = existing.as_ref() {
     reap_object(&ctx, &existing).await;
+  };
+
+  ctx
+    .metrics
+    .0
+    .commit_op_count
+    .fetch_add(1, Ordering::Relaxed);
+  ctx
+    .metrics
+    .0
+    .incomplete_object_count
+    .fetch_sub(1, Ordering::Relaxed);
+  if existing.is_none() {
+    ctx
+      .metrics
+      .0
+      .committed_object_count
+      .fetch_add(1, Ordering::Relaxed);
   };
 
   Ok(OpCommitObjectOutput {
