@@ -78,7 +78,7 @@ pub(crate) async fn load_objects_from_device(
   heap_size: u64,
 ) -> LoadedObjects {
   let mut next_object_id = 0;
-  let committed: Arc<Mutex<CommittedObjects>> = Default::default();
+  let committed: Arc<CommittedObjects> = Default::default();
   let incomplete: Arc<RwLock<BTreeMap<u64, Object>>> = Default::default();
   let tuples: Arc<Mutex<FxHashMap<u32, Vec<ObjectTuple>>>> = Default::default();
   let heap_allocator = Arc::new(Mutex::new(Allocator::new(
@@ -145,7 +145,7 @@ pub(crate) async fn load_objects_from_device(
               assert!(incomplete.write().insert(object_id, obj.clone()).is_none());
             }
             ObjectState::Committed => {
-              match committed.lock().entry(obj.key.clone()) {
+              match committed.entry(obj.key.clone()) {
                 Entry::Occupied(mut ent) => {
                   let existing_id = ent.get().id();
                   assert_ne!(existing_id, object_id);
@@ -206,17 +206,21 @@ pub(crate) async fn load_objects_from_device(
   metrics
     .0
     .committed_object_count
-    .fetch_add(u64!(committed.lock().len()), Ordering::Relaxed);
+    .fetch_add(u64!(committed.len()), Ordering::Relaxed);
 
-  fn unwrap_arc_mutex<T>(v: Arc<Mutex<T>>) -> T {
+  fn unwrap_arc<T>(v: Arc<T>) -> T {
     let Ok(v) = Arc::try_unwrap(v) else {
       unreachable!();
     };
-    v.into_inner()
+    v
+  }
+
+  fn unwrap_arc_mutex<T>(v: Arc<Mutex<T>>) -> T {
+    unwrap_arc(v).into_inner()
   }
 
   LoadedObjects {
-    committed_objects: unwrap_arc_mutex(committed),
+    committed_objects: unwrap_arc(committed),
     heap_allocator: unwrap_arc_mutex(heap_allocator),
     incomplete_objects: incomplete,
     next_object_id,
