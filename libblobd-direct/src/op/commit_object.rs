@@ -4,6 +4,7 @@ use super::OpResult;
 use crate::ctx::Ctx;
 use crate::incomplete_token::IncompleteToken;
 use crate::object::ObjectState;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 pub struct OpCommitObjectInput {
@@ -21,27 +22,33 @@ pub(crate) async fn op_commit_object(
   let Some(obj) = ctx.incomplete_objects.write().remove(&req.incomplete_token.object_id) else {
     return Err(OpError::ObjectNotFound);
   };
-  let object_id = obj.id();
 
   obj
     .update_state_then_ensure_no_writers(ObjectState::Committed)
     .await;
 
-  // For crash consistency, delete any existing object first; otherwise, we may have two objects with the same key, and if versioning isn't enabled then it isn't clear which is the winner (objects can be committed in a different order than creation i.e. object ID).
-  if let Some(existing) = ctx.committed_objects.insert(obj.key.clone(), obj) {
-    // See `op_delete_object` for why this is safe to do now.
-    reap_object(&ctx, &existing).await;
-  };
+  // For crash consistency, we must generate a new object ID (such that it's greater than any existing incomplete or committed object's ID) for the object we're about to commit; otherwise, we may have two objects with the same key (e.g. we crash before we manage to delete the existing committed one), and if versioning isn't enabled then it isn't clear which is the winner (objects can be committed in a different order than creation).
+  let new_object_id = ctx.next_object_id.fetch_add(1, Ordering::Relaxed);
+  let existing = ctx
+    .committed_objects
+    .insert(obj.key.clone(), obj.with_new_id(new_object_id));
 
-  // Double check the state again, in case someone deleted it in the microseconds since we inserted it into `ctx.committed_objects`.
   ctx
     .tuples
-    .update_object_state_if_exists_and_matches(
-      object_id,
-      ObjectState::Incomplete,
+    .update_object_id_and_state(
+      req.incomplete_token.object_id,
+      new_object_id,
       ObjectState::Committed,
     )
     .await;
 
-  Ok(OpCommitObjectOutput { object_id })
+  // Only delete AFTER we're certain the object we're committing has been committed.
+  // See `op_delete_object` for why this is safe to do at any time for a committed object.
+  if let Some(existing) = existing {
+    reap_object(&ctx, &existing).await;
+  };
+
+  Ok(OpCommitObjectOutput {
+    object_id: new_object_id,
+  })
 }

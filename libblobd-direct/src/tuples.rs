@@ -104,24 +104,27 @@ impl Tuples {
     fut.await;
   }
 
-  pub async fn update_object_state_if_exists_and_matches(
+  pub async fn update_object_id_and_state(
     &self,
-    object_id: u64,
-    expected_object_state: ObjectState,
+    cur_object_id: u64,
+    new_object_id: u64,
     new_object_state: ObjectState,
   ) {
     let fut = {
       let mut state = self.state.lock();
-      let Some(&bundle_id) = state.object_id_to_bundle.get(&object_id) else {
-        return;
-      };
+      let bundle_id = state.object_id_to_bundle.remove(&cur_object_id).unwrap();
       let bundle = &mut state.bundle_tuples[usz!(bundle_id)];
-      let tuple = bundle.get_mut(&object_id).unwrap();
-      if tuple.state != expected_object_state {
-        return;
-      }
+      let bundle_len = u16!(bundle.len());
+      let mut tuple = bundle.remove(&cur_object_id).unwrap();
+      tuple.id = new_object_id;
       tuple.state = new_object_state;
-      if u16!(bundle.len()) < self.max_tuples_per_bundle {
+      assert!(bundle.insert(new_object_id, tuple).is_none());
+      assert!(state
+        .object_id_to_bundle
+        .insert(new_object_id, bundle_id)
+        .is_none());
+      // We didn't add any tuples, but we did update one, making this bundle dirty and eligible for `free_and_dirty_bundles`.
+      if bundle_len < self.max_tuples_per_bundle {
         state.free_and_dirty_bundles.add(bundle_id);
       }
       state.dirty_bundles.add(bundle_id);

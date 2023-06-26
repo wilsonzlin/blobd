@@ -95,7 +95,7 @@ impl ObjectTuple {
   }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct ObjectMetadata {
   pub size: u64,
   #[serde(with = "ts_microseconds")]
@@ -127,6 +127,10 @@ impl Object {
         state: AtomicU8::new(state as u8),
       }),
     }
+  }
+
+  pub fn with_new_id(self, new_id: u64) -> Self {
+    Self::new(new_id, self.get_state(), self.inner.metadata.clone())
   }
 
   pub fn id(&self) -> u64 {
