@@ -11,6 +11,7 @@ use crate::object::ObjectTuple;
 use crate::object::OBJECT_TUPLE_SERIALISED_LEN;
 use crate::pages::Pages;
 use crate::tuples::Tuples;
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::stream::iter;
 use futures::StreamExt;
@@ -77,9 +78,9 @@ pub(crate) async fn load_objects_from_device(
   heap_size: u64,
 ) -> LoadedObjects {
   let mut next_object_id = 0;
-  let incomplete: Arc<RwLock<BTreeMap<u64, Object>>> = Default::default();
   let committed: Arc<Mutex<CommittedObjects>> = Default::default();
-  let mut tuples: FxHashMap<u32, Vec<ObjectTuple>> = Default::default();
+  let incomplete: Arc<RwLock<BTreeMap<u64, Object>>> = Default::default();
+  let tuples: Arc<Mutex<FxHashMap<u32, Vec<ObjectTuple>>>> = Default::default();
   let heap_allocator = Arc::new(Mutex::new(Allocator::new(
     heap_dev_offset,
     heap_size,
@@ -90,40 +91,34 @@ pub(crate) async fn load_objects_from_device(
 
   let entire_tuples_area_raw = dev.read_at(0, heap_dev_offset).await;
 
-  // TODO Tune this concurrency value and maybe make it configurable. Don't overwhelm the system memory or disk I/O queues, but go as fast as possible because this is slow.
+  // TODO Tune this concurrency value and make it configurable. Don't overwhelm the system memory or disk I/O queues, but go as fast as possible because this is slow.
   iter(0..usz!(heap_dev_offset / pages.spage_size()))
-    .for_each_concurrent(Some(4096), |bundle_id| {
-      let raw =
-        entire_tuples_area_raw.read_at(u64!(bundle_id) * pages.spage_size(), pages.spage_size());
-      let mut bundle_tuples = Vec::new();
-      for tuple_raw in raw.chunks_exact(usz!(OBJECT_TUPLE_SERIALISED_LEN)) {
-        let object_state = ObjectState::from_u8(tuple_raw[0]).unwrap();
-        if object_state == ObjectState::_EndOfBundleTuples {
-          break;
-        };
-        let tuple = ObjectTuple::deserialise(tuple_raw);
-        heap_allocator
-          .lock()
-          .mark_as_allocated(tuple.metadata_dev_offset, tuple.metadata_page_size_pow2);
-        next_object_id = max(next_object_id, tuple.id + 1);
-        bundle_tuples.push(tuple);
-      }
-      progress
-        .objects_total
-        .fetch_add(bundle_tuples.len().try_into().unwrap(), Ordering::Relaxed);
-      tuples.insert(bundle_id.try_into().unwrap(), bundle_tuples.clone());
+    .for_each_concurrent(Some(131_072), |bundle_id| {
+      let committed = committed.clone();
+      let dev = dev.clone();
+      let heap_allocator = heap_allocator.clone();
+      let incomplete = incomplete.clone();
+      let metrics = metrics.clone();
+      let pages = pages.clone();
+      let progress = progress.clone();
+      let tuples = tuples.clone();
 
-      iter(bundle_tuples).for_each_concurrent(None, |tuple| {
-        let committed = committed.clone();
-        let dev = dev.clone();
-        let heap_allocator = heap_allocator.clone();
-        let incomplete = incomplete.clone();
-        let pages = pages.clone();
-        let metrics = metrics.clone();
-        let progress = progress.clone();
-        async move {
+      let raw = entire_tuples_area_raw.read_at(u64!(bundle_id) * pages.spage_size(), pages.spage_size());
+
+      async move {
+        let mut bundle_tuples = Vec::new();
+        // We don't need to use for_each_concurrent, as we already have high parallelism in the outer bundles loop, and using it makes code a bit more complex due to needing locks and clones.
+        for tuple_raw in raw.chunks_exact(usz!(OBJECT_TUPLE_SERIALISED_LEN)) {
+          let object_state = ObjectState::from_u8(tuple_raw[0]).unwrap();
+          if object_state == ObjectState::_EndOfBundleTuples {
+            break;
+          };
+          progress.objects_total.fetch_add(1, Ordering::Relaxed);
+          let tuple = ObjectTuple::deserialise(tuple_raw);
           let object_state = tuple.state;
           let object_id = tuple.id;
+
+          // Do not insert tuple yet, as we may drop it.
 
           let metadata_raw = dev
             .read_at(
@@ -133,34 +128,25 @@ pub(crate) async fn load_objects_from_device(
             .await;
           progress.objects_loaded.fetch_add(1, Ordering::Relaxed);
           // Use a custom deserialiser so we can use a cursor, which will allow access to the rmp_serde::Deserializer::position method so we can determine the metadata byte size.
-          let mut de = rmp_serde::Deserializer::new(Cursor::new(metadata_raw));
+          let mut deserialiser = rmp_serde::Deserializer::new(Cursor::new(metadata_raw));
           // Yes, rmp_serde stops reading once fully deserialised, and doesn't error if there is extra junk afterwards.
-          let metadata = ObjectMetadata::deserialize(&mut de).unwrap();
+          let metadata = ObjectMetadata::deserialize(&mut deserialiser).unwrap();
+          let metadata_size = deserialiser.position();
           let object_size = metadata.size;
-          let metadata_size = de.position();
 
           let layout = calc_object_layout(&pages, object_size);
 
           let obj = Object::new(object_id, object_state, metadata, metadata_size);
-          {
-            let mut heap_allocator = heap_allocator.lock();
-            for &page_dev_offset in obj.lpage_dev_offsets.iter() {
-              heap_allocator.mark_as_allocated(page_dev_offset, pages.lpage_size_pow2);
-            }
-            for (i, sz) in layout.tail_page_sizes_pow2 {
-              let page_dev_offset = obj.tail_page_dev_offsets[usz!(i)];
-              heap_allocator.mark_as_allocated(page_dev_offset, sz);
-            }
-          }
-
+          // Check if we should insert first before doing anything further e.g. updating metrics, updating allocator, pushing tuple. However, do update next_object_id; it's harmless to skip a few but dangerous to reuse: we still need to check assertions around IDs being unique and we may not actually delete duplicate objects before we accidentally reuse them.
           // We'll increment metrics for object counts at the end, in one addition.
+          next_object_id = max(next_object_id, object_id + 1);
           match object_state {
             ObjectState::Incomplete => {
-              assert!(incomplete.write().insert(object_id, obj).is_none());
+              assert!(incomplete.write().insert(object_id, obj.clone()).is_none());
             }
             ObjectState::Committed => {
               match committed.lock().entry(obj.key.clone()) {
-                dashmap::mapref::entry::Entry::Occupied(mut ent) => {
+                Entry::Occupied(mut ent) => {
                   let existing_id = ent.get().id();
                   assert_ne!(existing_id, object_id);
                   let key_hex = hex::encode(&obj.key);
@@ -170,17 +156,30 @@ pub(crate) async fn load_objects_from_device(
                     newer_object_id = max(existing_id, object_id),
                     "multiple committed objects found with the same key, will only keep the latest committed one"
                   );
-                  if existing_id < object_id {
-                    ent.insert(obj);
+                  if existing_id > object_id {
+                    continue;
                   };
+                  ent.insert(obj.clone());
                 }
-                dashmap::mapref::entry::Entry::Vacant(vacant) => {
-                  vacant.insert(obj);
+                Entry::Vacant(vacant) => {
+                  vacant.insert(obj.clone());
                 }
               };
             }
             _ => unreachable!(),
           };
+
+          {
+            let mut heap_allocator = heap_allocator.lock();
+            heap_allocator.mark_as_allocated(tuple.metadata_dev_offset, tuple.metadata_page_size_pow2);
+            for &page_dev_offset in obj.lpage_dev_offsets.iter() {
+              heap_allocator.mark_as_allocated(page_dev_offset, pages.lpage_size_pow2);
+            }
+            for (i, sz) in layout.tail_page_sizes_pow2 {
+              let page_dev_offset = obj.tail_page_dev_offsets[usz!(i)];
+              heap_allocator.mark_as_allocated(page_dev_offset, sz);
+            }
+          }
 
           metrics
             .0
@@ -190,8 +189,11 @@ pub(crate) async fn load_objects_from_device(
             .0
             .object_data_bytes
             .fetch_add(object_size, Ordering::Relaxed);
+
+          bundle_tuples.push(tuple);
         }
-      })
+        tuples.lock().insert(bundle_id.try_into().unwrap(), bundle_tuples);
+      }
     })
     .await;
   progress
@@ -218,6 +220,6 @@ pub(crate) async fn load_objects_from_device(
     heap_allocator: unwrap_arc_mutex(heap_allocator),
     incomplete_objects: incomplete,
     next_object_id,
-    tuples: Tuples::new(pages, tuples),
+    tuples: Tuples::new(pages, unwrap_arc_mutex(tuples)),
   }
 }
