@@ -77,9 +77,9 @@ pub(crate) async fn load_objects_from_device(
   heap_dev_offset: u64,
   heap_size: u64,
 ) -> LoadedObjects {
-  let mut next_object_id = 0;
   let committed: Arc<CommittedObjects> = Default::default();
   let incomplete: Arc<RwLock<BTreeMap<u64, Object>>> = Default::default();
+  let next_object_id: Arc<Mutex<u64>> = Default::default();
   let tuples: Arc<Mutex<FxHashMap<u32, Vec<ObjectTuple>>>> = Default::default();
   let heap_allocator = Arc::new(Mutex::new(Allocator::new(
     heap_dev_offset,
@@ -93,12 +93,13 @@ pub(crate) async fn load_objects_from_device(
 
   // TODO Tune this concurrency value and make it configurable. Don't overwhelm the system memory or disk I/O queues, but go as fast as possible because this is slow.
   iter(0..usz!(heap_dev_offset / pages.spage_size()))
-    .for_each_concurrent(Some(131_072), |bundle_id| {
+    .for_each_concurrent(Some(1048576), |bundle_id| {
       let committed = committed.clone();
       let dev = dev.clone();
       let heap_allocator = heap_allocator.clone();
       let incomplete = incomplete.clone();
       let metrics = metrics.clone();
+      let next_object_id = next_object_id.clone();
       let pages = pages.clone();
       let progress = progress.clone();
       let tuples = tuples.clone();
@@ -139,7 +140,10 @@ pub(crate) async fn load_objects_from_device(
           let obj = Object::new(object_id, object_state, metadata, metadata_size);
           // Check if we should insert first before doing anything further e.g. updating metrics, updating allocator, pushing tuple. However, do update next_object_id; it's harmless to skip a few but dangerous to reuse: we still need to check assertions around IDs being unique and we may not actually delete duplicate objects before we accidentally reuse them.
           // We'll increment metrics for object counts at the end, in one addition.
-          next_object_id = max(next_object_id, object_id + 1);
+          {
+            let mut next_object_id = next_object_id.lock();
+            *next_object_id = max(*next_object_id, object_id + 1);
+          };
           match object_state {
             ObjectState::Incomplete => {
               assert!(incomplete.write().insert(object_id, obj.clone()).is_none());
@@ -223,7 +227,7 @@ pub(crate) async fn load_objects_from_device(
     committed_objects: unwrap_arc(committed),
     heap_allocator: unwrap_arc_mutex(heap_allocator),
     incomplete_objects: incomplete,
-    next_object_id,
+    next_object_id: unwrap_arc_mutex(next_object_id),
     tuples: Tuples::new(pages, unwrap_arc_mutex(tuples)),
   }
 }
