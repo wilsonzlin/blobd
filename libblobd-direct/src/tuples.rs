@@ -89,7 +89,7 @@ impl Tuples {
       assert!(state.object_id_to_bundle.insert(o.id, bundle_id).is_none());
       let bundle = &mut state.bundle_tuples[usz!(bundle_id)];
       assert!(bundle.insert(o.id, o).is_none());
-      assert!(bundle.len() <= self.max_tuples_per_bundle);
+      assert!(u16!(bundle.len()) <= self.max_tuples_per_bundle);
       if u16!(bundle.len()) == self.max_tuples_per_bundle {
         state.free_and_dirty_bundles.remove(bundle_id);
         state.free_bundles.remove(bundle_id);
