@@ -140,6 +140,7 @@ pub(crate) async fn op_write_object<
       ));
       write_data[..usz!(amount_to_write)].copy_from_slice(&buf[..usz!(amount_to_write)]);
       buf.splice(..usz!(amount_to_write), empty());
+      // NOTE: This is different from `amount_to_write` due to alignment and/or padding (i.e. write amplification).
       let write_data_len = write_data.len();
       ctx.device.write_at(page_dev_offset, write_data).await;
       ctx

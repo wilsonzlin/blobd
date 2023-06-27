@@ -85,7 +85,7 @@ pub async fn endpoint_batch_create_objects(
       };
     }
 
-    let Ok(_) = ctx.blobd.commit_object(OpCommitObjectInput { incomplete_token: creation.token }).await else {
+    let Ok(_) = ctx.blobd.commit_object(OpCommitObjectInput { incomplete_token: creation.token, if_not_exists: false }).await else {
       break;
     };
 

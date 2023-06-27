@@ -121,11 +121,12 @@ impl BlobdProvider for Direct {
           .incomplete_token
           .downcast::<IncompleteToken>()
           .unwrap(),
+        if_not_exists: false,
       })
       .await
       .unwrap();
     CommitObjectOutput {
-      object_id: res.object_id,
+      object_id: res.object_id.unwrap(),
     }
   }
 
