@@ -7,7 +7,7 @@ edition = "2021"
 async-trait = "0.1.68"
 futures = "0.3.28"
 libblobd-direct = { version = "0.5.1", path = "../libblobd-direct" }
-libblobd-lite = { version = "0.1.1", path = "../libblobd-lite" }
+libblobd-lite = { version = "0.2.0", path = "../libblobd-lite" }
 num_cpus = "1.15.0"
 off64 = "0.6.0"
 seekable-async-file = "0.11.2"

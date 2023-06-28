@@ -26,7 +26,7 @@ clap = { version = "4.1", features = ["derive"] }
 data-encoding = "2.3"
 futures = "0.3"
 itertools = "0.10"
-libblobd-lite = { version = "0.1.1", path = "../libblobd-lite", optional = true }
+libblobd-lite = { version = "0.2.0", path = "../libblobd-lite", optional = true }
 libblobd-direct = { version = "0.5.1", path = "../libblobd-direct", optional = true }
 off64 = "0.6"
 percent-encoding = "2.2"
