@@ -95,6 +95,7 @@ impl ObjectTuple {
   }
 }
 
+// WARNING: Do not reorder or remove the fields in this struct, as it is serialised without field names and in this order, and changing would mean breaking all existing persisted metadata.
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct ObjectMetadata {
   pub size: u64,

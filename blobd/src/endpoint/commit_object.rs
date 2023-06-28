@@ -42,7 +42,10 @@ pub async fn endpoint_commit_object(
 
   let res = ctx
     .blobd
-    .commit_object(OpCommitObjectInput { incomplete_token, if_not_exists: false })
+    .commit_object(OpCommitObjectInput {
+      incomplete_token,
+      if_not_exists: false,
+    })
     .await;
 
   match res {

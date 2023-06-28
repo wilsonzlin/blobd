@@ -11,6 +11,8 @@ use crate::pages::Pages;
 use crate::partition::PartitionLoader;
 use chrono::DateTime;
 use chrono::Utc;
+use exporter::BlobdExporter;
+use exporter::BlobdExporterMarker;
 use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
@@ -56,6 +58,7 @@ use tracing::Instrument;
 pub mod allocator;
 pub mod backing_store;
 pub mod ctx;
+pub mod exporter;
 pub mod incomplete_token;
 pub mod metrics;
 pub mod object;
@@ -116,6 +119,7 @@ impl BlobdCfg {
 
 pub struct BlobdLoader {
   cfg: BlobdCfg,
+  pages: Pages,
   partitions: Vec<PartitionLoader>,
   metrics: BlobdMetrics,
 }
@@ -164,6 +168,7 @@ impl BlobdLoader {
 
     Self {
       cfg,
+      pages,
       partitions,
       metrics,
     }
@@ -175,6 +180,11 @@ impl BlobdLoader {
         p.format().await;
       })
       .await;
+  }
+
+  /// Provide BlobdExporterEntry::default if no offset.
+  pub async fn export(&self, offset: BlobdExporterMarker) -> BlobdExporter {
+    BlobdExporter::new(&self.partitions, &self.pages, offset).await
   }
 
   pub async fn load_and_start(self) -> Blobd {

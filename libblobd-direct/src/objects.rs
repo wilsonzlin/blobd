@@ -8,20 +8,21 @@ use crate::object::Object;
 use crate::object::ObjectMetadata;
 use crate::object::ObjectState;
 use crate::object::ObjectTuple;
-use crate::object::OBJECT_TUPLE_SERIALISED_LEN;
 use crate::pages::Pages;
+use crate::tuples::load_raw_tuples_area_from_device;
+use crate::tuples::load_tuples_from_raw_tuples_area;
+use crate::tuples::tuple_bundles_count;
 use crate::tuples::Tuples;
+use crate::util::unwrap_arc;
+use crate::util::unwrap_arc_mutex;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::stream::iter;
 use futures::StreamExt;
-use num_traits::FromPrimitive;
 use off64::u64;
 use off64::usz;
-use off64::Off64Read;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
-use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use std::cmp::max;
 use std::cmp::min;
@@ -80,7 +81,6 @@ pub(crate) async fn load_objects_from_device(
   let committed: Arc<CommittedObjects> = Default::default();
   let incomplete: Arc<RwLock<BTreeMap<u64, Object>>> = Default::default();
   let next_object_id: Arc<Mutex<u64>> = Default::default();
-  let tuples: Arc<Mutex<FxHashMap<u32, Vec<ObjectTuple>>>> = Default::default();
   let heap_allocator = Arc::new(Mutex::new(Allocator::new(
     heap_dev_offset,
     heap_size,
@@ -89,11 +89,15 @@ pub(crate) async fn load_objects_from_device(
     metrics.clone(),
   )));
 
-  let entire_tuples_area_raw = dev.read_at(0, heap_dev_offset).await;
+  let mut tuples: Vec<Vec<ObjectTuple>> =
+    vec![Vec::new(); usz!(tuple_bundles_count(heap_dev_offset, &pages))];
+  let raw_tuples_area = load_raw_tuples_area_from_device(&dev, heap_dev_offset).await;
+  load_tuples_from_raw_tuples_area(&raw_tuples_area, &pages, |bundle_id, tuple| {
+    tuples[usz!(bundle_id)].push(tuple)
+  });
 
   // TODO Tune this concurrency value and make it configurable. Don't overwhelm the system memory or disk I/O queues, but go as fast as possible because this is slow.
-  iter(0..usz!(heap_dev_offset / pages.spage_size()))
-    .for_each_concurrent(Some(1048576), |bundle_id| {
+  iter(tuples.iter()).for_each_concurrent(Some(1048576), |bundle_tuples| {
       let committed = committed.clone();
       let dev = dev.clone();
       let heap_allocator = heap_allocator.clone();
@@ -102,20 +106,11 @@ pub(crate) async fn load_objects_from_device(
       let next_object_id = next_object_id.clone();
       let pages = pages.clone();
       let progress = progress.clone();
-      let tuples = tuples.clone();
-
-      let raw = entire_tuples_area_raw.read_at(u64!(bundle_id) * pages.spage_size(), pages.spage_size());
 
       async move {
-        let mut bundle_tuples = Vec::new();
-        // We don't need to use for_each_concurrent, as we already have high parallelism in the outer bundles loop, and using it makes code a bit more complex due to needing locks and clones.
-        for tuple_raw in raw.chunks_exact(usz!(OBJECT_TUPLE_SERIALISED_LEN)) {
-          let object_state = ObjectState::from_u8(tuple_raw[0]).unwrap();
-          if object_state == ObjectState::_EndOfBundleTuples {
-            break;
-          };
+        // We don't need to use for_each_concurrent, as we already have high parallelism in the outer bundles loop, and using it makes code a bit more complex due to needing locks and Arc clones.
+        for tuple in bundle_tuples.iter() {
           progress.objects_total.fetch_add(1, Ordering::Relaxed);
-          let tuple = ObjectTuple::deserialise(tuple_raw);
           let object_state = tuple.state;
           let object_id = tuple.id;
 
@@ -193,10 +188,7 @@ pub(crate) async fn load_objects_from_device(
             .0
             .object_data_bytes
             .fetch_add(object_size, Ordering::Relaxed);
-
-          bundle_tuples.push(tuple);
         }
-        tuples.lock().insert(bundle_id.try_into().unwrap(), bundle_tuples);
       }
     })
     .await;
@@ -212,22 +204,11 @@ pub(crate) async fn load_objects_from_device(
     .committed_object_count
     .fetch_add(u64!(committed.len()), Ordering::Relaxed);
 
-  fn unwrap_arc<T>(v: Arc<T>) -> T {
-    let Ok(v) = Arc::try_unwrap(v) else {
-      unreachable!();
-    };
-    v
-  }
-
-  fn unwrap_arc_mutex<T>(v: Arc<Mutex<T>>) -> T {
-    unwrap_arc(v).into_inner()
-  }
-
   LoadedObjects {
     committed_objects: unwrap_arc(committed),
     heap_allocator: unwrap_arc_mutex(heap_allocator),
     incomplete_objects: incomplete,
     next_object_id: unwrap_arc_mutex(next_object_id),
-    tuples: Tuples::new(pages, unwrap_arc_mutex(tuples)),
+    tuples: Tuples::new(pages, tuples),
   }
 }

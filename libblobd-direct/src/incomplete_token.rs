@@ -6,6 +6,7 @@ use std::fmt::Debug;
 // This is intentionally an opaque token. To allow transporting it for library implementers, Serialize and Deserialize are derived.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IncompleteToken {
+  // WARNING: This will change after committing, so cannot be depended on. Currently, `IncompleteToken` is opaque so this is not an issue.
   pub(crate) object_id: u64,
   pub(crate) partition_idx: usize,
 }

@@ -3,6 +3,19 @@
 use chrono::Utc;
 use off64::u32;
 use off64::u64;
+use parking_lot::Mutex;
+use std::sync::Arc;
+
+pub(crate) fn unwrap_arc<T>(v: Arc<T>) -> T {
+  let Ok(v) = Arc::try_unwrap(v) else {
+    unreachable!();
+  };
+  v
+}
+
+pub(crate) fn unwrap_arc_mutex<T>(v: Arc<Mutex<T>>) -> T {
+  unwrap_arc(v).into_inner()
+}
 
 pub(crate) fn get_now_ms() -> u64 {
   u64!(Utc::now().timestamp_millis())

@@ -6,9 +6,11 @@ use crate::objects::load_objects_from_device;
 use crate::objects::ClusterLoadProgress;
 use crate::objects::LoadedObjects;
 use crate::pages::Pages;
+use crate::tuples::load_raw_tuples_area_from_device;
 use crate::util::ceil_pow2;
 use crate::util::floor_pow2;
 use crate::BlobdCfg;
+use bufpool::buf::Buf;
 use parking_lot::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -16,7 +18,7 @@ use tokio::spawn;
 use tracing::info;
 
 pub(crate) struct PartitionLoader {
-  dev: PartitionStore,
+  pub(crate) dev: PartitionStore,
   pages: Pages,
   metrics: BlobdMetrics,
   partition_idx: usize,
@@ -60,6 +62,10 @@ impl PartitionLoader {
   pub async fn format(&self) {
     format_device_for_objects(self.dev.bounded(0, self.heap_dev_offset), &self.pages).await;
     self.dev.sync().await;
+  }
+
+  pub async fn load_raw_tuples_area(&self) -> Buf {
+    load_raw_tuples_area_from_device(&self.dev, self.heap_dev_offset).await
   }
 
   pub async fn load_and_start(self, load_progress: Arc<ClusterLoadProgress>) -> Partition {

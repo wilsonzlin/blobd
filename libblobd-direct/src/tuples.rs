@@ -1,12 +1,15 @@
 use crate::backing_store::BoundedStore;
+use crate::backing_store::PartitionStore;
 use crate::object::ObjectState;
 use crate::object::ObjectTuple;
 use crate::object::OBJECT_TUPLE_SERIALISED_LEN;
 use crate::pages::Pages;
+use bufpool::buf::Buf;
 use croaring::Bitmap;
 use futures::stream::iter;
 use futures::StreamExt;
 use itertools::Itertools;
+use num_traits::FromPrimitive;
 use off64::u16;
 use off64::u32;
 use off64::u64;
@@ -19,7 +22,7 @@ use std::sync::Arc;
 use tokio::time::sleep;
 
 type ObjectId = u64;
-type BundleId = u32;
+pub(crate) type BundleId = u32;
 
 #[derive(Default)]
 struct TuplesState {
@@ -43,22 +46,11 @@ pub(crate) struct Tuples {
 }
 
 impl Tuples {
-  pub fn new(
-    pages: Pages,
-    bundles_with_initial_data: FxHashMap<BundleId, Vec<ObjectTuple>>,
-  ) -> Self {
+  pub fn new(pages: Pages, bundles_with_initial_data: Vec<Vec<ObjectTuple>>) -> Self {
     let max_tuples_per_bundle = u16!(pages.spage_size() / OBJECT_TUPLE_SERIALISED_LEN);
 
     let mut state = TuplesState::default();
-    let mut next_expected_bundle_id = 0;
-    // WARNING: We must sort as we insert into `bundle_tuples` by pushing.
-    for (bundle_id, tuples_init) in bundles_with_initial_data
-      .into_iter()
-      .sorted_unstable_by_key(|(bundle_id, _)| *bundle_id)
-    {
-      // Sanity check: assert we have all bundles and there are no holes.
-      assert_eq!(bundle_id, next_expected_bundle_id);
-      next_expected_bundle_id += 1;
+    for (bundle_id, tuples_init) in bundles_with_initial_data.into_iter().enumerate() {
       let bundle_id = u32!(bundle_id);
       let tuple_count = u16!(tuples_init.len());
       assert!(tuple_count <= max_tuples_per_bundle);
@@ -199,6 +191,39 @@ impl Tuples {
       for signal in signals {
         signal.signal(());
       }
+    }
+  }
+}
+
+pub(crate) async fn load_raw_tuples_area_from_device(
+  dev: &PartitionStore,
+  heap_dev_offset: u64,
+) -> Buf {
+  dev.read_at(0, heap_dev_offset).await
+}
+
+pub(crate) fn tuple_bundles_count(heap_dev_offset: u64, pages: &Pages) -> u64 {
+  assert_eq!(heap_dev_offset % pages.spage_size(), 0);
+  heap_dev_offset / pages.spage_size()
+}
+
+pub(crate) fn load_tuples_from_raw_tuples_area(
+  entire_tuples_area_raw: &[u8],
+  pages: &Pages,
+  mut on_tuple: impl FnMut(BundleId, ObjectTuple),
+) {
+  assert_eq!(entire_tuples_area_raw.len() % usz!(pages.spage_size()), 0);
+  for (bundle_id, raw) in entire_tuples_area_raw
+    .chunks_exact(usz!(pages.spage_size()))
+    .enumerate()
+  {
+    for tuple_raw in raw.chunks_exact(usz!(OBJECT_TUPLE_SERIALISED_LEN)) {
+      let object_state = ObjectState::from_u8(tuple_raw[0]).unwrap();
+      if object_state == ObjectState::_EndOfBundleTuples {
+        break;
+      };
+      let tuple = ObjectTuple::deserialise(tuple_raw);
+      on_tuple(u32!(bundle_id), tuple);
     }
   }
 }
