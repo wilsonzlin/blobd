@@ -153,4 +153,8 @@ impl BlobdExporter {
   pub fn pop(&mut self) -> Option<(BlobdExporterMarker, BlobdExporterEntry)> {
     self.entries.pop_front()
   }
+
+  pub fn take(self) -> VecDeque<(BlobdExporterMarker, BlobdExporterEntry)> {
+    self.entries
+  }
 }
