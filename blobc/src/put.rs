@@ -48,8 +48,7 @@ pub(crate) async fn cmd_put(ctx: Ctx, cmd: CmdPut) {
     })
     .await;
   pb.set_message("Committing object");
-  let write_receipts = Arc::try_unwrap(write_receipts).unwrap();
-  let write_receipts = write_receipts.into_inner();
+  let write_receipts = Arc::into_inner(write_receipts).unwrap().into_inner();
   ctx
     .client
     .commit_object(key, creation, write_receipts)

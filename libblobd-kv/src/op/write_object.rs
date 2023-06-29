@@ -68,9 +68,5 @@ pub(crate) async fn op_write_object(
     .upsert_tuple(ctx.clone(), req.key, tuple_data)
     .await;
 
-  // TODO Is this necessary?
-  // TODO Batch/delay.
-  ctx.device.sync().await;
-
   Ok(OpWriteObjectOutput {})
 }

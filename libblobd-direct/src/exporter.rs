@@ -6,7 +6,6 @@ use crate::object::ObjectTuple;
 use crate::pages::Pages;
 use crate::partition::PartitionLoader;
 use crate::tuples::load_tuples_from_raw_tuples_area;
-use crate::util::unwrap_arc_mutex;
 use bufpool::buf::Buf;
 use chrono::DateTime;
 use chrono::Utc;
@@ -129,7 +128,7 @@ impl BlobdExporter {
       })
       .await;
     let mut entries = Vec::new();
-    for (part_id, raw) in unwrap_arc_mutex(raw_tuple_areas) {
+    for (part_id, raw) in Arc::into_inner(raw_tuple_areas).unwrap().into_inner() {
       load_tuples_from_raw_tuples_area(&raw, pages, |_, tuple| {
         let marker = BlobdExporterMarker {
           object_id: tuple.id,

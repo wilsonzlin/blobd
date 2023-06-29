@@ -41,8 +41,7 @@ impl Kv {
       backing_store: BlobdCfgBackingStore::Uring,
       device_len: device_cfg.len,
       device_path: device_cfg.path.clone(),
-      // Each tuple requires around 64 bytes. Use load factor of 2.
-      object_tuples_area_reserved_space: cfg.object_count * 64 * 2,
+      object_tuples_area_reserved_space: cfg.object_count * 512,
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
       #[cfg(target_os = "linux")]
       uring_coop_taskrun: false,

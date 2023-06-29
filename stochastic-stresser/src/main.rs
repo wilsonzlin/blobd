@@ -498,7 +498,7 @@ async fn main() {
                 })
                 .unwrap();
             } else {
-              completed_by_type.delete.fetch_add(1, Ordering::Relaxed);
+              completed_by_type.read.fetch_add(1, Ordering::Relaxed);
               tasks_sender
                 .send(Task::Delete {
                   key_prefix,

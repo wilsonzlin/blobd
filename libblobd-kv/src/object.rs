@@ -144,10 +144,19 @@ pub(crate) fn deserialise_bundle(mut raw: &[u8]) -> Vec<ObjectTuple> {
   tuples
 }
 
-pub(crate) fn serialise_bundle(out: &mut Buf, tuples: impl IntoIterator<Item = ObjectTuple>) {
+pub(crate) fn serialise_bundle(
+  pages: &Pages,
+  tuples: impl IntoIterator<Item = ObjectTuple>,
+) -> Buf {
+  let mut buf = pages.allocate(pages.spage_size());
   for t in tuples {
-    t.serialise(out);
+    t.serialise(&mut buf);
   }
+  if buf.len() < usz!(pages.spage_size()) {
+    // End of tuples marker.
+    buf.push(0);
+  };
+  buf
 }
 
 pub(crate) async fn format_device_for_tuples(

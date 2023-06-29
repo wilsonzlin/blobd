@@ -59,11 +59,10 @@ impl Bundle {
         // - The device write takes orders of magnitudes longer than the CPU time collecting and updating data structures, so the extra complexity, subtlety, verbosity, and locking would not be worth it.
         macro_rules! flush {
           () => {{
-            let mut new_bundle = pages.allocate(pages.spage_size());
             // TODO Better error/panic message on overflow.
             // TODO Avoid clone.
-            serialise_bundle(
-              &mut new_bundle,
+            let new_bundle = serialise_bundle(
+              pages,
               tuples.iter().map(|(key, data)| ObjectTuple {
                 key: key.clone(),
                 data: data.clone(),

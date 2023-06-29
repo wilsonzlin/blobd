@@ -13,8 +13,6 @@ use crate::tuples::load_raw_tuples_area_from_device;
 use crate::tuples::load_tuples_from_raw_tuples_area;
 use crate::tuples::tuple_bundles_count;
 use crate::tuples::Tuples;
-use crate::util::unwrap_arc;
-use crate::util::unwrap_arc_mutex;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::stream::iter;
@@ -205,10 +203,10 @@ pub(crate) async fn load_objects_from_device(
     .fetch_add(u64!(committed.len()), Ordering::Relaxed);
 
   LoadedObjects {
-    committed_objects: unwrap_arc(committed),
-    heap_allocator: unwrap_arc_mutex(heap_allocator),
+    committed_objects: Arc::into_inner(committed).unwrap(),
+    heap_allocator: Arc::into_inner(heap_allocator).unwrap().into_inner(),
     incomplete_objects: incomplete,
-    next_object_id: unwrap_arc_mutex(next_object_id),
+    next_object_id: Arc::into_inner(next_object_id).unwrap().into_inner(),
     tuples: Tuples::new(pages, tuples),
   }
 }
