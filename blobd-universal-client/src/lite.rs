@@ -162,13 +162,7 @@ impl BlobdProvider for Lite {
       .await
       .unwrap();
     ReadObjectOutput {
-      data_stream: res
-        .data_stream
-        .map(|chunk| {
-          let boxed: Box<dyn AsRef<[u8]>> = Box::new(chunk.unwrap());
-          boxed
-        })
-        .boxed(),
+      data_stream: res.data_stream.map(|chunk| chunk.unwrap().to_vec()).boxed(),
     }
   }
 

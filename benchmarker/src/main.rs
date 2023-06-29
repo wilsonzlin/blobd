@@ -1,4 +1,5 @@
 use blobd_universal_client::direct::Direct;
+use blobd_universal_client::kv::Kv;
 use blobd_universal_client::lite::Lite;
 use blobd_universal_client::BlobdProvider;
 use blobd_universal_client::CommitObjectInput;
@@ -47,6 +48,7 @@ const EMPTY_POOL: [u8; 16_777_216] = [0u8; 16_777_216];
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize)]
 enum TargetType {
   Direct,
+  Kv,
   Lite,
 }
 
@@ -128,6 +130,7 @@ async fn main() {
 
   let blobd: Arc<dyn BlobdProvider> = match cli.target {
     TargetType::Direct => Arc::new(Direct::start(init_cfg).await),
+    TargetType::Kv => Arc::new(Kv::start(init_cfg).await),
     TargetType::Lite => Arc::new(Lite::start(init_cfg).await),
   };
 
@@ -144,7 +147,7 @@ async fn main() {
             size: object_size,
           })
           .await;
-        incomplete_tokens.lock().push(res.token);
+        incomplete_tokens.lock().push((i, res.token));
       }
     })
     .await;
@@ -157,13 +160,14 @@ async fn main() {
 
   let now = Instant::now();
   iter(incomplete_tokens.lock().as_slice())
-    .for_each_concurrent(Some(concurrency), |incomplete_token| {
+    .for_each_concurrent(Some(concurrency), |(key, incomplete_token)| {
       let blobd = blobd.clone();
       async move {
         for offset in (0..object_size).step_by(usz!(lpage_size)) {
           let data_len = min(object_size - offset, lpage_size);
           blobd
             .write_object(WriteObjectInput {
+              key: create_u64_be(*key).into(),
               offset,
               incomplete_token: incomplete_token.clone(),
               data: &EMPTY_POOL[..usz!(data_len)],
@@ -183,7 +187,7 @@ async fn main() {
 
   let now = Instant::now();
   iter(incomplete_tokens.lock().as_slice())
-    .for_each_concurrent(Some(concurrency), |incomplete_token| {
+    .for_each_concurrent(Some(concurrency), |(_, incomplete_token)| {
       let blobd = blobd.clone();
       async move {
         blobd

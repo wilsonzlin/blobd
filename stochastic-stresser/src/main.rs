@@ -1,4 +1,5 @@
 use blobd_universal_client::direct::Direct;
+use blobd_universal_client::kv::Kv;
 use blobd_universal_client::lite::Lite;
 use blobd_universal_client::BlobdProvider;
 use blobd_universal_client::CommitObjectInput;
@@ -56,6 +57,7 @@ Use [tokio-console](https://github.com/tokio-rs/console#running-the-console) to 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize)]
 enum TargetType {
   Direct,
+  Kv,
   Lite,
 }
 
@@ -227,6 +229,7 @@ async fn main() {
   };
   let blobd: Arc<dyn BlobdProvider> = match cli.target {
     TargetType::Direct => Arc::new(Direct::start(cfg).await),
+    TargetType::Kv => Arc::new(Kv::start(cfg).await),
     TargetType::Lite => Arc::new(Lite::start(cfg).await),
   };
 
@@ -372,6 +375,7 @@ async fn main() {
             };
             blobd
               .write_object(WriteObjectInput {
+                key: pool.get_then_prefix(key_offset, key_len, key_prefix),
                 data: pool.get(data_offset + chunk_offset, chunk_len),
                 incomplete_token: incomplete_token.clone(),
                 offset: chunk_offset,
@@ -474,9 +478,9 @@ async fn main() {
               })
               .await;
             while let Some(chunk) = res.data_stream.next().await {
-              let chunk_len = u64!(chunk.as_ref().as_ref().len());
+              let chunk_len = u64!(chunk.len());
               // Don't use assert_eq! as it will print a lot of raw bytes.
-              assert!(chunk.as_ref().as_ref() == pool.get(data_offset + chunk_offset, chunk_len));
+              assert!(chunk == pool.get(data_offset + chunk_offset, chunk_len));
               chunk_offset += chunk_len;
               assert!(chunk_offset <= end);
             }

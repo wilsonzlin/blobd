@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tinybuf::TinyBuf;
 
 pub mod direct;
+pub mod kv;
 pub mod lite;
 
 pub struct InitCfgPartition {
@@ -35,6 +36,7 @@ pub struct CreateObjectOutput {
 }
 
 pub struct WriteObjectInput<'a> {
+  pub key: TinyBuf,
   pub offset: u64,
   pub incomplete_token: IncompleteToken,
   pub data: &'a [u8],
@@ -67,7 +69,7 @@ pub struct ReadObjectInput {
 }
 
 pub struct ReadObjectOutput {
-  pub data_stream: Pin<Box<dyn Stream<Item = Box<dyn AsRef<[u8]>>> + Send>>,
+  pub data_stream: Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>,
 }
 
 pub struct DeleteObjectInput {
