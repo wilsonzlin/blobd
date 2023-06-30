@@ -8,6 +8,7 @@ use off64::int::create_u40_be;
 use off64::int::Off64ReadInt;
 use off64::u8;
 use off64::usz;
+use std::cmp::max;
 use std::cmp::min;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -36,10 +37,11 @@ Structure
 */
 
 pub(crate) const LPAGE_SIZE_POW2: u8 = 24; // Must be 24 because size field is u24.
-pub(crate) const SPAGE_SIZE_POW2_MIN: u8 = 9; // Must be 9 beceausue of RSHIFT9.
+pub(crate) const SPAGE_SIZE_POW2_MIN: u8 = 9; // Must be 9 because of RSHIFT9.
 pub(crate) const OBJECT_SIZE_MAX: u32 = 1 << LPAGE_SIZE_POW2;
 
-pub(crate) const OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD: usize = 15; // Don't set this too high as otherwise bundle capacities become uneven.
+// This should be as small as possible. Using only a few bytes out of an allocated page is wasteful; overflowing a bundle is fatal (requires an expensive offline migration).
+pub(crate) const OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD: usize = 7;
 
 #[derive(PartialEq, Eq, Clone, Hash)]
 pub(crate) enum ObjectTupleKey {
@@ -169,8 +171,8 @@ pub(crate) async fn format_device_for_tuples(
   pages: &Pages,
   heap_dev_offset: u64,
 ) {
-  // We cannot use 4 GiB as io_uring uses u32 for size.
-  let bufsize = 1024 * 1024 * 1024 * 4 - pages.spage_size();
+  // We cannot use 4 GiB as io_uring uses i32 for return value, which we use to assert correct amount of bytes read/written. It's unknown why the max return value is off by 4096, but alas it is.
+  let bufsize = 1024 * 1024 * 1024 * 2 - max(4096, pages.spage_size());
   let mut blank = pages.slow_allocate_with_zeros(bufsize);
   for offset in (0..heap_dev_offset).step_by(usz!(bufsize)) {
     let size = min(heap_dev_offset - offset, bufsize);
@@ -197,8 +199,8 @@ pub(crate) async fn load_tuples_from_device(
 ) -> LoadedTuplesFromDevice {
   let mut heap_allocator =
     Allocator::new(heap_dev_offset, heap_size, pages.clone(), metrics.clone());
-  // We cannot use 4 GiB as io_uring uses u32 for size.
-  let bufsize = 1024 * 1024 * 1024 * 4 - pages.spage_size();
+  // We cannot use 4 GiB as io_uring uses i32 for return value, which we use to assert correct amount of bytes read/written. It's unknown why the max return value is off by 4096, but alas it is.
+  let bufsize = 1024 * 1024 * 1024 * 2 - max(4096, pages.spage_size());
   for offset in (0..heap_dev_offset).step_by(usz!(bufsize)) {
     let size = min(heap_dev_offset - offset, bufsize);
     let raw = dev.read_at(offset, size).await;
