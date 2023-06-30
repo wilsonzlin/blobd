@@ -1,6 +1,6 @@
 [package]
 name = "libblobd-kv"
-version = "0.5.7"
+version = "0.6.0"
 description = "Library for blobd, KV variant"
 license = "SSPL-1.0"
 homepage = "https://github.com/wilsonzlin/blobd"
