@@ -38,7 +38,6 @@ pub mod allocator;
 pub mod backing_store;
 pub mod bundles;
 pub mod ctx;
-pub mod key_lock;
 pub mod metrics;
 pub mod object;
 pub mod op;
