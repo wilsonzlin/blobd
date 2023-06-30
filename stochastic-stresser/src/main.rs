@@ -289,7 +289,7 @@ async fn main() {
   .await
   .unwrap();
 
-  // Background loop to regularly prinit out metrics and progress.
+  // Background loop to regularly print out progress.
   spawn({
     let complete = complete.clone();
     let task_progress = completed_by_type.clone();

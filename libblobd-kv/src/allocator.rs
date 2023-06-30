@@ -4,11 +4,10 @@ use crate::util::ceil_pow2;
 use crate::util::div_pow2;
 use crate::util::mod_pow2;
 use crate::util::mul_pow2;
-use off64::u32;
 use off64::u64;
 use off64::u8;
 use off64::usz;
-use roaring::RoaringBitmap;
+use roaring::RoaringTreemap;
 use std::cmp::max;
 use std::error::Error;
 use std::fmt;
@@ -28,31 +27,28 @@ impl Display for OutOfSpaceError {
 
 impl Error for OutOfSpaceError {}
 
-type PageNum = u32;
+type PageNum = u64;
 
 struct PagesBitmap {
   base_dev_offset: u64,
-  free: Vec<RoaringBitmap>, // One for each page size.
+  free: Vec<RoaringTreemap>, // One for each page size.
   pages: Pages,
 }
 
 impl PagesBitmap {
-  fn bitmap(&self, page_size_pow2: u8) -> &RoaringBitmap {
+  fn bitmap(&self, page_size_pow2: u8) -> &RoaringTreemap {
     &self.free[usz!(page_size_pow2 - self.pages.spage_size_pow2)]
   }
 
-  fn bitmap_mut(&mut self, page_size_pow2: u8) -> &mut RoaringBitmap {
+  fn bitmap_mut(&mut self, page_size_pow2: u8) -> &mut RoaringTreemap {
     &mut self.free[usz!(page_size_pow2 - self.pages.spage_size_pow2)]
   }
 
   fn to_page_num(&self, page_dev_offset: u64, page_size_pow2: u8) -> PageNum {
-    u32!(div_pow2(
-      page_dev_offset - self.base_dev_offset,
-      page_size_pow2
-    ))
+    div_pow2(page_dev_offset - self.base_dev_offset, page_size_pow2)
   }
 
-  fn to_page_dev_offset(&self, page_num: u32, page_size_pow2: u8) -> u64 {
+  fn to_page_dev_offset(&self, page_num: PageNum, page_size_pow2: u8) -> u64 {
     mul_pow2(page_num.into(), page_size_pow2) + self.base_dev_offset
   }
 
@@ -111,8 +107,8 @@ impl Allocator {
         base_dev_offset: heap_dev_offset,
         free: (pages.spage_size_pow2..=pages.lpage_size_pow2)
           .map(|sz| {
-            let page_count = u32!(div_pow2(heap_size, sz));
-            let mut map = RoaringBitmap::new();
+            let page_count = div_pow2(heap_size, sz);
+            let mut map = RoaringTreemap::new();
             if sz == pages.lpage_size_pow2 {
               map.insert_range(..page_count);
             };
