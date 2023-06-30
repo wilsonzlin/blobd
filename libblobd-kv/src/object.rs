@@ -156,6 +156,11 @@ pub(crate) fn serialise_bundle(
     // End of tuples marker.
     buf.push(0);
   };
+  // The buffer must be aligned for O_DIRECT.
+  // SAFETY: We allocated it with this size.
+  unsafe {
+    buf.set_len(usz!(pages.spage_size()));
+  }
   buf
 }
 
@@ -164,12 +169,17 @@ pub(crate) async fn format_device_for_tuples(
   pages: &Pages,
   heap_dev_offset: u64,
 ) {
-  const BUFSIZE: u64 = 1024 * 1024 * 1024;
+  const BUFSIZE: u64 = 1024 * 1024 * 1024 * 4;
+  let mut blank = pages.slow_allocate_with_zeros(BUFSIZE);
   for offset in (0..heap_dev_offset).step_by(usz!(BUFSIZE)) {
     let size = min(heap_dev_offset - offset, BUFSIZE);
-    dev
-      .write_at(offset, pages.slow_allocate_with_zeros(size))
-      .await;
+    if size == BUFSIZE {
+      blank = dev.write_at(offset, blank).await;
+    } else {
+      dev
+        .write_at(offset, pages.slow_allocate_with_zeros(size))
+        .await;
+    }
   }
 }
 
@@ -186,7 +196,7 @@ pub(crate) async fn load_tuples_from_device(
 ) -> LoadedTuplesFromDevice {
   let mut heap_allocator =
     Allocator::new(heap_dev_offset, heap_size, pages.clone(), metrics.clone());
-  const BUFSIZE: u64 = 1024 * 1024 * 1024;
+  const BUFSIZE: u64 = 1024 * 1024 * 1024 * 4;
   for offset in (0..heap_dev_offset).step_by(usz!(BUFSIZE)) {
     let size = min(heap_dev_offset - offset, BUFSIZE);
     let raw = dev.read_at(offset, size).await;
