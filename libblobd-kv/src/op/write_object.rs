@@ -16,6 +16,7 @@ use tinybuf::TinyBuf;
 pub struct OpWriteObjectInput {
   pub key: TinyBuf,
   pub data: Vec<u8>,
+  pub if_not_exists: bool,
 }
 
 pub struct OpWriteObjectOutput {}
@@ -65,7 +66,7 @@ pub(crate) async fn op_write_object(
 
   ctx
     .bundles
-    .upsert_tuple(ctx.clone(), req.key, tuple_data)
+    .upsert_tuple(ctx.clone(), req.key, tuple_data, req.if_not_exists)
     .await;
 
   Ok(OpWriteObjectOutput {})

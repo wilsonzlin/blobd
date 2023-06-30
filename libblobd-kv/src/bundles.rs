@@ -9,6 +9,7 @@ use dashmap::DashMap;
 use rustc_hash::FxHashMap;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
+use std::collections::hash_map::Entry;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
@@ -22,6 +23,7 @@ enum BundleTask {
   Upsert {
     key: ObjectTupleKey,
     data: ObjectTupleData,
+    if_not_exists: bool,
     signal: SignalFutureController<BundleTaskResult<()>>,
   },
   Read {
@@ -108,9 +110,27 @@ impl Bundle {
           // The sender can never be dropped because we'll always have an entry in `bundle`.
           let t = res.unwrap();
           match t {
-            BundleTask::Upsert { data, key, signal } => {
+            BundleTask::Upsert {
+              data,
+              key,
+              if_not_exists,
+              signal,
+            } => {
               flush_signals.push(signal);
-              if let Some(ObjectTupleData::Heap { size, dev_offset }) = tuples.insert(key, data) {
+              let to_delete = match tuples.entry(key) {
+                Entry::Occupied(mut o) => {
+                  if if_not_exists {
+                    None
+                  } else {
+                    Some(o.insert(data))
+                  }
+                }
+                Entry::Vacant(v) => {
+                  v.insert(data);
+                  None
+                }
+              };
+              if let Some(ObjectTupleData::Heap { size, dev_offset }) = to_delete {
                 // TODO Add to a queue to release at a later time so we can be sure there's no readers who will read junk. Use a timer as a locking mechanism per object read/write/delete may be too much overhead.
                 ctx.heap_allocator.lock().release(dev_offset, size);
                 ctx
@@ -201,7 +221,13 @@ impl Bundles {
     }
   }
 
-  pub async fn upsert_tuple(&self, ctx: Arc<Ctx>, k: TinyBuf, data: ObjectTupleData) {
+  pub async fn upsert_tuple(
+    &self,
+    ctx: Arc<Ctx>,
+    k: TinyBuf,
+    data: ObjectTupleData,
+    if_not_exists: bool,
+  ) {
     let hash = blake3::hash(&k);
     let bundle_idx = get_bundle_index_for_key(&hash, self.bundle_count);
     let key = ObjectTupleKey::from_raw(k, hash);
@@ -218,6 +244,7 @@ impl Bundles {
       let Ok(_) = bundle.backlog.send(BundleTask::Upsert {
         key: key.clone(),
         data: data.clone(),
+        if_not_exists,
         signal: fut_ctl,
       }) else {
         // The queue has been closed, retry.

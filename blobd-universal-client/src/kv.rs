@@ -76,6 +76,7 @@ impl BlobdProvider for Kv {
       .write_object(OpWriteObjectInput {
         key: input.key,
         data: input.data.to_vec(),
+        if_not_exists: false,
       })
       .await
       .unwrap();
