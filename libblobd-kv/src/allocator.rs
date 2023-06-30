@@ -123,10 +123,11 @@ impl Allocator {
   }
 
   pub fn mark_as_allocated(&mut self, page_dev_offset: u64, size: u32) {
-    let mut alloc_size = ceil_pow2(u64!(size), self.pages.spage_size_pow2);
+    let alloc_size = ceil_pow2(u64!(size), self.pages.spage_size_pow2);
+    let mut rem = alloc_size;
     let mut offset = page_dev_offset;
-    while alloc_size != 0 {
-      let pos = 63u32.checked_sub(alloc_size.leading_zeros()).unwrap();
+    while rem != 0 {
+      let pos = 63u32.checked_sub(rem.leading_zeros()).unwrap();
       assert!(pos > 0);
       let page_size_pow2 = u8!(pos);
       self.bitmap.allocate(
@@ -134,7 +135,7 @@ impl Allocator {
         page_size_pow2,
       );
       offset += 1 << page_size_pow2;
-      alloc_size &= !(1 << pos);
+      rem &= !(1 << pos);
     }
     self
       .metrics

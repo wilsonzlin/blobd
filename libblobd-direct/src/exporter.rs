@@ -6,7 +6,6 @@ use crate::object::ObjectTuple;
 use crate::pages::Pages;
 use crate::partition::PartitionLoader;
 use crate::tuples::load_tuples_from_raw_tuples_area;
-use crate::util::mod_pow2;
 use bufpool::buf::Buf;
 use chrono::DateTime;
 use chrono::Utc;
@@ -89,19 +88,15 @@ impl BlobdExporterEntry {
     for (i, sz) in layout.tail_page_sizes_pow2 {
       reads.push((tail_page_dev_offsets[usz!(i)], 1 << sz));
     }
-    let last_read = reads.pop();
-    let last_read_trunc = mod_pow2(object_size, pages.spage_size_pow2);
 
     let stream = async_stream::stream! {
+      let mut rem = object_size;
       for (offset, len) in reads {
-        yield dev.read_at(offset, len).await;
-      };
-      if let Some((offset, len)) = last_read {
-        let mut last_chunk = dev.read_at(offset, len).await;
-        if last_read_trunc > 0 {
-          last_chunk.truncate(usz!(last_read_trunc));
-        };
-        yield last_chunk;
+        let mut chunk = dev.read_at(offset, len).await;
+        // Using `rem` and calling `truncate` on each iteration is the simplest way. An alternative is to do some subtle logic on the last read, but that's trickier. Be aware that the last page may be larger than a spage, perfectly full, or non-existent (empty object).
+        chunk.truncate(usz!(rem));
+        rem = rem.saturating_sub(len);
+        yield chunk;
       };
     };
 
