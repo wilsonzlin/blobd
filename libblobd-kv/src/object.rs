@@ -169,11 +169,12 @@ pub(crate) async fn format_device_for_tuples(
   pages: &Pages,
   heap_dev_offset: u64,
 ) {
-  const BUFSIZE: u64 = 1024 * 1024 * 1024 * 4;
-  let mut blank = pages.slow_allocate_with_zeros(BUFSIZE);
-  for offset in (0..heap_dev_offset).step_by(usz!(BUFSIZE)) {
-    let size = min(heap_dev_offset - offset, BUFSIZE);
-    if size == BUFSIZE {
+  // We cannot use 4 GiB as io_uring uses u32 for size.
+  let bufsize = 1024 * 1024 * 1024 * 4 - pages.spage_size();
+  let mut blank = pages.slow_allocate_with_zeros(bufsize);
+  for offset in (0..heap_dev_offset).step_by(usz!(bufsize)) {
+    let size = min(heap_dev_offset - offset, bufsize);
+    if size == bufsize {
       blank = dev.write_at(offset, blank).await;
     } else {
       dev
@@ -196,9 +197,10 @@ pub(crate) async fn load_tuples_from_device(
 ) -> LoadedTuplesFromDevice {
   let mut heap_allocator =
     Allocator::new(heap_dev_offset, heap_size, pages.clone(), metrics.clone());
-  const BUFSIZE: u64 = 1024 * 1024 * 1024 * 4;
-  for offset in (0..heap_dev_offset).step_by(usz!(BUFSIZE)) {
-    let size = min(heap_dev_offset - offset, BUFSIZE);
+  // We cannot use 4 GiB as io_uring uses u32 for size.
+  let bufsize = 1024 * 1024 * 1024 * 4 - pages.spage_size();
+  for offset in (0..heap_dev_offset).step_by(usz!(bufsize)) {
+    let size = min(heap_dev_offset - offset, bufsize);
     let raw = dev.read_at(offset, size).await;
     for bundle_raw in raw.chunks_exact(usz!(pages.spage_size())) {
       for tuple in deserialise_bundle(bundle_raw) {
