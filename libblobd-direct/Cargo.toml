@@ -1,6 +1,6 @@
 [package]
 name = "libblobd-direct"
-version = "0.5.2"
+version = "0.5.3"
 description = "Library for blobd, direct variant"
 license = "SSPL-1.0"
 homepage = "https://github.com/wilsonzlin/blobd"
