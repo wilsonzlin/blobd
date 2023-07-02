@@ -220,25 +220,13 @@ impl LogBuffer {
               .fetch_add(buf_len, Relaxed);
             metrics.0.log_buffer_flush_count.fetch_add(1, Relaxed);
             if buf_len <= 1024 * 4 {
-              metrics
-                .0
-                .log_buffer_flush_leq_4k_count
-                .fetch_add(1, Relaxed);
+              metrics.0.log_buffer_flush_4k_count.fetch_add(1, Relaxed);
             } else if buf_len <= 1024 * 64 {
-              metrics
-                .0
-                .log_buffer_flush_leq_64k_count
-                .fetch_add(1, Relaxed);
+              metrics.0.log_buffer_flush_64k_count.fetch_add(1, Relaxed);
             } else if buf_len <= 1024 * 1024 * 1 {
-              metrics
-                .0
-                .log_buffer_flush_leq_1m_count
-                .fetch_add(1, Relaxed);
+              metrics.0.log_buffer_flush_1m_count.fetch_add(1, Relaxed);
             } else if buf_len <= 1024 * 1024 * 8 {
-              metrics
-                .0
-                .log_buffer_flush_leq_8m_count
-                .fetch_add(1, Relaxed);
+              metrics.0.log_buffer_flush_8m_count.fetch_add(1, Relaxed);
             };
             let mut buf_padded =
               pages.allocate_uninitialised(ceil_pow2(buf_len, pages.spage_size_pow2));

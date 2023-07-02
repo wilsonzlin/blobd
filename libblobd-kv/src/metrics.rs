@@ -29,10 +29,10 @@ pub(crate) struct Inner {
 
   pub(crate) log_buffer_flush_entry_count: AtomicU64, // How many log buffer entries were flushed.
   pub(crate) log_buffer_flush_count: AtomicU64, // How many log buffer flushes occurred.
-  pub(crate) log_buffer_flush_leq_4k_count: AtomicU64,
-  pub(crate) log_buffer_flush_leq_64k_count: AtomicU64,
-  pub(crate) log_buffer_flush_leq_1m_count: AtomicU64,
-  pub(crate) log_buffer_flush_leq_8m_count: AtomicU64,
+  pub(crate) log_buffer_flush_4k_count: AtomicU64, // How many flushes were [0, 4 KiB] in size excluding padding.
+  pub(crate) log_buffer_flush_64k_count: AtomicU64, // How many flushes were (4 KiB, 64 KiB] in size excluding padding.
+  pub(crate) log_buffer_flush_1m_count: AtomicU64, // How many flushes were (64 KiB, 1 MiB] in size excluding padding.
+  pub(crate) log_buffer_flush_8m_count: AtomicU64, // How many flushes were (1 MiB, 8 MiB] in size excluding padding.
   pub(crate) log_buffer_flush_data_bytes: AtomicU64,
   pub(crate) log_buffer_flush_padding_bytes: AtomicU64,
   pub(crate) log_buffer_flush_write_us: AtomicU64, // How long it took to perform the log buffer flush's device write.
@@ -77,10 +77,10 @@ impl BlobdMetrics {
 
   pub fn log_buffer_flush_entry_count(&self) -> u64 { self.0.log_buffer_flush_entry_count.load(Relaxed) }
   pub fn log_buffer_flush_count(&self) -> u64 { self.0.log_buffer_flush_count.load(Relaxed) }
-  pub fn log_buffer_flush_leq_4k_count(&self) -> u64 { self.0.log_buffer_flush_leq_4k_count.load(Relaxed) }
-  pub fn log_buffer_flush_leq_64k_count(&self) -> u64 { self.0.log_buffer_flush_leq_64k_count.load(Relaxed) }
-  pub fn log_buffer_flush_leq_1m_count(&self) -> u64 { self.0.log_buffer_flush_leq_1m_count.load(Relaxed) }
-  pub fn log_buffer_flush_leq_8m_count(&self) -> u64 { self.0.log_buffer_flush_leq_8m_count.load(Relaxed) }
+  pub fn log_buffer_flush_4k_count(&self) -> u64 { self.0.log_buffer_flush_4k_count.load(Relaxed) }
+  pub fn log_buffer_flush_64k_count(&self) -> u64 { self.0.log_buffer_flush_64k_count.load(Relaxed) }
+  pub fn log_buffer_flush_1m_count(&self) -> u64 { self.0.log_buffer_flush_1m_count.load(Relaxed) }
+  pub fn log_buffer_flush_8m_count(&self) -> u64 { self.0.log_buffer_flush_8m_count.load(Relaxed) }
   pub fn log_buffer_flush_data_bytes(&self) -> u64 { self.0.log_buffer_flush_data_bytes.load(Relaxed) }
   pub fn log_buffer_flush_padding_bytes(&self) -> u64 { self.0.log_buffer_flush_padding_bytes.load(Relaxed) }
   pub fn log_buffer_flush_write_us(&self) -> u64 { self.0.log_buffer_flush_write_us.load(Relaxed) }
