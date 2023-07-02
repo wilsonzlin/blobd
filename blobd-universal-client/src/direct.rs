@@ -83,6 +83,33 @@ impl Direct {
 
 #[async_trait]
 impl BlobdProvider for Direct {
+  #[rustfmt::skip]
+  fn metrics(&self) -> Vec<(&'static str, u64)> {
+    let metrics = self.blobd.metrics();
+    vec![
+      ("commit_op_count", metrics.commit_op_count()),
+      ("create_op_count", metrics.create_op_count()),
+      ("delete_op_count", metrics.delete_op_count()),
+      ("inspect_op_count", metrics.inspect_op_count()),
+
+      ("read_op_count", metrics.read_op_count()),
+      ("read_op_bytes_requested", metrics.read_op_bytes_requested()),
+      ("read_op_bytes_sent", metrics.read_op_bytes_sent()),
+      ("read_op_bytes_discarded", metrics.read_op_bytes_discarded()),
+
+      ("write_op_count", metrics.write_op_count()),
+      ("write_op_bytes_requested", metrics.write_op_bytes_requested()),
+      ("write_op_bytes_written", metrics.write_op_bytes_written()),
+
+      ("allocated_bytes", metrics.allocated_bytes()),
+      ("object_metadata_bytes", metrics.object_metadata_bytes()),
+      ("object_data_bytes", metrics.object_data_bytes()),
+
+      ("incomplete_object_count", metrics.incomplete_object_count()),
+      ("committed_object_count", metrics.committed_object_count()),
+    ]
+  }
+
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput {
     let res = self
       .blobd

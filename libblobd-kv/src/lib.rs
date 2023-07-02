@@ -114,14 +114,17 @@ impl BlobdLoader {
     };
     let dev: Arc<dyn BackingStore> = match cfg.backing_store {
       #[cfg(target_os = "linux")]
-      BlobdCfgBackingStore::Uring => {
-        Arc::new(UringBackingStore::new(file, pages.clone(), UringCfg {
+      BlobdCfgBackingStore::Uring => Arc::new(UringBackingStore::new(
+        file,
+        pages.clone(),
+        metrics.clone(),
+        UringCfg {
           coop_taskrun: cfg.uring_coop_taskrun,
           defer_taskrun: cfg.uring_defer_taskrun,
           iopoll: cfg.uring_iopoll,
           sqpoll: cfg.uring_sqpoll,
-        }))
-      }
+        },
+      )),
       BlobdCfgBackingStore::File => Arc::new(FileBackingStore::new(file, pages.clone())),
     };
 

@@ -19,8 +19,24 @@ pub(crate) struct Inner {
   // To determine internal fragmentation, subtract `heap_object_data_bytes` from this.
   pub(crate) allocated_bytes: AtomicU64,
   pub(crate) heap_object_data_bytes: AtomicU64, // i.e. does not include inline data.
-
   pub(crate) object_count: AtomicU64,
+
+  pub(crate) bundle_cache_miss: AtomicU64,
+  pub(crate) bundle_cache_load_us: AtomicU64,
+  pub(crate) bundle_cache_flush_count: AtomicU64,
+  pub(crate) bundle_cache_flush_us: AtomicU64,
+  pub(crate) bundle_cache_hit: AtomicU64,
+  pub(crate) bundle_cache_evict: AtomicU64,
+
+  pub(crate) uring_submission_count: AtomicU64,
+  pub(crate) uring_read_request_count: AtomicU64,
+  pub(crate) uring_read_request_bytes: AtomicU64,
+  pub(crate) uring_read_request_us: AtomicU64,
+  pub(crate) uring_write_request_count: AtomicU64,
+  pub(crate) uring_write_request_bytes: AtomicU64,
+  pub(crate) uring_write_request_us: AtomicU64,
+  pub(crate) uring_sync_request_count: AtomicU64,
+  pub(crate) uring_sync_request_us: AtomicU64,
 }
 
 #[derive(Clone, Default)]
@@ -40,6 +56,22 @@ impl BlobdMetrics {
 
   pub fn allocated_bytes(&self) -> u64 { self.0.allocated_bytes.load(Relaxed) }
   pub fn heap_object_data_bytes(&self) -> u64 { self.0.heap_object_data_bytes.load(Relaxed) }
-
   pub fn object_count(&self) -> u64 { self.0.object_count.load(Relaxed) }
+
+  pub fn bundle_cache_miss(&self) -> u64 { self.0.bundle_cache_miss.load(Relaxed) }
+  pub fn bundle_cache_load_us(&self) -> u64 { self.0.bundle_cache_load_us.load(Relaxed) }
+  pub fn bundle_cache_flush_count(&self) -> u64 { self.0.bundle_cache_flush_count.load(Relaxed) }
+  pub fn bundle_cache_flush_us(&self) -> u64 { self.0.bundle_cache_flush_us.load(Relaxed) }
+  pub fn bundle_cache_hit(&self) -> u64 { self.0.bundle_cache_hit.load(Relaxed) }
+  pub fn bundle_cache_evict(&self) -> u64 { self.0.bundle_cache_evict.load(Relaxed) }
+
+  pub fn uring_submission_count(&self) -> u64 { self.0.uring_submission_count.load(Relaxed) }
+  pub fn uring_read_request_count(&self) -> u64 { self.0.uring_read_request_count.load(Relaxed) }
+  pub fn uring_read_request_bytes(&self) -> u64 { self.0.uring_read_request_bytes.load(Relaxed) }
+  pub fn uring_read_request_us(&self) -> u64 { self.0.uring_read_request_us.load(Relaxed) }
+  pub fn uring_write_request_count(&self) -> u64 { self.0.uring_write_request_count.load(Relaxed) }
+  pub fn uring_write_request_bytes(&self) -> u64 { self.0.uring_write_request_bytes.load(Relaxed) }
+  pub fn uring_write_request_us(&self) -> u64 { self.0.uring_write_request_us.load(Relaxed) }
+  pub fn uring_sync_request_count(&self) -> u64 { self.0.uring_sync_request_count.load(Relaxed) }
+  pub fn uring_sync_request_us(&self) -> u64 { self.0.uring_sync_request_us.load(Relaxed) }
 }

@@ -87,6 +87,21 @@ impl Lite {
 
 #[async_trait]
 impl BlobdProvider for Lite {
+  #[rustfmt::skip]
+  fn metrics(&self) -> Vec<(&'static str, u64)> {
+    let metrics = self.blobd.metrics();
+    vec![
+      ("allocated_block_count", metrics.allocated_block_count()),
+      ("allocated_page_count", metrics.allocated_page_count()),
+      ("deleted_object_count", metrics.deleted_object_count()),
+      ("incomplete_object_count", metrics.incomplete_object_count()),
+      ("object_count", metrics.object_count()),
+      ("object_data_bytes", metrics.object_data_bytes()),
+      ("object_metadata_bytes", metrics.object_metadata_bytes()),
+      ("used_bytes", metrics.used_bytes()),
+    ]
+  }
+
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput {
     let res = self
       .blobd

@@ -537,6 +537,11 @@ async fn main() {
 
   // TODO For libblobd-lite: assert all tiles are solid, no fragmented tiles.
 
+  let final_metrics = blobd.metrics();
+  for (key, value) in final_metrics {
+    info!(key, value, "final metric");
+  }
+
   let exec_sec = started.elapsed().as_secs_f64();
   info!(
     execution_seconds = exec_sec,

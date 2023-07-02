@@ -63,6 +63,43 @@ impl Kv {
 
 #[async_trait]
 impl BlobdProvider for Kv {
+  #[rustfmt::skip]
+  fn metrics(&self) -> Vec<(&'static str, u64)> {
+    let metrics = self.blobd.metrics();
+    vec![
+      ("delete_op_count", metrics.delete_op_count()),
+
+      ("read_op_count", metrics.read_op_count()),
+      ("read_op_bytes_sent", metrics.read_op_bytes_sent()),
+      ("read_op_bytes_discarded", metrics.read_op_bytes_discarded()),
+
+      ("write_op_count", metrics.write_op_count()),
+      ("write_op_bytes_persisted", metrics.write_op_bytes_persisted()),
+      ("write_op_bytes_padding", metrics.write_op_bytes_padding()),
+
+      ("allocated_bytes", metrics.allocated_bytes()),
+      ("heap_object_data_bytes", metrics.heap_object_data_bytes()),
+      ("object_count", metrics.object_count()),
+
+      ("bundle_cache_miss", metrics.bundle_cache_miss()),
+      ("bundle_cache_load_us", metrics.bundle_cache_load_us()),
+      ("bundle_cache_flush_count", metrics.bundle_cache_flush_count()),
+      ("bundle_cache_flush_us", metrics.bundle_cache_flush_us()),
+      ("bundle_cache_hit", metrics.bundle_cache_hit()),
+      ("bundle_cache_evict", metrics.bundle_cache_evict()),
+
+      ("uring_submission_count", metrics.uring_submission_count()),
+      ("uring_read_request_count", metrics.uring_read_request_count()),
+      ("uring_read_request_bytes", metrics.uring_read_request_bytes()),
+      ("uring_read_request_us", metrics.uring_read_request_us()),
+      ("uring_write_request_count", metrics.uring_write_request_count()),
+      ("uring_write_request_bytes", metrics.uring_write_request_bytes()),
+      ("uring_write_request_us", metrics.uring_write_request_us()),
+      ("uring_sync_request_count", metrics.uring_sync_request_count()),
+      ("uring_sync_request_us", metrics.uring_sync_request_us()),
+    ]
+  }
+
   async fn create_object(&self, _input: CreateObjectInput) -> CreateObjectOutput {
     CreateObjectOutput {
       token: Arc::new(()),

@@ -6,6 +6,7 @@ use crate::object::ObjectTuple;
 use crate::object::ObjectTupleData;
 use crate::object::ObjectTupleKey;
 use dashmap::DashMap;
+use off64::u64;
 use rustc_hash::FxHashMap;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
@@ -14,6 +15,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
 use tokio::spawn;
+use tokio::time::Instant;
 
 struct RetryRequestError;
 
@@ -42,6 +44,11 @@ struct Bundle {
 
 impl Bundle {
   fn new(ctx: Arc<Ctx>, bundle_idx: u64) -> Self {
+    ctx
+      .metrics
+      .0
+      .bundle_cache_miss
+      .fetch_add(1, Ordering::Relaxed);
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<BundleTask>();
     spawn({
       let ctx = ctx.clone();
@@ -49,18 +56,25 @@ impl Bundle {
         let dev = &ctx.device;
         let pages = &ctx.pages;
 
+        let load_start = Instant::now();
         // TODO OPTIMISATION: Avoid initial Vec allocation, build FxHashMap directly.
         let mut tuples: FxHashMap<_, _> = load_bundle_from_device(&dev, &pages, bundle_idx)
           .await
           .into_iter()
           .map(|t| (t.key, t.data))
           .collect();
+        ctx
+          .metrics
+          .0
+          .bundle_cache_load_us
+          .fetch_add(u64!(load_start.elapsed().as_micros()), Ordering::Relaxed);
         let mut flush_signals = Vec::<SignalFutureController<BundleTaskResult<()>>>::new();
         // There isn't much point to making this parallel/concurrent:
         // - All statements except the `dev.write_at` is sync anyway, so cannot be made concurrent.
         // - The device write takes orders of magnitudes longer than the CPU time collecting and updating data structures, so the extra complexity, subtlety, verbosity, and locking would not be worth it.
         macro_rules! flush {
           () => {{
+            let flush_start = Instant::now();
             // TODO Better error/panic message on overflow.
             // TODO Avoid clone.
             let new_bundle = serialise_bundle(
@@ -77,8 +91,20 @@ impl Bundle {
             for s in flush_signals.drain(..) {
               s.signal(Ok(()));
             }
+            ctx
+              .metrics
+              .0
+              .bundle_cache_flush_us
+              .fetch_add(u64!(flush_start.elapsed().as_micros()), Ordering::Relaxed);
+            ctx
+              .metrics
+              .0
+              .bundle_cache_flush_count
+              .fetch_add(1, Ordering::Relaxed);
           }};
         }
+        // TODO Technically all tasks before loading has complete are cache misses.
+        let mut seen_first = false;
         loop {
           // TODO Tune, configure hyperparameter. It affects delay before eviction and flush batch time.
           let res =
@@ -89,6 +115,7 @@ impl Bundle {
               flush!();
               continue;
             } else {
+              ctx.metrics.0.bundle_cache_evict.fetch_add(1, Ordering::Relaxed);
               // Elapsed timeout and we have nothing to flush: we're too idle and should evict ourselves.
               // Remove from map first BEFORE dropping receiver, as otherwise we may still receive messages after we've drained it.
               ctx.bundles.map.remove(&bundle_idx).unwrap();
@@ -109,6 +136,15 @@ impl Bundle {
           };
           // The sender can never be dropped because we'll always have an entry in `bundle`.
           let t = res.unwrap();
+          if !seen_first {
+            seen_first = true;
+          } else {
+            ctx
+              .metrics
+              .0
+              .bundle_cache_hit
+              .fetch_add(1, Ordering::Relaxed);
+          };
           match t {
             BundleTask::Upsert {
               data,

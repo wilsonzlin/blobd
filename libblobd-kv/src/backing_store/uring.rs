@@ -1,4 +1,5 @@
 use super::BackingStore;
+use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
 use async_trait::async_trait;
 use bufpool::buf::Buf;
@@ -9,6 +10,7 @@ use io_uring::squeue::Entry as SEntry;
 use io_uring::types;
 use io_uring::IoUring;
 use off64::u32;
+use off64::u64;
 use off64::usz;
 use rustc_hash::FxHasher;
 use signal_future::SignalFuture;
@@ -19,6 +21,7 @@ use std::fs::File;
 use std::hash::BuildHasherDefault;
 use std::io;
 use std::os::fd::AsRawFd;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::thread;
 use strum::Display;
@@ -93,7 +96,7 @@ pub(crate) struct UringCfg {
 
 impl UringBackingStore {
   /// `offset` must be a multiple of the underlying device's sector size.
-  pub fn new(file: File, pages: Pages, cfg: UringCfg) -> Self {
+  pub fn new(file: File, pages: Pages, metrics: BlobdMetrics, cfg: UringCfg) -> Self {
     let (sender, receiver) = crossbeam_channel::unbounded::<Request>();
     let pending: Arc<DashMap<u64, (Request, Instant), BuildHasherDefault<FxHasher>>> =
       Default::default();
@@ -121,6 +124,7 @@ impl UringBackingStore {
     let ring = Arc::new(ring);
     // Submission thread.
     thread::spawn({
+      let metrics = metrics.clone();
       let pending = pending.clone();
       let ring = ring.clone();
       // This is outside the loop to avoid reallocation each time.
@@ -145,6 +149,7 @@ impl UringBackingStore {
             trace!(id, typ = msg.to_string(), "submitting request");
             let submission_entry = match &msg {
               Request::Read { req, .. } => {
+                metrics.0.uring_read_request_count.fetch_add(1, Relaxed);
                 // Using `as_mut_ptr` would require a mutable borrow.
                 let ptr = req.out_buf.as_ptr() as *mut u8;
                 opcode::Read::new(types::Fixed(0), ptr, req.len)
@@ -153,6 +158,7 @@ impl UringBackingStore {
                   .user_data(id)
               }
               Request::Write { req, .. } => {
+                metrics.0.uring_write_request_count.fetch_add(1, Relaxed);
                 // Using `as_mut_ptr` would require a mutable borrow.
                 let ptr = req.data.as_ptr() as *mut u8;
                 // This takes ownership of `buf` which will ensure it doesn't get dropped while waiting for io_uring.
@@ -162,12 +168,16 @@ impl UringBackingStore {
                   .build()
                   .user_data(id)
               }
-              Request::Sync { .. } => opcode::Fsync::new(types::Fixed(0)).build().user_data(id),
+              Request::Sync { .. } => {
+                metrics.0.uring_sync_request_count.fetch_add(1, Relaxed);
+                opcode::Fsync::new(types::Fixed(0)).build().user_data(id)
+              }
             };
             // Insert before submitting.
             pending.insert(id, (msg, Instant::now()));
             if submission.is_full() {
               submission.sync();
+              metrics.0.uring_submission_count.fetch_add(1, Relaxed);
               ring.submit_and_wait(1).unwrap();
             }
             unsafe {
@@ -176,6 +186,7 @@ impl UringBackingStore {
             };
           }
           submission.sync();
+          metrics.0.uring_submission_count.fetch_add(1, Relaxed);
           // This is still necessary even with sqpoll, as our kernel thread may have gone to sleep.
           ring.submit().unwrap();
         }
@@ -184,6 +195,7 @@ impl UringBackingStore {
 
     // Completion thread.
     thread::spawn({
+      let metrics = metrics.clone();
       let pending = pending.clone();
       let ring = ring.clone();
       move || {
@@ -191,31 +203,39 @@ impl UringBackingStore {
         // TODO Stop this loop if `UringBackingStore` has been dropped.
         loop {
           let Some(e) = completion.next() else {
+            metrics.0.uring_submission_count.fetch_add(1, Relaxed);
             ring.submit_and_wait(1).unwrap();
             completion.sync();
             continue;
           };
           let id = e.user_data();
           let (req, started) = pending.remove(&id).unwrap().1;
-          trace!(
-            id,
-            typ = req.to_string(),
-            exec_us = started.elapsed().as_micros(),
-            "completing request"
-          );
+          let exec_us = u64!(started.elapsed().as_micros());
+          trace!(id, typ = req.to_string(), exec_us, "completing request");
           let rv = assert_result_is_ok(&req, e.result());
           match req {
             Request::Read { req, res } => {
               // We may have read fewer bytes.
               assert_eq!(usz!(rv), req.out_buf.len());
+              metrics
+                .0
+                .uring_read_request_bytes
+                .fetch_add(u64!(rv), Relaxed);
+              metrics.0.uring_read_request_us.fetch_add(exec_us, Relaxed);
               res.signal(req.out_buf);
             }
             Request::Write { req, res } => {
               // Assert that all requested bytes to write were written.
               assert_eq!(rv, u32!(req.data.len()));
+              metrics
+                .0
+                .uring_write_request_bytes
+                .fetch_add(u64!(rv), Relaxed);
+              metrics.0.uring_write_request_us.fetch_add(exec_us, Relaxed);
               res.signal(req.data);
             }
             Request::Sync { res } => {
+              metrics.0.uring_sync_request_us.fetch_add(exec_us, Relaxed);
               res.signal(());
             }
           }
