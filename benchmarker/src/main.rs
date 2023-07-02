@@ -285,5 +285,10 @@ async fn main() {
     "completed all delete ops",
   );
 
+  let final_metrics = blobd.metrics();
+  for (key, value) in final_metrics {
+    info!(key, value, "final metric");
+  }
+
   info!("all done");
 }

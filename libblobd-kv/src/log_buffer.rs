@@ -1,4 +1,5 @@
 use crate::backing_store::BoundedStore;
+use crate::metrics::BlobdMetrics;
 use crate::object::get_bundle_index_for_key;
 use crate::object::load_bundle_from_device;
 use crate::object::ObjectTupleData;
@@ -10,21 +11,26 @@ use crossbeam_channel::RecvTimeoutError;
 use dashmap::DashMap;
 use itertools::Itertools;
 use off64::int::Off64ReadInt;
+use off64::int::Off64WriteMutInt;
 use off64::u64;
-use parking_lot::Mutex;
 use serde::Deserialize;
 use serde::Serialize;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
 use std::collections::BTreeMap;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 use tinybuf::TinyBuf;
+use tokio::spawn;
 
 const OFFSETOF_VIRTUAL_HEAD: u64 = 0;
 const OFFSETOF_VIRTUAL_TAIL: u64 = OFFSETOF_VIRTUAL_HEAD + 8;
 
 const PERSISTED_ENTRY_TAG_PADDING: u8 = 0xc1; // This byte is never used by MessagePack.
+const PERSISTED_ENTRY_TAG_WRAPAROUND: u8 = 0xc0; // `nil` in MessagePack.
 
 pub(crate) enum BundleTask {
   Upsert {
@@ -38,15 +44,16 @@ pub(crate) enum BundleTask {
   },
 }
 
+// WARNING: Do not reorder variant struct fields, as rmp_serde doesn't store field names.
 #[derive(Serialize, Deserialize)]
 enum LogBufferPersistedEntry {
+  #[serde(rename = "0")]
   Upsert {
     key: ObjectTupleKey,
     data: ObjectTupleData,
   },
-  Delete {
-    key: ObjectTupleKey,
-  },
+  #[serde(rename = "1")]
+  Delete { key: ObjectTupleKey },
 }
 
 enum LogBufferOverlayEntry {
@@ -54,10 +61,10 @@ enum LogBufferOverlayEntry {
   Exists { data: ObjectTupleData },
 }
 
-#[derive(Default)]
-struct CompletedFlushes {
-  backlog: BTreeMap<u64, Vec<BundleTask>>,
-  next_id: u64,
+struct CompletedFlushesBacklogEntry {
+  new_virtual_tail_to_write: u64,
+  started: Instant,
+  tasks: Vec<BundleTask>,
 }
 
 pub(crate) struct LogBuffer {
@@ -66,10 +73,16 @@ pub(crate) struct LogBuffer {
   overlay: Arc<DashMap<ObjectTupleKey, LogBufferOverlayEntry>>,
   pages: Pages,
   // std::sync::mpsc::Sender is not Send.
-  sender: crossbeam_channel::Sender<BundleTask>,
+  sender: crossbeam_channel::Sender<(BundleTask, Vec<u8>)>,
 }
 
 impl LogBuffer {
+  pub async fn format_device(state_dev: &BoundedStore, pages: &Pages) {
+    state_dev
+      .write_at(0, pages.slow_allocate_with_zeros(pages.spage_size()))
+      .await;
+  }
+
   // TODO Commit loop.
   // TODO Load existing log entries.
   pub async fn load_from_device(
@@ -77,6 +90,7 @@ impl LogBuffer {
     data_dev: BoundedStore,
     state_dev: BoundedStore,
     pages: Pages,
+    metrics: BlobdMetrics,
     bundle_count: u64,
   ) -> Self {
     let handle = tokio::runtime::Handle::current();
@@ -88,9 +102,79 @@ impl LogBuffer {
     // TODO Regularly shrink_to_fit if capacity is excessively high.
     let overlay: Arc<DashMap<ObjectTupleKey, LogBufferOverlayEntry>> = Default::default();
 
-    let (sender, receiver) = crossbeam_channel::unbounded::<BundleTask>();
-    std::thread::spawn({
+    // This separate background future and async channel exists so that completed flushes can continue to be enqueued while this is writing the log state asynchronously.
+    let (completer_send, mut completer_recv) =
+      tokio::sync::mpsc::unbounded_channel::<(u64, CompletedFlushesBacklogEntry)>();
+    spawn({
+      let metrics = metrics.clone();
       let overlay = overlay.clone();
+      let pages = pages.clone();
+
+      let mut backlog: BTreeMap<u64, CompletedFlushesBacklogEntry> = Default::default();
+      let mut next_flush_id: u64 = 0;
+      async move {
+        while let Some((flush_id, ent)) = completer_recv.recv().await {
+          assert!(backlog.insert(flush_id, ent).is_none());
+          // TODO Tune and allow configuring hyperparameter.
+          while let Ok(Some((flush_id, ent))) =
+            tokio::time::timeout(Duration::from_micros(10), completer_recv.recv()).await
+          {
+            assert!(backlog.insert(flush_id, ent).is_none());
+          }
+
+          let mut seq_ents = Vec::new();
+          while backlog
+            .first_key_value()
+            .filter(|(id, _)| **id == next_flush_id)
+            .is_some()
+          {
+            let (_, ent) = backlog.pop_first().unwrap();
+            seq_ents.push(ent);
+            next_flush_id += 1;
+          }
+          if !seq_ents.is_empty() {
+            let mut state_buf = pages.allocate_uninitialised(pages.spage_size());
+            state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_HEAD, virtual_head);
+            state_buf.write_u64_le_at(
+              OFFSETOF_VIRTUAL_TAIL,
+              seq_ents.last().unwrap().new_virtual_tail_to_write,
+            );
+            state_dev.write_at(0, state_buf).await;
+            metrics.0.log_buffer_flush_state_count.fetch_add(1, Relaxed);
+            for ent in seq_ents {
+              for msg in ent.tasks {
+                match msg {
+                  BundleTask::Delete { key, signal } => {
+                    metrics
+                      .0
+                      .log_buffer_delete_entry_count
+                      .fetch_add(1, Relaxed);
+                    overlay.insert(key, LogBufferOverlayEntry::Deleted {});
+                    signal.signal(());
+                  }
+                  BundleTask::Upsert { key, data, signal } => {
+                    metrics.0.log_buffer_write_entry_count.fetch_add(1, Relaxed);
+                    metrics
+                      .0
+                      .log_buffer_write_entry_data_bytes
+                      .fetch_add(u64!(data.len()), Relaxed);
+                    overlay.insert(key, LogBufferOverlayEntry::Exists { data });
+                    signal.signal(());
+                  }
+                };
+              }
+              metrics
+                .0
+                .log_buffer_flush_total_us
+                .fetch_add(u64!(ent.started.elapsed().as_micros()), Relaxed);
+            }
+          };
+        }
+      }
+    });
+
+    let (sender, receiver) = crossbeam_channel::unbounded::<(BundleTask, Vec<u8>)>();
+    thread::spawn({
       let pages = pages.clone();
       move || {
         let mut virtual_tail = virtual_tail;
@@ -99,88 +183,99 @@ impl LogBuffer {
         let mut buf = Vec::new();
         let mut pending_log_flush = Vec::new();
         let mut next_flush_id = 0;
-        let completed_flushes: Arc<Mutex<CompletedFlushes>> = Default::default();
         let mut last_flush_time = Instant::now();
-        loop {
+        let mut disconnected = false;
+        while !disconnected {
           // TODO Tune and allow configuring hyperparameter.
-          match receiver.recv_timeout(std::time::Duration::from_micros(10)) {
-            Ok(msg) => {
-              match &msg {
-                BundleTask::Upsert { key, data, .. } => {
-                  LogBufferPersistedEntry::Upsert {
-                    key: key.clone(),
-                    data: data.clone(),
-                  }
-                  .serialize(&mut rmp_serde::Serializer::new(&mut buf))
-                  .unwrap();
-                }
-                BundleTask::Delete { key, .. } => {
-                  LogBufferPersistedEntry::Delete { key: key.clone() }
-                    .serialize(&mut rmp_serde::Serializer::new(&mut buf))
-                    .unwrap();
-                }
-              };
-              pending_log_flush.push(msg);
+          match receiver.recv_timeout(Duration::from_micros(100)) {
+            Ok((task, mut log_buffer_entry_serialised)) => {
+              buf.append(&mut log_buffer_entry_serialised);
+              pending_log_flush.push(task);
             }
             Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Disconnected) => {
+              disconnected = true;
+            }
           };
           let now = Instant::now();
           let buf_len = u64!(buf.len());
           // TODO Tune and allow configuring duration hyperparameter. This doesn't have to match the `recv_timeout` as they handle different scenarios: the `recv_timeout` determines how often to check in again and see if a flush is necessary, while this determines when a flush is necessary.
-          if buf_len >= MAX_BUF_LEN || u64!(now.duration_since(last_flush_time).as_micros()) > 100 {
+          if disconnected
+            || buf_len >= MAX_BUF_LEN
+            || u64!(now.duration_since(last_flush_time).as_micros()) > 10_000
+          {
             // We need padding:
             // - to avoid double writing the last spage between flushes
             // - to allow parallel flushes (without padding, flushes will likely overlap and clobber each other in the last spage)
             if mod_pow2(buf_len, pages.spage_size_pow2) > 0 {
               buf.push(PERSISTED_ENTRY_TAG_PADDING);
             };
+            metrics
+              .0
+              .log_buffer_flush_entry_count
+              .fetch_add(u64!(pending_log_flush.len()), Relaxed);
+            metrics
+              .0
+              .log_buffer_flush_data_bytes
+              .fetch_add(buf_len, Relaxed);
+            metrics.0.log_buffer_flush_count.fetch_add(1, Relaxed);
+            if buf_len <= 1024 * 4 {
+              metrics
+                .0
+                .log_buffer_flush_leq_4k_count
+                .fetch_add(1, Relaxed);
+            } else if buf_len <= 1024 * 64 {
+              metrics
+                .0
+                .log_buffer_flush_leq_64k_count
+                .fetch_add(1, Relaxed);
+            } else if buf_len <= 1024 * 1024 * 1 {
+              metrics
+                .0
+                .log_buffer_flush_leq_1m_count
+                .fetch_add(1, Relaxed);
+            } else if buf_len <= 1024 * 1024 * 8 {
+              metrics
+                .0
+                .log_buffer_flush_leq_8m_count
+                .fetch_add(1, Relaxed);
+            };
             let mut buf_padded =
               pages.allocate_uninitialised(ceil_pow2(buf_len, pages.spage_size_pow2));
+            metrics
+              .0
+              .log_buffer_flush_padding_bytes
+              .fetch_add(u64!(buf_padded.len() - buf.len()), Relaxed);
             buf_padded[..buf.len()].copy_from_slice(&buf);
             buf.clear();
+
             let flush_id = next_flush_id;
             next_flush_id += 1;
-            // TODO Wrapping across physical boundaries.
+            // TODO Wrapping across physical boundaries, ensuring there's enough space, inserting marker if remaining physical space is skipped for wraparound.
             let physical_offset = virtual_tail;
             virtual_tail += u64!(buf_padded.len());
+
+            let new_virtual_tail_to_write = virtual_tail;
             let pending_log_flush = pending_log_flush.drain(..).collect_vec();
             last_flush_time = now;
             handle.spawn({
-              let completed_flushes = completed_flushes.clone();
-              let heap_dev = data_dev.clone();
-              let overlay = overlay.clone();
+              let completer_send = completer_send.clone();
+              let data_dev = data_dev.clone();
+              let metrics = metrics.clone();
               async move {
-                heap_dev.write_at(physical_offset, buf_padded).await;
-                {
-                  let mut completed_flushes = completed_flushes.lock();
-                  // TODO Persist new tail.
-                  assert!(completed_flushes
-                    .backlog
-                    .insert(flush_id, pending_log_flush)
-                    .is_none());
-                  while completed_flushes
-                    .backlog
-                    .first_key_value()
-                    .filter(|(id, _)| **id == completed_flushes.next_id)
-                    .is_some()
-                  {
-                    let (_, msgs) = completed_flushes.backlog.pop_first().unwrap();
-                    for msg in msgs {
-                      match msg {
-                        BundleTask::Delete { key, signal } => {
-                          overlay.insert(key, LogBufferOverlayEntry::Deleted {});
-                          signal.signal(());
-                        }
-                        BundleTask::Upsert { key, data, signal } => {
-                          overlay.insert(key, LogBufferOverlayEntry::Exists { data });
-                          signal.signal(());
-                        }
-                      };
-                    }
-                    completed_flushes.next_id += 1;
-                  }
-                };
+                let flush_write_started = Instant::now();
+                data_dev.write_at(physical_offset, buf_padded).await;
+                metrics
+                  .0
+                  .log_buffer_flush_write_us
+                  .fetch_add(u64!(flush_write_started.elapsed().as_micros()), Relaxed);
+                assert!(completer_send
+                  .send((flush_id, CompletedFlushesBacklogEntry {
+                    new_virtual_tail_to_write,
+                    started: now,
+                    tasks: pending_log_flush,
+                  }))
+                  .is_ok());
               }
             });
           };
@@ -223,9 +318,17 @@ impl LogBuffer {
   pub async fn upsert_tuple(&self, key: TinyBuf, data: ObjectTupleData) {
     let key = ObjectTupleKey::from_raw(key);
     let (fut, signal) = SignalFuture::new();
+    // Serialise outside of flush thread to parallelise.
+    let mut log_entry = Vec::new();
+    LogBufferPersistedEntry::Upsert {
+      key: key.clone(),
+      data: data.clone(),
+    }
+    .serialize(&mut rmp_serde::Serializer::new(&mut log_entry))
+    .unwrap();
     self
       .sender
-      .send(BundleTask::Upsert { key, data, signal })
+      .send((BundleTask::Upsert { key, data, signal }, log_entry))
       .unwrap();
     fut.await;
   }
@@ -233,9 +336,14 @@ impl LogBuffer {
   pub async fn delete_tuple(&self, key: TinyBuf) {
     let key = ObjectTupleKey::from_raw(key);
     let (fut, signal) = SignalFuture::new();
+    // Serialise outside of flush thread to parallelise.
+    let mut log_entry = Vec::new();
+    LogBufferPersistedEntry::Delete { key: key.clone() }
+      .serialize(&mut rmp_serde::Serializer::new(&mut log_entry))
+      .unwrap();
     self
       .sender
-      .send(BundleTask::Delete { key, signal })
+      .send((BundleTask::Delete { key, signal }, log_entry))
       .unwrap();
     fut.await;
   }

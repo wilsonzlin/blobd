@@ -82,6 +82,15 @@ pub(crate) enum ObjectTupleData {
   Heap { size: u32, dev_offset: u64 },
 }
 
+impl ObjectTupleData {
+  pub fn len(&self) -> usize {
+    match self {
+      ObjectTupleData::Inline(d) => d.len(),
+      ObjectTupleData::Heap { size, .. } => usz!(*size),
+    }
+  }
+}
+
 pub(crate) struct ObjectTuple {
   pub key: ObjectTupleKey,
   pub data: ObjectTupleData,

@@ -21,12 +21,23 @@ pub(crate) struct Inner {
   pub(crate) heap_object_data_bytes: AtomicU64, // i.e. does not include inline data.
   pub(crate) object_count: AtomicU64,
 
-  pub(crate) bundle_cache_miss: AtomicU64,
-  pub(crate) bundle_cache_load_us: AtomicU64,
-  pub(crate) bundle_cache_flush_count: AtomicU64,
-  pub(crate) bundle_cache_flush_us: AtomicU64,
-  pub(crate) bundle_cache_hit: AtomicU64,
-  pub(crate) bundle_cache_evict: AtomicU64,
+  pub(crate) log_buffer_write_entry_count: AtomicU64,
+  pub(crate) log_buffer_write_entry_data_bytes: AtomicU64,
+  pub(crate) log_buffer_delete_entry_count: AtomicU64,
+  pub(crate) log_buffer_virtual_head: AtomicU64,
+  pub(crate) log_buffer_virtual_tail: AtomicU64,
+
+  pub(crate) log_buffer_flush_entry_count: AtomicU64, // How many log buffer entries were flushed.
+  pub(crate) log_buffer_flush_count: AtomicU64, // How many log buffer flushes occurred.
+  pub(crate) log_buffer_flush_leq_4k_count: AtomicU64,
+  pub(crate) log_buffer_flush_leq_64k_count: AtomicU64,
+  pub(crate) log_buffer_flush_leq_1m_count: AtomicU64,
+  pub(crate) log_buffer_flush_leq_8m_count: AtomicU64,
+  pub(crate) log_buffer_flush_data_bytes: AtomicU64,
+  pub(crate) log_buffer_flush_padding_bytes: AtomicU64,
+  pub(crate) log_buffer_flush_write_us: AtomicU64, // How long it took to perform the log buffer flush's device write.
+  pub(crate) log_buffer_flush_total_us: AtomicU64, // How long it took to perform the entire log buffer flush, including the device write and waiting for any antecedent flush to update the overlay and write the virtual tail.
+  pub(crate) log_buffer_flush_state_count: AtomicU64, // How many times the log buffer virtual pointers were updated.
 
   pub(crate) uring_submission_count: AtomicU64,
   pub(crate) uring_read_request_count: AtomicU64,
@@ -58,12 +69,23 @@ impl BlobdMetrics {
   pub fn heap_object_data_bytes(&self) -> u64 { self.0.heap_object_data_bytes.load(Relaxed) }
   pub fn object_count(&self) -> u64 { self.0.object_count.load(Relaxed) }
 
-  pub fn bundle_cache_miss(&self) -> u64 { self.0.bundle_cache_miss.load(Relaxed) }
-  pub fn bundle_cache_load_us(&self) -> u64 { self.0.bundle_cache_load_us.load(Relaxed) }
-  pub fn bundle_cache_flush_count(&self) -> u64 { self.0.bundle_cache_flush_count.load(Relaxed) }
-  pub fn bundle_cache_flush_us(&self) -> u64 { self.0.bundle_cache_flush_us.load(Relaxed) }
-  pub fn bundle_cache_hit(&self) -> u64 { self.0.bundle_cache_hit.load(Relaxed) }
-  pub fn bundle_cache_evict(&self) -> u64 { self.0.bundle_cache_evict.load(Relaxed) }
+  pub fn log_buffer_write_entry_count(&self) -> u64 { self.0.log_buffer_write_entry_count.load(Relaxed) }
+  pub fn log_buffer_write_entry_data_bytes(&self) -> u64 { self.0.log_buffer_write_entry_data_bytes.load(Relaxed) }
+  pub fn log_buffer_delete_entry_count(&self) -> u64 { self.0.log_buffer_delete_entry_count.load(Relaxed) }
+  pub fn log_buffer_virtual_head(&self) -> u64 { self.0.log_buffer_virtual_head.load(Relaxed) }
+  pub fn log_buffer_virtual_tail(&self) -> u64 { self.0.log_buffer_virtual_tail.load(Relaxed) }
+
+  pub fn log_buffer_flush_entry_count(&self) -> u64 { self.0.log_buffer_flush_entry_count.load(Relaxed) }
+  pub fn log_buffer_flush_count(&self) -> u64 { self.0.log_buffer_flush_count.load(Relaxed) }
+  pub fn log_buffer_flush_leq_4k_count(&self) -> u64 { self.0.log_buffer_flush_leq_4k_count.load(Relaxed) }
+  pub fn log_buffer_flush_leq_64k_count(&self) -> u64 { self.0.log_buffer_flush_leq_64k_count.load(Relaxed) }
+  pub fn log_buffer_flush_leq_1m_count(&self) -> u64 { self.0.log_buffer_flush_leq_1m_count.load(Relaxed) }
+  pub fn log_buffer_flush_leq_8m_count(&self) -> u64 { self.0.log_buffer_flush_leq_8m_count.load(Relaxed) }
+  pub fn log_buffer_flush_data_bytes(&self) -> u64 { self.0.log_buffer_flush_data_bytes.load(Relaxed) }
+  pub fn log_buffer_flush_padding_bytes(&self) -> u64 { self.0.log_buffer_flush_padding_bytes.load(Relaxed) }
+  pub fn log_buffer_flush_write_us(&self) -> u64 { self.0.log_buffer_flush_write_us.load(Relaxed) }
+  pub fn log_buffer_flush_total_us(&self) -> u64 { self.0.log_buffer_flush_total_us.load(Relaxed) }
+  pub fn log_buffer_flush_state_count(&self) -> u64 { self.0.log_buffer_flush_state_count.load(Relaxed) }
 
   pub fn uring_submission_count(&self) -> u64 { self.0.uring_submission_count.load(Relaxed) }
   pub fn uring_read_request_count(&self) -> u64 { self.0.uring_read_request_count.load(Relaxed) }

@@ -156,6 +156,15 @@ impl BlobdLoader {
 
   pub async fn format(&self) {
     format_device_for_tuples(&self.dev, &self.pages, self.heap_dev_offset).await;
+    LogBuffer::format_device(
+      &BoundedStore::new(
+        self.dev.clone(),
+        self.log_state_dev_offset,
+        self.pages.spage_size(),
+      ),
+      &self.pages,
+    )
+    .await;
     self.dev.sync().await;
   }
 
@@ -185,6 +194,7 @@ impl BlobdLoader {
           self.pages.spage_size(),
         ),
         self.pages.clone(),
+        self.metrics.clone(),
         self.heap_dev_offset / self.pages.spage_size(),
       )
       .await,

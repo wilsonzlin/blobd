@@ -37,12 +37,24 @@ impl BoundedStore {
   }
 
   pub async fn read_at(&self, offset: u64, len: u64) -> Buf {
-    assert!(offset + len <= self.len);
+    assert!(
+      offset + len <= self.len,
+      "attempted to read at {} with {} bytes but store ends at {}",
+      offset,
+      len,
+      self.len
+    );
     self.backing_store.read_at(self.offset + offset, len).await
   }
 
   pub async fn write_at(&self, offset: u64, data: Buf) {
-    assert!(offset + u64!(data.len()) <= self.len);
+    assert!(
+      offset + u64!(data.len()) <= self.len,
+      "attempted to write at {} with {} bytes but store ends at {}",
+      offset,
+      data.len(),
+      self.len
+    );
     self
       .backing_store
       .write_at(self.offset + offset, data)
