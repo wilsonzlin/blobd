@@ -69,6 +69,7 @@ struct ConfigPartition {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
   target: TargetType,
 
@@ -98,6 +99,9 @@ struct Config {
 
   /// Spage size. Defaults to 512 bytes.
   spage_size: Option<ByteSize>,
+
+  /// Only applies to Kv target. Defaults to 1 GiB.
+  log_buffer_size: Option<ByteSize>,
 }
 
 #[derive(Clone)]
@@ -214,6 +218,10 @@ async fn main() {
 
   let cfg = InitCfg {
     bucket_count,
+    log_buffer_size: cli
+      .log_buffer_size
+      .map(|s| s.as_u64())
+      .unwrap_or(1024 * 1024 * 1024),
     lpage_size,
     object_count,
     spage_size,

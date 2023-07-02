@@ -50,8 +50,8 @@ pub(crate) async fn op_read_object(
   let start = req.start;
 
   let res = match ctx
-    .bundles
-    .read_tuple(ctx.clone(), req.key)
+    .log_buffer
+    .read_tuple(req.key)
     .await
     .ok_or_else(|| OpError::ObjectNotFound)?
   {

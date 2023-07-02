@@ -31,6 +31,7 @@ type PageNum = u64;
 
 struct PagesBitmap {
   base_dev_offset: u64,
+  heap_size: u64,
   free: Vec<RoaringTreemap>, // One for each page size.
   pages: Pages,
 }
@@ -66,6 +67,7 @@ impl PagesBitmap {
     assert!(
       page_size_pow2 >= self.pages.spage_size_pow2 && page_size_pow2 <= self.pages.lpage_size_pow2
     );
+    assert!(page_num < div_pow2(self.heap_size, page_size_pow2));
     if !self.bitmap_mut(page_size_pow2).remove(page_num) {
       // We need to split parent.
       self.allocate(page_num / 2, page_size_pow2 + 1);
@@ -75,6 +77,10 @@ impl PagesBitmap {
 
   // Marks a single page as free, recursively merging as necessary.
   fn release(&mut self, page_num: PageNum, page_size_pow2: u8) {
+    assert!(
+      page_size_pow2 >= self.pages.spage_size_pow2 && page_size_pow2 <= self.pages.lpage_size_pow2
+    );
+    assert!(page_num < div_pow2(self.heap_size, page_size_pow2));
     // Check if buddy is also free so we can recompact. This doesn't apply to lpages as they don't have buddies (they aren't split).
     if page_size_pow2 < self.pages.lpage_size_pow2 {
       let buddy_page_num = page_num ^ 1;
@@ -105,6 +111,7 @@ impl Allocator {
     Self {
       bitmap: PagesBitmap {
         base_dev_offset: heap_dev_offset,
+        heap_size,
         free: (pages.spage_size_pow2..=pages.lpage_size_pow2)
           .map(|sz| {
             let page_count = div_pow2(heap_size, sz);

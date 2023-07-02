@@ -41,6 +41,7 @@ impl Kv {
       backing_store: BlobdCfgBackingStore::Uring,
       device_len: device_cfg.len,
       device_path: device_cfg.path.clone(),
+      log_buffer_size: cfg.log_buffer_size,
       object_tuples_area_reserved_space: cfg.object_count * 512,
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
       #[cfg(target_os = "linux")]
@@ -113,7 +114,6 @@ impl BlobdProvider for Kv {
       .write_object(OpWriteObjectInput {
         key: input.key,
         data: input.data.to_vec(),
-        if_not_exists: false,
       })
       .await
       .unwrap();

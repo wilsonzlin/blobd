@@ -11,8 +11,9 @@ use crate::object::SPAGE_SIZE_POW2_MIN;
 use crate::pages::Pages;
 use crate::util::ceil_pow2;
 use crate::util::floor_pow2;
-use bundles::Bundles;
+use backing_store::BoundedStore;
 use ctx::Ctx;
+use log_buffer::LogBuffer;
 use metrics::BlobdMetrics;
 use object::format_device_for_tuples;
 use object::load_tuples_from_device;
@@ -36,8 +37,8 @@ use std::sync::Arc;
 
 pub mod allocator;
 pub mod backing_store;
-pub mod bundles;
 pub mod ctx;
+pub mod log_buffer;
 pub mod metrics;
 pub mod object;
 pub mod op;
@@ -58,6 +59,7 @@ pub struct BlobdCfg {
   pub device_path: PathBuf,
   /// This must be a multiple of the lpage size.
   pub device_len: u64,
+  pub log_buffer_size: u64,
   /// The amount of bytes to reserve for storing object tuples. This cannot be changed later on. This will be rounded up to the nearest multiple of the lpage size.
   pub object_tuples_area_reserved_space: u64,
   /// The device must support atomic writes of this size. It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
@@ -90,6 +92,9 @@ pub struct BlobdLoader {
   metrics: BlobdMetrics,
   heap_dev_offset: u64,
   heap_size: u64,
+  log_data_dev_offset: u64,
+  log_data_size: u64,
+  log_state_dev_offset: u64,
 }
 
 impl BlobdLoader {
@@ -97,11 +102,19 @@ impl BlobdLoader {
     assert!(cfg.spage_size_pow2 >= SPAGE_SIZE_POW2_MIN);
     assert!(cfg.spage_size_pow2 <= LPAGE_SIZE_POW2);
 
+    let dev_end_aligned = floor_pow2(cfg.device_len, cfg.spage_size_pow2);
+    let log_data_size = cfg.log_buffer_size;
+    assert!(log_data_size > 1024 * 1024 * 64); // Sanity check: ensure reasonable value and not misconfiguration.
+
     let tuples_area_size = ceil_pow2(cfg.object_tuples_area_reserved_space, LPAGE_SIZE_POW2);
     let heap_dev_offset = tuples_area_size;
-    let heap_end = floor_pow2(cfg.device_len, LPAGE_SIZE_POW2);
-    let heap_size = heap_end - heap_dev_offset;
-    assert!(tuples_area_size + heap_dev_offset <= heap_end);
+    let log_state_dev_offset = dev_end_aligned.checked_sub(cfg.spage_size()).unwrap();
+    let log_data_dev_offset = log_state_dev_offset.checked_sub(log_data_size).unwrap();
+    let heap_size = floor_pow2(
+      log_state_dev_offset.checked_sub(heap_dev_offset).unwrap(),
+      LPAGE_SIZE_POW2,
+    );
+    assert!(heap_size > 1024 * 1024 * 64); // Sanity check: ensure reasonable value and not misconfiguration.
 
     let metrics = BlobdMetrics::default();
     let pages = Pages::new(cfg.spage_size_pow2, LPAGE_SIZE_POW2);
@@ -133,6 +146,9 @@ impl BlobdLoader {
       dev,
       heap_dev_offset,
       heap_size,
+      log_data_dev_offset,
+      log_data_size,
+      log_state_dev_offset,
       metrics,
       pages,
     }
@@ -156,7 +172,22 @@ impl BlobdLoader {
     .await;
 
     let ctx = Arc::new(Ctx {
-      bundles: Bundles::new(self.heap_dev_offset / self.pages.spage_size()),
+      log_buffer: LogBuffer::load_from_device(
+        BoundedStore::new(self.dev.clone(), 0, self.heap_dev_offset),
+        BoundedStore::new(
+          self.dev.clone(),
+          self.log_data_dev_offset,
+          self.log_data_size,
+        ),
+        BoundedStore::new(
+          self.dev.clone(),
+          self.log_state_dev_offset,
+          self.pages.spage_size(),
+        ),
+        self.pages.clone(),
+        self.heap_dev_offset / self.pages.spage_size(),
+      )
+      .await,
       device: self.dev,
       heap_allocator: Mutex::new(allocator),
       metrics: self.metrics.clone(),

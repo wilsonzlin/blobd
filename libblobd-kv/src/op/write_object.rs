@@ -2,8 +2,8 @@ use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
 use crate::object::ObjectTupleData;
+use crate::object::LOG_ENTRY_DATA_LEN_INLINE_THRESHOLD;
 use crate::object::OBJECT_SIZE_MAX;
-use crate::object::OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD;
 use crate::util::ceil_pow2;
 use off64::u32;
 use off64::u64;
@@ -16,7 +16,6 @@ use tinybuf::TinyBuf;
 pub struct OpWriteObjectInput {
   pub key: TinyBuf,
   pub data: Vec<u8>,
-  pub if_not_exists: bool,
 }
 
 pub struct OpWriteObjectOutput {}
@@ -31,7 +30,8 @@ pub(crate) async fn op_write_object(
     return Err(OpError::ObjectTooLarge);
   };
 
-  let tuple_data = if req.data.len() <= OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD {
+  // This will go into the log first, so the threshold is not `OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD`.
+  let tuple_data = if req.data.len() <= LOG_ENTRY_DATA_LEN_INLINE_THRESHOLD {
     ObjectTupleData::Inline(req.data.into())
   } else {
     let Ok(dev_offset) = ctx.heap_allocator.lock().allocate(size) else {
@@ -64,10 +64,7 @@ pub(crate) async fn op_write_object(
     .write_op_bytes_persisted
     .fetch_add(size.into(), Relaxed);
 
-  ctx
-    .bundles
-    .upsert_tuple(ctx.clone(), req.key, tuple_data, req.if_not_exists)
-    .await;
+  ctx.log_buffer.upsert_tuple(req.key, tuple_data).await;
 
   Ok(OpWriteObjectOutput {})
 }

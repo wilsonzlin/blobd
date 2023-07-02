@@ -1,5 +1,6 @@
 use crate::allocator::Allocator;
 use crate::backing_store::BackingStore;
+use crate::backing_store::BoundedStore;
 use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
 use bufpool::buf::Buf;
@@ -8,6 +9,8 @@ use off64::int::create_u40_be;
 use off64::int::Off64ReadInt;
 use off64::u8;
 use off64::usz;
+use serde::Deserialize;
+use serde::Serialize;
 use std::cmp::max;
 use std::cmp::min;
 use std::sync::atomic::Ordering;
@@ -42,26 +45,40 @@ pub(crate) const OBJECT_SIZE_MAX: u32 = 1 << LPAGE_SIZE_POW2;
 
 // This should be as small as possible. Using only a few bytes out of an allocated page is wasteful; overflowing a bundle is fatal (requires an expensive offline migration).
 pub(crate) const OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD: usize = 7;
+// This should be an optimal value for maximum SSD write performance, probably around an erase block size.
+// TODO Allow configuring.
+pub(crate) const LOG_ENTRY_DATA_LEN_INLINE_THRESHOLD: usize = 8 * 1024 * 1024;
 
-#[derive(PartialEq, Eq, Clone, Hash)]
+// The Serialize and Deserialize is for the log only.
+#[derive(PartialEq, Eq, Clone, Hash, Serialize, Deserialize)]
 pub(crate) enum ObjectTupleKey {
+  #[serde(rename = "0")]
   Hash([u8; 32]),
+  #[serde(rename = "1")]
   Literal(TinyBuf),
 }
 
 impl ObjectTupleKey {
-  pub fn from_raw(raw: TinyBuf, hash: blake3::Hash) -> Self {
+  pub fn from_raw_and_hash(raw: TinyBuf, hash: blake3::Hash) -> Self {
     if raw.len() <= 32 {
       ObjectTupleKey::Literal(raw)
     } else {
       ObjectTupleKey::Hash(hash.into())
     }
   }
+
+  pub fn from_raw(raw: TinyBuf) -> Self {
+    let hash = blake3::hash(&raw);
+    Self::from_raw_and_hash(raw, hash)
+  }
 }
 
-#[derive(Clone)]
+// The Serialize and Deserialize is for the log only, where inline data could be huge (our custom serialisation format only supports up to 128 bytes).
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
 pub(crate) enum ObjectTupleData {
   Inline(TinyBuf),
+  // WARNING: Do not reorder fields, the serialised MessagePack format does not store field names.
   Heap { size: u32, dev_offset: u64 },
 }
 
@@ -126,7 +143,7 @@ pub(crate) fn get_bundle_index_for_key(hash: &blake3::Hash, bundle_count: u64) -
 }
 
 pub(crate) async fn load_bundle_from_device(
-  dev: &Arc<dyn BackingStore>,
+  dev: &BoundedStore,
   pages: &Pages,
   bundle_idx: u64,
 ) -> Vec<ObjectTuple> {
