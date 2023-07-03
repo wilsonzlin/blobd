@@ -86,9 +86,21 @@ struct Overlay {
   uncommitted: FxHashMap<ObjectTupleKey, LogBufferOverlayEntry>,
 }
 
-struct VirtualPointers {
+struct LogBufferState {
   head: u64,
   tail: u64,
+}
+
+impl LogBufferState {
+  pub async fn flush(&self, state_dev: &BoundedStore, pages: &Pages, metrics: &BlobdMetrics) {
+    let mut state_buf = pages.allocate_uninitialised(pages.spage_size());
+    state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_HEAD, self.head);
+    state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_TAIL, self.tail);
+    state_dev.write_at(0, state_buf).await;
+    metrics.0.log_buffer_virtual_head.store(self.head, Relaxed);
+    metrics.0.log_buffer_virtual_tail.store(self.tail, Relaxed);
+    metrics.0.log_buffer_flush_state_count.fetch_add(1, Relaxed);
+  }
 }
 
 pub(crate) struct LogBuffer {
@@ -141,7 +153,7 @@ impl LogBuffer {
         let mut next_flush_id: u64 = 0;
         let currently_committing = Arc::new(AtomicBool::new(false));
         // If this is async-locked, it means someone is writing to the log buffer state.
-        let virtual_pointers = Arc::new(tokio::sync::RwLock::new(VirtualPointers {
+        let virtual_pointers = Arc::new(tokio::sync::RwLock::new(LogBufferState {
           head: init_virtual_head,
           tail: init_virtual_tail,
         }));
@@ -254,10 +266,7 @@ impl LogBuffer {
                 {
                   let mut v = virtual_pointers.write().await;
                   v.head = commit_up_to_tail;
-                  let mut state_buf = pages.allocate_uninitialised(pages.spage_size());
-                  state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_HEAD, v.head);
-                  state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_TAIL, v.tail);
-                  state_dev.write_at(0, state_buf).await;
+                  v.flush(&state_dev, &pages, &metrics).await;
                 };
                 assert!(overlay.write().committing.take().is_some());
                 currently_committing.store(false, Relaxed);
@@ -291,12 +300,8 @@ impl LogBuffer {
             {
               let mut v = virtual_pointers.write().await;
               v.tail = new_virtual_tail;
-              let mut state_buf = pages.allocate_uninitialised(pages.spage_size());
-              state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_HEAD, v.head);
-              state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_TAIL, v.tail);
-              state_dev.write_at(0, state_buf).await;
+              v.flush(&state_dev, &pages, &metrics).await;
             };
-            metrics.0.log_buffer_flush_state_count.fetch_add(1, Relaxed);
             {
               let mut overlay = overlay.write();
               for ent in seq_ents {
