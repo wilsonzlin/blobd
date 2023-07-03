@@ -41,6 +41,7 @@ impl Kv {
       backing_store: BlobdCfgBackingStore::Uring,
       device_len: device_cfg.len,
       device_path: device_cfg.path.clone(),
+      log_buffer_commit_threshold: cfg.log_buffer_size / 2,
       log_buffer_size: cfg.log_buffer_size,
       object_tuples_area_reserved_space: cfg.object_count * 512,
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),

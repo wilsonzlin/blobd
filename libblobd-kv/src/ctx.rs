@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 pub(crate) struct Ctx {
   pub device: Arc<dyn BackingStore>,
-  pub heap_allocator: Mutex<Allocator>,
+  pub heap_allocator: Arc<Mutex<Allocator>>,
   pub log_buffer: LogBuffer,
   pub metrics: BlobdMetrics,
   pub pages: Pages,

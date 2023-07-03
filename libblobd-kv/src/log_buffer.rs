@@ -1,23 +1,34 @@
+use crate::allocator::Allocator;
+use crate::backing_store::BackingStore;
 use crate::backing_store::BoundedStore;
 use crate::metrics::BlobdMetrics;
 use crate::object::get_bundle_index_for_key;
 use crate::object::load_bundle_from_device;
+use crate::object::serialise_bundle;
+use crate::object::ObjectTuple;
 use crate::object::ObjectTupleData;
 use crate::object::ObjectTupleKey;
+use crate::object::OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD;
+use crate::op::write_object::write_object_on_heap;
 use crate::pages::Pages;
 use crate::util::ceil_pow2;
 use crate::util::mod_pow2;
 use crossbeam_channel::RecvTimeoutError;
-use dashmap::DashMap;
+use futures::stream::iter;
+use futures::StreamExt;
 use itertools::Itertools;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
 use off64::u64;
+use parking_lot::Mutex;
+use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde::Serialize;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::thread;
@@ -25,6 +36,7 @@ use std::time::Duration;
 use std::time::Instant;
 use tinybuf::TinyBuf;
 use tokio::spawn;
+use tokio::time::timeout;
 
 const OFFSETOF_VIRTUAL_HEAD: u64 = 0;
 const OFFSETOF_VIRTUAL_TAIL: u64 = OFFSETOF_VIRTUAL_HEAD + 8;
@@ -56,9 +68,10 @@ enum LogBufferPersistedEntry {
   Delete { key: ObjectTupleKey },
 }
 
+#[derive(Clone)]
 enum LogBufferOverlayEntry {
   Deleted {},
-  Exists { data: ObjectTupleData },
+  Upserted { data: ObjectTupleData },
 }
 
 struct CompletedFlushesBacklogEntry {
@@ -67,10 +80,21 @@ struct CompletedFlushesBacklogEntry {
   tasks: Vec<BundleTask>,
 }
 
+#[derive(Default)]
+struct Overlay {
+  committing: Option<FxHashMap<ObjectTupleKey, LogBufferOverlayEntry>>,
+  uncommitted: FxHashMap<ObjectTupleKey, LogBufferOverlayEntry>,
+}
+
+struct VirtualPointers {
+  head: u64,
+  tail: u64,
+}
+
 pub(crate) struct LogBuffer {
   bundle_count: u64,
   bundles_dev: BoundedStore,
-  overlay: Arc<DashMap<ObjectTupleKey, LogBufferOverlayEntry>>,
+  overlay: Arc<RwLock<Overlay>>,
   pages: Pages,
   // std::sync::mpsc::Sender is not Send.
   sender: crossbeam_channel::Sender<(BundleTask, Vec<u8>)>,
@@ -83,41 +107,171 @@ impl LogBuffer {
       .await;
   }
 
-  // TODO Commit loop.
   // TODO Load existing log entries.
   pub async fn load_from_device(
+    dev: Arc<dyn BackingStore>,
     bundles_dev: BoundedStore,
     data_dev: BoundedStore,
     state_dev: BoundedStore,
+    heap_allocator: Arc<Mutex<Allocator>>,
     pages: Pages,
     metrics: BlobdMetrics,
     bundle_count: u64,
+    commit_threshold: u64,
   ) -> Self {
     let handle = tokio::runtime::Handle::current();
 
     let state_raw = state_dev.read_at(0, pages.spage_size()).await;
-    let virtual_head = state_raw.read_u64_le_at(OFFSETOF_VIRTUAL_HEAD);
-    let virtual_tail = state_raw.read_u64_le_at(OFFSETOF_VIRTUAL_TAIL);
+    let init_virtual_head = state_raw.read_u64_le_at(OFFSETOF_VIRTUAL_HEAD);
+    let init_virtual_tail = state_raw.read_u64_le_at(OFFSETOF_VIRTUAL_TAIL);
 
     // TODO Regularly shrink_to_fit if capacity is excessively high.
-    let overlay: Arc<DashMap<ObjectTupleKey, LogBufferOverlayEntry>> = Default::default();
+    let overlay: Arc<RwLock<Overlay>> = Default::default();
 
     // This separate background future and async channel exists so that completed flushes can continue to be enqueued while this is writing the log state asynchronously.
     let (completer_send, mut completer_recv) =
       tokio::sync::mpsc::unbounded_channel::<(u64, CompletedFlushesBacklogEntry)>();
     spawn({
+      let bundles_dev = bundles_dev.clone();
       let metrics = metrics.clone();
       let overlay = overlay.clone();
       let pages = pages.clone();
-
-      let mut backlog: BTreeMap<u64, CompletedFlushesBacklogEntry> = Default::default();
-      let mut next_flush_id: u64 = 0;
       async move {
-        while let Some((flush_id, ent)) = completer_recv.recv().await {
+        let mut backlog: BTreeMap<u64, CompletedFlushesBacklogEntry> = Default::default();
+        let mut next_flush_id: u64 = 0;
+        let currently_committing = Arc::new(AtomicBool::new(false));
+        // If this is async-locked, it means someone is writing to the log buffer state.
+        let virtual_pointers = Arc::new(tokio::sync::RwLock::new(VirtualPointers {
+          head: init_virtual_head,
+          tail: init_virtual_tail,
+        }));
+        loop {
+          // Check if we need to do a commit. We should always be able to unlock `virtual_pointers` because the only other thread that could lock (other than us) is the commit future, which we checked isn't running.
+          if !currently_committing.load(Relaxed)
+            && virtual_pointers
+              .try_read()
+              .map(|v| v.tail.checked_sub(v.head).unwrap() >= commit_threshold)
+              .unwrap()
+          {
+            currently_committing.store(true, Relaxed);
+            // Only we can write to the overlay and update virtual {head,tail}, so even though virtual {head,tail} are not locked as part of `overlay`, they are always in sync and this is consistent and correct.
+            // NOTE: To keep the previous consistency and correctness guarantees, do this outside of the `spawn`.
+            let log_entries_to_commit = {
+              let mut overlay = overlay.write();
+              assert!(overlay.committing.is_none());
+              let entry_map = std::mem::take(&mut overlay.uncommitted);
+              let entries = entry_map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect_vec();
+              overlay.committing = Some(entry_map);
+              entries
+            };
+            let commit_up_to_tail = virtual_pointers.try_read().unwrap().tail;
+            spawn({
+              let bundles_dev = bundles_dev.clone();
+              let currently_committing = currently_committing.clone();
+              let dev = dev.clone();
+              let heap_allocator = heap_allocator.clone();
+              let metrics = metrics.clone();
+              let overlay = overlay.clone();
+              let pages = pages.clone();
+              let state_dev = state_dev.clone();
+              let virtual_pointers = virtual_pointers.clone();
+              async move {
+                let mut by_bundle_idx: FxHashMap<
+                  u64,
+                  Vec<(ObjectTupleKey, LogBufferOverlayEntry)>,
+                > = Default::default();
+                for (key, ent) in log_entries_to_commit {
+                  let bundle_idx = get_bundle_index_for_key(&key.hash(), bundle_count);
+                  by_bundle_idx
+                    .entry(bundle_idx)
+                    .or_default()
+                    .push((key, ent));
+                }
+                iter(by_bundle_idx)
+                  .for_each_concurrent(None, |(bundle_idx, overlay_entries)| {
+                    let bundles_dev = bundles_dev.clone();
+                    let dev = dev.clone();
+                    let heap_allocator = heap_allocator.clone();
+                    let metrics = metrics.clone();
+                    let pages = pages.clone();
+                    async move {
+                      // TODO Avoid initial Vec allocation.
+                      let mut bundle = load_bundle_from_device(&bundles_dev, &pages, bundle_idx)
+                        .await
+                        .into_iter()
+                        .map(|t| (t.key, t.data))
+                        .collect::<FxHashMap<_, _>>();
+                      for (key, ent) in overlay_entries {
+                        let existing_object_to_delete = match ent {
+                          LogBufferOverlayEntry::Deleted {} => bundle.remove(&key),
+                          LogBufferOverlayEntry::Upserted { data } => {
+                            // We'll subtract one again when handling `existing_object_to_delete` if there's an existing object.
+                            metrics.0.object_count.fetch_add(1, Relaxed);
+                            let tuple_data = match data {
+                              ObjectTupleData::Inline(data)
+                                if data.len() > OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD =>
+                              {
+                                // We're now writing to the tuples area which has a much smaller treshold for inline data than the log buffer, so we need to rewrite the object.
+                                // TODO Handle ENOSPC.
+                                write_object_on_heap(&dev, &heap_allocator, &pages, &metrics, &data)
+                                  .await
+                                  .unwrap()
+                              }
+                              d => d,
+                            };
+                            bundle.insert(key, tuple_data)
+                          }
+                        };
+                        if let Some(deleted) = existing_object_to_delete {
+                          metrics.0.object_count.fetch_sub(1, Relaxed);
+                          // TODO There is still a race condition here where someone is about to read this object but we release its space and some other new object gets allocated it and writes some other data, causing junk to be read.
+                          if let ObjectTupleData::Heap { size, dev_offset } = deleted {
+                            heap_allocator.lock().release(dev_offset, size);
+                            metrics
+                              .0
+                              .heap_object_data_bytes
+                              .fetch_sub(size.into(), Relaxed);
+                          };
+                        };
+                      }
+                      // TODO Better error/panic message on overflow.
+                      // TODO Avoid clone.
+                      let new_bundle = serialise_bundle(
+                        &pages,
+                        bundle
+                          .into_iter()
+                          .map(|(key, data)| ObjectTuple { key, data }),
+                      );
+                      dev
+                        .write_at(bundle_idx * pages.spage_size(), new_bundle)
+                        .await;
+                    }
+                  })
+                  .await;
+                {
+                  let mut v = virtual_pointers.write().await;
+                  v.head = commit_up_to_tail;
+                  let mut state_buf = pages.allocate_uninitialised(pages.spage_size());
+                  state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_HEAD, v.head);
+                  state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_TAIL, v.tail);
+                  state_dev.write_at(0, state_buf).await;
+                };
+                assert!(overlay.write().committing.take().is_some());
+                currently_committing.store(false, Relaxed);
+              }
+            });
+          }
+
+          let Some((flush_id, ent)) = completer_recv.recv().await else {
+            break;
+          };
           assert!(backlog.insert(flush_id, ent).is_none());
           // TODO Tune and allow configuring hyperparameter.
           while let Ok(Some((flush_id, ent))) =
-            tokio::time::timeout(Duration::from_micros(10), completer_recv.recv()).await
+            timeout(Duration::from_micros(10), completer_recv.recv()).await
           {
             assert!(backlog.insert(flush_id, ent).is_none());
           }
@@ -133,41 +287,50 @@ impl LogBuffer {
             next_flush_id += 1;
           }
           if !seq_ents.is_empty() {
-            let mut state_buf = pages.allocate_uninitialised(pages.spage_size());
-            state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_HEAD, virtual_head);
-            state_buf.write_u64_le_at(
-              OFFSETOF_VIRTUAL_TAIL,
-              seq_ents.last().unwrap().new_virtual_tail_to_write,
-            );
-            state_dev.write_at(0, state_buf).await;
+            let new_virtual_tail = seq_ents.last().unwrap().new_virtual_tail_to_write;
+            {
+              let mut v = virtual_pointers.write().await;
+              v.tail = new_virtual_tail;
+              let mut state_buf = pages.allocate_uninitialised(pages.spage_size());
+              state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_HEAD, v.head);
+              state_buf.write_u64_le_at(OFFSETOF_VIRTUAL_TAIL, v.tail);
+              state_dev.write_at(0, state_buf).await;
+            };
             metrics.0.log_buffer_flush_state_count.fetch_add(1, Relaxed);
-            for ent in seq_ents {
-              for msg in ent.tasks {
-                match msg {
-                  BundleTask::Delete { key, signal } => {
-                    metrics
-                      .0
-                      .log_buffer_delete_entry_count
-                      .fetch_add(1, Relaxed);
-                    overlay.insert(key, LogBufferOverlayEntry::Deleted {});
-                    signal.signal(());
-                  }
-                  BundleTask::Upsert { key, data, signal } => {
-                    metrics.0.log_buffer_write_entry_count.fetch_add(1, Relaxed);
-                    metrics
-                      .0
-                      .log_buffer_write_entry_data_bytes
-                      .fetch_add(u64!(data.len()), Relaxed);
-                    overlay.insert(key, LogBufferOverlayEntry::Exists { data });
-                    signal.signal(());
-                  }
-                };
+            {
+              let mut overlay = overlay.write();
+              for ent in seq_ents {
+                for msg in ent.tasks {
+                  match msg {
+                    BundleTask::Delete { key, signal } => {
+                      metrics
+                        .0
+                        .log_buffer_delete_entry_count
+                        .fetch_add(1, Relaxed);
+                      overlay
+                        .uncommitted
+                        .insert(key, LogBufferOverlayEntry::Deleted {});
+                      signal.signal(());
+                    }
+                    BundleTask::Upsert { key, data, signal } => {
+                      metrics.0.log_buffer_write_entry_count.fetch_add(1, Relaxed);
+                      metrics
+                        .0
+                        .log_buffer_write_entry_data_bytes
+                        .fetch_add(u64!(data.len()), Relaxed);
+                      overlay
+                        .uncommitted
+                        .insert(key, LogBufferOverlayEntry::Upserted { data });
+                      signal.signal(());
+                    }
+                  };
+                }
+                metrics
+                  .0
+                  .log_buffer_flush_total_us
+                  .fetch_add(u64!(ent.started.elapsed().as_micros()), Relaxed);
               }
-              metrics
-                .0
-                .log_buffer_flush_total_us
-                .fetch_add(u64!(ent.started.elapsed().as_micros()), Relaxed);
-            }
+            };
           };
         }
       }
@@ -177,7 +340,7 @@ impl LogBuffer {
     thread::spawn({
       let pages = pages.clone();
       move || {
-        let mut virtual_tail = virtual_tail;
+        let mut virtual_tail = init_virtual_tail;
         // TODO Tune and allow configuring hyperparameter.
         const MAX_BUF_LEN: u64 = 128 * 1024 * 1024;
         let mut buf = Vec::new();
@@ -282,25 +445,31 @@ impl LogBuffer {
 
   pub async fn read_tuple(&self, key_raw: TinyBuf) -> Option<ObjectTupleData> {
     let hash = blake3::hash(&key_raw);
-    let bundle_idx = get_bundle_index_for_key(&hash, self.bundle_count);
+    let bundle_idx = get_bundle_index_for_key(hash.as_bytes(), self.bundle_count);
     let key = ObjectTupleKey::from_raw_and_hash(key_raw, hash);
     // We're taking a bold step here and not using any in-memory bundle cache, because each read of a random spage is extremely fast on NVMe devices and (assuming good hashing and bucket load factor) we should very rarely re-read a bundle unless we re-read the same key (which we don't need to optimise for).
-    // We don't even need to acquire some read lock, because even if the log commits just as we're about to read or reading, the bundle spage read should still be atomic (i.e. either state before or after our commit), and technically either state is legal and correct. For a similar reason, it's safe to just read an `self.overlay` entry.
+    // We don't even need to acquire some read lock, because even if the log commits just as we're about to read or reading, the bundle spage read should still be atomic (i.e. either state before or after our commit), and technically either state is legal and correct. For a similar reason, it's safe to just read any `self.overlay` map entry; all entries represent legal persisted state.
     // WARNING: We must never return a value that has not persisted to the log or bundle yet, even if in memory, as that gives misleading confirmation of durable persistence.
-    match self.overlay.get(&key) {
-      Some(e) => match &*e {
-        LogBufferOverlayEntry::Deleted {} => None,
-        LogBufferOverlayEntry::Exists { data } => Some(data.clone()),
-      },
-      None => {
-        // TODO OPTIMISATION: Avoid initial Vec allocation.
-        load_bundle_from_device(&self.bundles_dev, &self.pages, bundle_idx)
-          .await
-          .into_iter()
-          .find(|t| t.key == key)
-          .map(|t| t.data)
-      }
-    }
+    {
+      let overlay = self.overlay.read();
+      if let Some(e) = overlay.uncommitted.get(&key).cloned().or_else(|| {
+        overlay
+          .committing
+          .as_ref()
+          .and_then(|m| m.get(&key).cloned())
+      }) {
+        return match e {
+          LogBufferOverlayEntry::Deleted {} => None,
+          LogBufferOverlayEntry::Upserted { data } => Some(data),
+        };
+      };
+    };
+    // TODO OPTIMISATION: Avoid initial Vec allocation.
+    load_bundle_from_device(&self.bundles_dev, &self.pages, bundle_idx)
+      .await
+      .into_iter()
+      .find(|t| t.key == key)
+      .map(|t| t.data)
   }
 
   pub async fn upsert_tuple(&self, key: TinyBuf, data: ObjectTupleData) {

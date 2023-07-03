@@ -59,6 +59,7 @@ pub struct BlobdCfg {
   pub device_path: PathBuf,
   /// This must be a multiple of the lpage size.
   pub device_len: u64,
+  pub log_buffer_commit_threshold: u64,
   pub log_buffer_size: u64,
   /// The amount of bytes to reserve for storing object tuples. This cannot be changed later on. This will be rounded up to the nearest multiple of the lpage size.
   pub object_tuples_area_reserved_space: u64,
@@ -92,6 +93,7 @@ pub struct BlobdLoader {
   metrics: BlobdMetrics,
   heap_dev_offset: u64,
   heap_size: u64,
+  log_commit_threshold: u64,
   log_data_dev_offset: u64,
   log_data_size: u64,
   log_state_dev_offset: u64,
@@ -104,7 +106,9 @@ impl BlobdLoader {
 
     let dev_end_aligned = floor_pow2(cfg.device_len, cfg.spage_size_pow2);
     let log_data_size = cfg.log_buffer_size;
+    let log_commit_threshold = cfg.log_buffer_commit_threshold;
     assert!(log_data_size > 1024 * 1024 * 64); // Sanity check: ensure reasonable value and not misconfiguration.
+    assert!(log_commit_threshold < log_data_size);
 
     let tuples_area_size = ceil_pow2(cfg.object_tuples_area_reserved_space, LPAGE_SIZE_POW2);
     let heap_dev_offset = tuples_area_size;
@@ -146,6 +150,7 @@ impl BlobdLoader {
       dev,
       heap_dev_offset,
       heap_size,
+      log_commit_threshold,
       log_data_dev_offset,
       log_data_size,
       log_state_dev_offset,
@@ -169,9 +174,7 @@ impl BlobdLoader {
   }
 
   pub async fn load_and_start(self) -> Blobd {
-    let LoadedTuplesFromDevice {
-      heap_allocator: allocator,
-    } = load_tuples_from_device(
+    let LoadedTuplesFromDevice { heap_allocator } = load_tuples_from_device(
       &self.dev,
       &self.pages,
       &self.metrics,
@@ -180,8 +183,11 @@ impl BlobdLoader {
     )
     .await;
 
+    let heap_allocator = Arc::new(Mutex::new(heap_allocator));
+
     let ctx = Arc::new(Ctx {
       log_buffer: LogBuffer::load_from_device(
+        self.dev.clone(),
         BoundedStore::new(self.dev.clone(), 0, self.heap_dev_offset),
         BoundedStore::new(
           self.dev.clone(),
@@ -193,13 +199,15 @@ impl BlobdLoader {
           self.log_state_dev_offset,
           self.pages.spage_size(),
         ),
+        heap_allocator.clone(),
         self.pages.clone(),
         self.metrics.clone(),
         self.heap_dev_offset / self.pages.spage_size(),
+        self.log_commit_threshold,
       )
       .await,
       device: self.dev,
-      heap_allocator: Mutex::new(allocator),
+      heap_allocator,
       metrics: self.metrics.clone(),
       pages: self.pages,
     });

@@ -41,7 +41,7 @@ Structure
 
 pub(crate) const LPAGE_SIZE_POW2: u8 = 24; // Must be 24 because size field is u24.
 pub(crate) const SPAGE_SIZE_POW2_MIN: u8 = 9; // Must be 9 because of RSHIFT9.
-pub(crate) const OBJECT_SIZE_MAX: u32 = 1 << LPAGE_SIZE_POW2;
+pub(crate) const OBJECT_SIZE_MAX: usize = 1 << LPAGE_SIZE_POW2;
 
 // This should be as small as possible. Using only a few bytes out of an allocated page is wasteful; overflowing a bundle is fatal (requires an expensive offline migration).
 pub(crate) const OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD: usize = 7;
@@ -68,8 +68,19 @@ impl ObjectTupleKey {
   }
 
   pub fn from_raw(raw: TinyBuf) -> Self {
-    let hash = blake3::hash(&raw);
-    Self::from_raw_and_hash(raw, hash)
+    if raw.len() <= 32 {
+      ObjectTupleKey::Literal(raw)
+    } else {
+      // Only hash if necessary, save CPU.
+      ObjectTupleKey::Hash(blake3::hash(&raw).into())
+    }
+  }
+
+  pub fn hash(&self) -> [u8; 32] {
+    match self {
+      ObjectTupleKey::Hash(h) => h.clone(),
+      ObjectTupleKey::Literal(l) => blake3::hash(l).into(),
+    }
   }
 }
 
@@ -146,9 +157,9 @@ impl ObjectTuple {
   }
 }
 
-pub(crate) fn get_bundle_index_for_key(hash: &blake3::Hash, bundle_count: u64) -> u64 {
+pub(crate) fn get_bundle_index_for_key(hash: &[u8; 32], bundle_count: u64) -> u64 {
   // Read as big endian so we always use trailing bytes.
-  hash.as_bytes().read_u64_be_at(24) % bundle_count
+  hash.read_u64_be_at(24) % bundle_count
 }
 
 pub(crate) async fn load_bundle_from_device(
