@@ -54,8 +54,10 @@ impl Kv {
       #[cfg(target_os = "linux")]
       uring_sqpoll: None,
     });
-    blobd.format().await;
-    info!("formatted device");
+    if !cfg.do_not_format_device {
+      blobd.format().await;
+      info!("formatted device");
+    };
     let blobd = blobd.load_and_start().await;
     info!("loaded device");
 

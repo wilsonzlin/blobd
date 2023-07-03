@@ -35,6 +35,7 @@ This is both similar and almost the opposite of the stochastic stress tester: th
 - It's not a realistic workload:
   - All ops of the same type are performed at once instead of being interspersed.
   - Objects are created, written, committed, inspected, read, and deleted in the exact same order for every op.
+  - The object key is always exactly 8 bytes for all objects.
   - The object size is identical for all objects.
   - The data being written/read is full of zeros.
 - No correctness checks are done.
@@ -93,6 +94,18 @@ struct Config {
 
   /// Only applies to Kv target. Defaults to 1 GiB.
   log_buffer_size: Option<ByteSize>,
+
+  /// Skips formatting the device.
+  #[serde(default)]
+  skip_device_format: bool,
+
+  /// Skips creating, writing, and committing objects. Useful for benchmarking across invocations, where a previous invocation has already created all objects but didn't delete them.
+  #[serde(default)]
+  skip_creation: bool,
+
+  /// Skips deleting objects.
+  #[serde(default)]
+  skip_deletion: bool,
 }
 
 #[tokio::main]
@@ -118,6 +131,7 @@ async fn main() {
 
   let init_cfg = InitCfg {
     bucket_count,
+    do_not_format_device: cli.skip_device_format,
     log_buffer_size: cli
       .log_buffer_size
       .map(|s| s.as_u64())
@@ -142,76 +156,80 @@ async fn main() {
     TargetType::Lite => Arc::new(Lite::start(init_cfg).await),
   };
 
-  let now = Instant::now();
-  let incomplete_tokens = Arc::new(parking_lot::Mutex::new(Vec::new()));
-  iter(0..object_count)
-    .for_each_concurrent(Some(concurrency), |i| {
-      let blobd = blobd.clone();
-      let incomplete_tokens = incomplete_tokens.clone();
-      async move {
-        let res = blobd
-          .create_object(CreateObjectInput {
-            key: create_u64_be(i).into(),
-            size: object_size,
-          })
-          .await;
-        incomplete_tokens.lock().push((i, res.token));
-      }
-    })
-    .await;
-  let create_exec_secs = now.elapsed().as_secs_f64();
-  info!(
-    create_exec_secs,
-    create_ops_per_second = (object_count as f64) / create_exec_secs,
-    "completed all create ops",
-  );
+  if !cli.skip_creation {
+    let incomplete_tokens = Arc::new(parking_lot::Mutex::new(Vec::new()));
 
-  let now = Instant::now();
-  iter(incomplete_tokens.lock().as_slice())
-    .for_each_concurrent(Some(concurrency), |(key, incomplete_token)| {
-      let blobd = blobd.clone();
-      async move {
-        for offset in (0..object_size).step_by(usz!(lpage_size)) {
-          let data_len = min(object_size - offset, lpage_size);
+    let now = Instant::now();
+    iter(0..object_count)
+      .for_each_concurrent(Some(concurrency), |i| {
+        let blobd = blobd.clone();
+        let incomplete_tokens = incomplete_tokens.clone();
+        async move {
+          let res = blobd
+            .create_object(CreateObjectInput {
+              key: create_u64_be(i).into(),
+              size: object_size,
+            })
+            .await;
+          incomplete_tokens.lock().push((i, res.token));
+        }
+      })
+      .await;
+    let create_exec_secs = now.elapsed().as_secs_f64();
+    info!(
+      create_exec_secs,
+      create_ops_per_second = (object_count as f64) / create_exec_secs,
+      "completed all create ops",
+    );
+
+    let now = Instant::now();
+    iter(incomplete_tokens.lock().as_slice())
+      .for_each_concurrent(Some(concurrency), |(key, incomplete_token)| {
+        let blobd = blobd.clone();
+        async move {
+          for offset in (0..object_size).step_by(usz!(lpage_size)) {
+            let data_len = min(object_size - offset, lpage_size);
+            blobd
+              .write_object(WriteObjectInput {
+                key: create_u64_be(*key).into(),
+                offset,
+                incomplete_token: incomplete_token.clone(),
+                data: &EMPTY_POOL[..usz!(data_len)],
+              })
+              .await;
+          }
+        }
+      })
+      .await;
+    let write_exec_secs = now.elapsed().as_secs_f64();
+    info!(
+      write_exec_secs,
+      write_ops_per_second = object_count as f64 / write_exec_secs,
+      write_mib_per_second =
+        (object_count * object_size) as f64 / write_exec_secs / 1024.0 / 1024.0,
+      "completed all write ops",
+    );
+
+    let now = Instant::now();
+    iter(incomplete_tokens.lock().as_slice())
+      .for_each_concurrent(Some(concurrency), |(_, incomplete_token)| {
+        let blobd = blobd.clone();
+        async move {
           blobd
-            .write_object(WriteObjectInput {
-              key: create_u64_be(*key).into(),
-              offset,
+            .commit_object(CommitObjectInput {
               incomplete_token: incomplete_token.clone(),
-              data: &EMPTY_POOL[..usz!(data_len)],
             })
             .await;
         }
-      }
-    })
-    .await;
-  let write_exec_secs = now.elapsed().as_secs_f64();
-  info!(
-    write_exec_secs,
-    write_ops_per_second = object_count as f64 / write_exec_secs,
-    write_mib_per_second = (object_count * object_size) as f64 / write_exec_secs / 1024.0 / 1024.0,
-    "completed all write ops",
-  );
-
-  let now = Instant::now();
-  iter(incomplete_tokens.lock().as_slice())
-    .for_each_concurrent(Some(concurrency), |(_, incomplete_token)| {
-      let blobd = blobd.clone();
-      async move {
-        blobd
-          .commit_object(CommitObjectInput {
-            incomplete_token: incomplete_token.clone(),
-          })
-          .await;
-      }
-    })
-    .await;
-  let commit_exec_secs = now.elapsed().as_secs_f64();
-  info!(
-    commit_exec_secs,
-    commit_ops_per_second = (object_count as f64) / commit_exec_secs,
-    "completed all commit ops",
-  );
+      })
+      .await;
+    let commit_exec_secs = now.elapsed().as_secs_f64();
+    info!(
+      commit_exec_secs,
+      commit_ops_per_second = (object_count as f64) / commit_exec_secs,
+      "completed all commit ops",
+    );
+  };
 
   let now = Instant::now();
   iter(0..object_count)
@@ -264,26 +282,28 @@ async fn main() {
     "completed all read ops",
   );
 
-  let now = Instant::now();
-  iter(0..object_count)
-    .for_each_concurrent(Some(concurrency), |i| {
-      let blobd = blobd.clone();
-      async move {
-        blobd
-          .delete_object(DeleteObjectInput {
-            key: create_u64_be(i).into(),
-            id: None,
-          })
-          .await;
-      }
-    })
-    .await;
-  let delete_exec_secs = now.elapsed().as_secs_f64();
-  info!(
-    delete_exec_secs,
-    delete_ops_per_second = (object_count as f64) / delete_exec_secs,
-    "completed all delete ops",
-  );
+  if !cli.skip_deletion {
+    let now = Instant::now();
+    iter(0..object_count)
+      .for_each_concurrent(Some(concurrency), |i| {
+        let blobd = blobd.clone();
+        async move {
+          blobd
+            .delete_object(DeleteObjectInput {
+              key: create_u64_be(i).into(),
+              id: None,
+            })
+            .await;
+        }
+      })
+      .await;
+    let delete_exec_secs = now.elapsed().as_secs_f64();
+    info!(
+      delete_exec_secs,
+      delete_ops_per_second = (object_count as f64) / delete_exec_secs,
+      "completed all delete ops",
+    );
+  };
 
   let final_metrics = blobd.metrics();
   for (key, value) in final_metrics {

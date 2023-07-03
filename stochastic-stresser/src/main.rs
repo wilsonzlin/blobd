@@ -218,6 +218,7 @@ async fn main() {
 
   let cfg = InitCfg {
     bucket_count,
+    do_not_format_device: false,
     log_buffer_size: cli
       .log_buffer_size
       .map(|s| s.as_u64())

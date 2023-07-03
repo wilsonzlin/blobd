@@ -65,8 +65,10 @@ impl Lite {
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
       versioning: false,
     });
-    blobd.format().await;
-    info!("formatted device");
+    if !cfg.do_not_format_device {
+      blobd.format().await;
+      info!("formatted device");
+    };
     let blobd = blobd.load().await;
     info!("loaded device");
 
