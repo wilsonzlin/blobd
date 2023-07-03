@@ -4,7 +4,46 @@ use chrono::Utc;
 use off64::u32;
 use off64::u64;
 use parking_lot::Mutex;
+use std::ops::Index;
 use std::sync::Arc;
+
+// This is different from std::io::Read as it allows peeking arbitrary offsets.
+pub(crate) struct ByteConsumer<T: AsRef<[u8]>> {
+  data: T,
+  offset: usize,
+}
+
+impl<T: AsRef<[u8]>> ByteConsumer<T> {
+  pub fn new(data: T) -> ByteConsumer<T> {
+    Self { data, offset: 0 }
+  }
+
+  pub fn consume(&mut self, n: usize) -> &[u8] {
+    let res = &self.data.as_ref()[self.offset..self.offset + n];
+    self.offset += n;
+    res
+  }
+
+  pub fn consumed(&self) -> usize {
+    self.offset
+  }
+
+  pub fn remaining(&self) -> usize {
+    self.data.as_ref().len() - self.offset
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.offset >= self.data.as_ref().len()
+  }
+}
+
+impl<T: AsRef<[u8]>> Index<usize> for ByteConsumer<T> {
+  type Output = u8;
+
+  fn index(&self, index: usize) -> &Self::Output {
+    &self.data.as_ref()[index]
+  }
+}
 
 pub(crate) fn get_now_ms() -> u64 {
   u64!(Utc::now().timestamp_millis())

@@ -5,15 +5,15 @@ use crate::backing_store::BoundedStore;
 use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
 use crate::util::ceil_pow2;
+use crate::util::ByteConsumer;
 use bufpool::buf::Buf;
 use off64::int::create_u24_le;
 use off64::int::create_u40_be;
 use off64::int::Off64ReadInt;
 use off64::u8;
 use off64::usz;
-use serde::Deserialize;
-use serde::Serialize;
 use std::cmp::min;
+use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
@@ -31,7 +31,7 @@ Structure
 } key
 {
   u1 is_inline
-  u7 inline_len
+  u7 + u8[] varint_inline_len // Little endian, each byte represents 7 bits of the number, and ends when the MSB is clear (i.e. less than 128).
   u8[inline_len] inline_data
 } | {
   u40be dev_offset_rshift9 // Must be big endian so that first bit is flag for `is_inline`.
@@ -50,12 +50,9 @@ pub(crate) const OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD: usize = 7;
 // TODO Allow configuring.
 pub(crate) const LOG_ENTRY_DATA_LEN_INLINE_THRESHOLD: usize = 8 * 1024 * 1024;
 
-// The Serialize and Deserialize is for the log only.
-#[derive(PartialEq, Eq, Clone, Hash, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Clone, Hash)]
 pub(crate) enum ObjectTupleKey {
-  #[serde(rename = "0")]
   Hash([u8; 32]),
-  #[serde(rename = "1")]
   Literal(TinyBuf),
 }
 
@@ -83,11 +80,29 @@ impl ObjectTupleKey {
       ObjectTupleKey::Literal(l) => blake3::hash(l).into(),
     }
   }
+
+  pub fn serialise<T: Write>(&self, out: &mut T) {
+    match self {
+      ObjectTupleKey::Hash(h) => {
+        out.write_all(&[255]).unwrap();
+        out.write_all(h).unwrap();
+      }
+      ObjectTupleKey::Literal(l) => {
+        out.write_all(&[u8!(l.len())]).unwrap();
+        out.write_all(l).unwrap();
+      }
+    };
+  }
+
+  pub fn deserialise<T: AsRef<[u8]>>(raw: &mut ByteConsumer<T>) -> Self {
+    match raw.consume(1)[0] {
+      255 => ObjectTupleKey::Hash(raw.consume(32).try_into().unwrap()),
+      n => ObjectTupleKey::Literal(TinyBuf::from_slice(raw.consume(n.into()))),
+    }
+  }
 }
 
-// The Serialize and Deserialize is for the log only, where inline data could be huge (our custom serialisation format only supports up to 128 bytes).
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[derive(Clone)]
 pub(crate) enum ObjectTupleData {
   Inline(TinyBuf),
   // WARNING: Do not reorder fields, the serialised MessagePack format does not store field names.
@@ -101,6 +116,53 @@ impl ObjectTupleData {
       ObjectTupleData::Heap { size, .. } => usz!(*size),
     }
   }
+
+  pub fn serialise<T: Write>(&self, out: &mut T) {
+    match self {
+      ObjectTupleData::Inline(i) => {
+        if i.len() < 128 {
+          // Special handling is required as the MSB must be set even though it's the last byte (because it only has one byte). Also, we need to push a byte even if the length is zero.
+          out.write_all(&[u8!(i.len()) | 0b1000_0000]).unwrap();
+        } else {
+          let mut rem = i.len();
+          while rem != 0 {
+            let mut b = u8!(rem & 0b0111_1111);
+            rem >>= 7;
+            if rem != 0 {
+              b |= 0b1000_0000;
+            };
+            out.write_all(&[b]).unwrap();
+          }
+        };
+        out.write_all(&i).unwrap();
+      }
+      ObjectTupleData::Heap { size, dev_offset } => {
+        assert!(dev_offset >> 9 < (1 << 39));
+        out.write_all(&create_u40_be(dev_offset >> 9)).unwrap();
+        out
+          .write_all(&create_u24_le(size.checked_sub(1).unwrap()))
+          .unwrap();
+      }
+    };
+  }
+
+  pub fn deserialise<T: AsRef<[u8]>>(raw: &mut ByteConsumer<T>) -> Self {
+    if raw[0] & 0b1000_0000 != 0 {
+      let mut len = 0;
+      for i in 0.. {
+        let b = raw.consume(1)[0];
+        len |= usz!(b & 0x7f) << (7 * i);
+        if b & 0b1000_0000 == 0 {
+          break;
+        };
+      }
+      ObjectTupleData::Inline(TinyBuf::from_slice(raw.consume(len.into())))
+    } else {
+      let dev_offset = raw.consume(5).read_u40_be_at(0) << 9;
+      let size = raw.consume(3).read_u24_le_at(0) + 1;
+      ObjectTupleData::Heap { size, dev_offset }
+    }
+  }
 }
 
 pub(crate) struct ObjectTuple {
@@ -109,52 +171,15 @@ pub(crate) struct ObjectTuple {
 }
 
 impl ObjectTuple {
-  pub fn serialise(&self, out: &mut Buf) {
-    match &self.key {
-      ObjectTupleKey::Hash(h) => {
-        out.push(255);
-        out.extend_from_slice(h);
-      }
-      ObjectTupleKey::Literal(l) => {
-        out.push(u8!(l.len()));
-        out.extend_from_slice(l);
-      }
-    };
-    match &self.data {
-      ObjectTupleData::Inline(i) => {
-        assert!(i.len() < 128);
-        out.push(u8!(i.len()) | 0b1000_0000);
-        out.extend_from_slice(i);
-      }
-      ObjectTupleData::Heap { size, dev_offset } => {
-        assert!(dev_offset >> 9 < (1 << 39));
-        out.extend_from_slice(&create_u40_be(dev_offset >> 9));
-        out.extend_from_slice(&create_u24_le(size.checked_sub(1).unwrap()));
-      }
-    };
+  pub fn serialise<T: Write>(&self, out: &mut T) {
+    self.key.serialise(out);
+    self.data.serialise(out);
   }
 
-  pub fn deserialise(mut raw: &[u8]) -> (Self, &[u8]) {
-    macro_rules! consume {
-      ($n:expr) => {{
-        let (l, r) = raw.split_at($n);
-        raw = r;
-        l
-      }};
-    }
-    let key = match consume!(1)[0] {
-      255 => ObjectTupleKey::Hash(consume!(32).try_into().unwrap()),
-      n => ObjectTupleKey::Literal(TinyBuf::from_slice(consume!(n.into()))),
-    };
-    let data = if raw[0] & 0b1000_0000 != 0 {
-      let len = consume!(1)[0] & 0x7f;
-      ObjectTupleData::Inline(TinyBuf::from_slice(consume!(len.into())))
-    } else {
-      let dev_offset = consume!(5).read_u40_be_at(0) << 9;
-      let size = consume!(3).read_u24_le_at(0) + 1;
-      ObjectTupleData::Heap { size, dev_offset }
-    };
-    (Self { key, data }, raw)
+  pub fn deserialise<T: AsRef<[u8]>>(raw: &mut ByteConsumer<T>) -> Self {
+    let key = ObjectTupleKey::deserialise(raw);
+    let data = ObjectTupleData::deserialise(raw);
+    Self { key, data }
   }
 }
 
@@ -167,21 +192,31 @@ pub(crate) async fn load_bundle_from_device(
   dev: &BoundedStore,
   pages: &Pages,
   bundle_idx: u64,
-) -> Vec<ObjectTuple> {
+) -> BundleDeserialiser<Buf> {
   let bundle_raw = dev
     .read_at(bundle_idx * pages.spage_size(), pages.spage_size())
     .await;
-  deserialise_bundle(&bundle_raw)
+  BundleDeserialiser::new(bundle_raw)
 }
 
-pub(crate) fn deserialise_bundle(mut raw: &[u8]) -> Vec<ObjectTuple> {
-  let mut tuples = Vec::new();
-  while !raw.is_empty() && raw[0] != 0 {
-    let (t, rem) = ObjectTuple::deserialise(raw);
-    tuples.push(t);
-    raw = rem;
+// This exists to provide an iterator, possibly saving the cost of a pointless Vec allocation if it's not needed by the caller.
+pub(crate) struct BundleDeserialiser<T: AsRef<[u8]>>(ByteConsumer<T>);
+
+impl<T: AsRef<[u8]>> BundleDeserialiser<T> {
+  pub fn new(raw: T) -> Self {
+    Self(ByteConsumer::new(raw))
   }
-  tuples
+}
+
+impl<T: AsRef<[u8]>> Iterator for BundleDeserialiser<T> {
+  type Item = ObjectTuple;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    if self.0.is_empty() || self.0[0] == 0 {
+      return None;
+    };
+    Some(ObjectTuple::deserialise(&mut self.0))
+  }
 }
 
 pub(crate) fn serialise_bundle(
@@ -241,7 +276,7 @@ pub(crate) async fn load_tuples_from_device(
     let size = min(heap_dev_offset - offset, bufsize);
     let raw = dev.read_at(offset, size).await;
     for bundle_raw in raw.chunks_exact(usz!(pages.spage_size())) {
-      for tuple in deserialise_bundle(bundle_raw) {
+      for tuple in BundleDeserialiser::new(bundle_raw) {
         match tuple.data {
           ObjectTupleData::Inline(_) => {}
           ObjectTupleData::Heap { size, dev_offset } => {

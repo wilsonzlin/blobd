@@ -13,10 +13,14 @@ use crate::op::write_object::write_object_on_heap;
 use crate::pages::Pages;
 use crate::util::ceil_pow2;
 use crate::util::mod_pow2;
+use crate::util::ByteConsumer;
 use crossbeam_channel::RecvTimeoutError;
+use dashmap::DashMap;
 use futures::stream::iter;
 use futures::StreamExt;
 use itertools::Itertools;
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
 use off64::u64;
@@ -24,12 +28,9 @@ use off64::usz;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
-use serde::Deserialize;
-use serde::Serialize;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
 use std::collections::BTreeMap;
-use std::io::Cursor;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -41,11 +42,29 @@ use tokio::runtime::Handle;
 use tokio::spawn;
 use tokio::time::timeout;
 
+/*
+
+Data layout:
+
+{
+  ({
+    u8 == 1 upsert
+    u8[] key_serialised
+    u8[] data_serialised
+  } | {
+    u8 == 2 delete
+    u8[] key_serialised
+  } | {
+    u8 == 3 padding_marker
+  } | {
+    u8 == 4 wraparound_marker
+  })[] persisted_entries
+}[] flushes
+
+*/
+
 const OFFSETOF_VIRTUAL_HEAD: u64 = 0;
 const OFFSETOF_VIRTUAL_TAIL: u64 = OFFSETOF_VIRTUAL_HEAD + 8;
-
-const PERSISTED_ENTRY_TAG_PADDING: u8 = 0xc1; // This byte is never used by MessagePack. When parsing, this means to skip to the next spage as the rest of the current spage is junk.
-const PERSISTED_ENTRY_TAG_WRAPAROUND: u8 = 0xc0; // `nil` in MessagePack. When parsing, this means to skip to the next virtual offset where the physical offset is zero as the rest of the physical log buffer is junk.
 
 pub(crate) enum BundleTask {
   Upsert {
@@ -59,16 +78,14 @@ pub(crate) enum BundleTask {
   },
 }
 
-// WARNING: Do not reorder variant struct fields, as rmp_serde doesn't store field names.
-#[derive(Serialize, Deserialize)]
+// We intentionally don't use structs here, instead using this enum as just the raw u8 tag, as otherwise it makes it hard to try and serialise without owning (i.e. a lot of memcpy) while deserialising with ownership (since it's almost always from raw device read buffers that will be discarded).
+#[derive(FromPrimitive)]
+#[repr(u8)]
 enum LogBufferPersistedEntry {
-  #[serde(rename = "0")]
-  Upsert {
-    key: ObjectTupleKey,
-    data: ObjectTupleData,
-  },
-  #[serde(rename = "1")]
-  Delete { key: ObjectTupleKey },
+  Upsert = 1,
+  Delete,
+  Padding, // When parsing, this means to skip to the next spage as the rest of the current spage is junk.
+  Wraparound, // When parsing, this means to skip to the next virtual offset where the physical offset is zero as the rest of the physical log buffer is junk.
 }
 
 #[derive(Clone)]
@@ -83,10 +100,11 @@ struct CompletedFlushesBacklogEntry {
   tasks: Vec<BundleTask>,
 }
 
-#[derive(Default)]
+// If we just have standard HashMap and hold a read lock, then read performance quickly becomes single-threaded; DashMap is much faster for this reason. However, we still need some way to quickly switch between maps for commits. Therefore, we use a light lock and quickly clone the inner Arc<DashMap> to try and get the best of both worlds.
+#[derive(Clone, Default)]
 struct Overlay {
-  committing: Option<FxHashMap<ObjectTupleKey, LogBufferOverlayEntry>>,
-  uncommitted: FxHashMap<ObjectTupleKey, LogBufferOverlayEntry>,
+  committing: Option<Arc<DashMap<ObjectTupleKey, LogBufferOverlayEntry>>>,
+  uncommitted: Arc<DashMap<ObjectTupleKey, LogBufferOverlayEntry>>,
 }
 
 struct LogBufferState {
@@ -112,7 +130,7 @@ pub(crate) struct LogBuffer {
   overlay: Arc<RwLock<Overlay>>,
   pages: Pages,
   // std::sync::mpsc::Sender is not Send.
-  sender: crossbeam_channel::Sender<(BundleTask, Vec<u8>)>,
+  sender: crossbeam_channel::Sender<BundleTask>,
 }
 
 impl LogBuffer {
@@ -122,7 +140,6 @@ impl LogBuffer {
       .await;
   }
 
-  // TODO Load existing log entries.
   pub async fn load_from_device(
     dev: Arc<dyn BackingStore>,
     bundles_dev: BoundedStore,
@@ -151,52 +168,68 @@ impl LogBuffer {
 
     // TODO Regularly shrink_to_fit if capacity is excessively high.
     let overlay: Arc<RwLock<Overlay>> = {
-      let mut overlay = Overlay::default();
-      let mut vnext = init_virtual_head;
-      let vend = init_virtual_tail;
+      let overlay = Overlay::default();
       // TODO Allow configuring.
       const BUFSIZE: u64 = 1024 * 1024 * 128;
+      let mut buf_vbase = init_virtual_head;
       let mut buf = Vec::new();
-      while vnext < vend {
+      let mut buf_drained: usize = 0;
+      let vend = init_virtual_tail;
+      loop {
+        let vnext = buf_vbase + u64!(buf_drained);
+        if vnext == vend {
+          break;
+        }
         // Use a loop as we may be near the physical end and so will need more than one read.
         loop {
-          let avail = u64!(buf.len());
+          assert!(buf_drained <= buf.len());
+          let avail = u64!(buf.len() - buf_drained);
           assert_eq!(mod_pow2(vnext + avail, pages.spage_size_pow2), 0);
           assert!(vnext + avail <= vend);
           if avail >= BUFSIZE || vnext + avail == vend {
             break;
           }
-          // The buffer's running dry and there's still more to read. Our MessagePack deserialiser is synchronous (so we cannot just use an async buffered reader) and we don't know how long the serialised messages are, so we need to have enough buffered to ensure that any error is because of corruption/bugs and not because unexpected EOF.
+          // The buffer's running dry and there's still more to read. We don't know how long the serialised entries are, so we need to have enough buffered to ensure that any error is because of corruption/bugs and not because unexpected EOF.
           let physical_offset = (vnext + avail) % data_dev.len();
           let to_read = BUFSIZE
             .min(vend - (vnext + avail))
             .min(data_dev.len() - physical_offset);
           let rd = data_dev.read_at(physical_offset, to_read).await;
+          buf_vbase += u64!(buf_drained);
+          buf.drain(..buf_drained);
+          buf_drained = 0;
           buf.extend_from_slice(&rd);
         }
-        let to_skip = if buf[0] == PERSISTED_ENTRY_TAG_PADDING {
-          let to_skip = pages.spage_size() - mod_pow2(vnext, pages.spage_size_pow2);
-          assert!(to_skip > 0 && to_skip < pages.spage_size());
-          to_skip
-        } else if buf[0] == PERSISTED_ENTRY_TAG_WRAPAROUND {
-          let to_skip = data_dev.len() - (vnext % data_dev.len());
-          assert!(to_skip > 0 && to_skip < data_dev.len());
-          to_skip
-        } else {
-          // Use a custom deserialiser so we can use a cursor, which will allow access to the rmp_serde::Deserializer::position method so we can determine the metadata byte size.
-          let mut deserialiser = rmp_serde::Deserializer::new(Cursor::new(&buf));
-          match LogBufferPersistedEntry::deserialize(&mut deserialiser).unwrap() {
-            LogBufferPersistedEntry::Upsert { key, data } => overlay
+        // Use `buf_drained` instead of draining a few bytes from `buf` on each iteration, causing reallocation each time.
+        let mut rd = ByteConsumer::new(&buf[buf_drained..]);
+        let to_skip = match LogBufferPersistedEntry::from_u8(rd.consume(1)[0]).unwrap() {
+          LogBufferPersistedEntry::Upsert => {
+            let key = ObjectTupleKey::deserialise(&mut rd);
+            let data = ObjectTupleData::deserialise(&mut rd);
+            overlay
               .uncommitted
-              .insert(key, LogBufferOverlayEntry::Upserted { data }),
-            LogBufferPersistedEntry::Delete { key } => overlay
+              .insert(key, LogBufferOverlayEntry::Upserted { data });
+            rd.consumed()
+          }
+          LogBufferPersistedEntry::Delete => {
+            let key = ObjectTupleKey::deserialise(&mut rd);
+            overlay
               .uncommitted
-              .insert(key, LogBufferOverlayEntry::Deleted {}),
-          };
-          deserialiser.position()
+              .insert(key, LogBufferOverlayEntry::Deleted {});
+            rd.consumed()
+          }
+          LogBufferPersistedEntry::Padding => {
+            let to_skip = pages.spage_size() - mod_pow2(vnext, pages.spage_size_pow2);
+            assert!(to_skip > 0 && to_skip < pages.spage_size());
+            usz!(to_skip)
+          }
+          LogBufferPersistedEntry::Wraparound => {
+            let to_skip = data_dev.len() - (vnext % data_dev.len());
+            assert!(to_skip > 0 && to_skip < data_dev.len());
+            usz!(to_skip)
+          }
         };
-        vnext += to_skip;
-        buf.drain(..usz!(to_skip));
+        buf_drained += to_skip;
       }
       Arc::new(RwLock::new(overlay))
     };
@@ -229,12 +262,8 @@ impl LogBuffer {
               let mut overlay = overlay.write();
               assert!(overlay.committing.is_none());
               let entry_map = std::mem::take(&mut overlay.uncommitted);
-              let entries = entry_map
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect_vec();
-              overlay.committing = Some(entry_map);
-              entries
+              overlay.committing = Some(entry_map.clone());
+              entry_map
             };
             let commit_up_to_tail = virtual_pointers.try_read().unwrap().tail;
             spawn({
@@ -252,12 +281,13 @@ impl LogBuffer {
                   u64,
                   Vec<(ObjectTupleKey, LogBufferOverlayEntry)>,
                 > = Default::default();
-                for (key, ent) in log_entries_to_commit {
+                for e in log_entries_to_commit.iter() {
+                  let (key, ent) = e.pair();
                   let bundle_idx = get_bundle_index_for_key(&key.hash(), bundle_count);
                   by_bundle_idx
                     .entry(bundle_idx)
                     .or_default()
-                    .push((key, ent));
+                    .push((key.clone(), ent.clone()));
                 }
                 iter(by_bundle_idx)
                   .for_each_concurrent(None, |(bundle_idx, overlay_entries)| {
@@ -267,10 +297,8 @@ impl LogBuffer {
                     let metrics = metrics.clone();
                     let pages = pages.clone();
                     async move {
-                      // TODO Avoid initial Vec allocation.
                       let mut bundle = load_bundle_from_device(&bundles_dev, &pages, bundle_idx)
                         .await
-                        .into_iter()
                         .map(|t| (t.key, t.data))
                         .collect::<FxHashMap<_, _>>();
                       for (key, ent) in overlay_entries {
@@ -359,46 +387,44 @@ impl LogBuffer {
               v.tail = new_virtual_tail;
               v.flush(&state_dev, &pages, &metrics).await;
             };
-            {
-              let mut overlay = overlay.write();
-              for ent in seq_ents {
-                for msg in ent.tasks {
-                  match msg {
-                    BundleTask::Delete { key, signal } => {
-                      metrics
-                        .0
-                        .log_buffer_delete_entry_count
-                        .fetch_add(1, Relaxed);
-                      overlay
-                        .uncommitted
-                        .insert(key, LogBufferOverlayEntry::Deleted {});
-                      signal.signal(());
-                    }
-                    BundleTask::Upsert { key, data, signal } => {
-                      metrics.0.log_buffer_write_entry_count.fetch_add(1, Relaxed);
-                      metrics
-                        .0
-                        .log_buffer_write_entry_data_bytes
-                        .fetch_add(u64!(data.len()), Relaxed);
-                      overlay
-                        .uncommitted
-                        .insert(key, LogBufferOverlayEntry::Upserted { data });
-                      signal.signal(());
-                    }
-                  };
-                }
-                metrics
-                  .0
-                  .log_buffer_flush_total_us
-                  .fetch_add(u64!(ent.started.elapsed().as_micros()), Relaxed);
+            let overlay = overlay.read().clone();
+            for ent in seq_ents {
+              for msg in ent.tasks {
+                match msg {
+                  BundleTask::Delete { key, signal } => {
+                    metrics
+                      .0
+                      .log_buffer_delete_entry_count
+                      .fetch_add(1, Relaxed);
+                    overlay
+                      .uncommitted
+                      .insert(key, LogBufferOverlayEntry::Deleted {});
+                    signal.signal(());
+                  }
+                  BundleTask::Upsert { key, data, signal } => {
+                    metrics.0.log_buffer_write_entry_count.fetch_add(1, Relaxed);
+                    metrics
+                      .0
+                      .log_buffer_write_entry_data_bytes
+                      .fetch_add(u64!(data.len()), Relaxed);
+                    overlay
+                      .uncommitted
+                      .insert(key, LogBufferOverlayEntry::Upserted { data });
+                    signal.signal(());
+                  }
+                };
               }
-            };
+              metrics
+                .0
+                .log_buffer_flush_total_us
+                .fetch_add(u64!(ent.started.elapsed().as_micros()), Relaxed);
+            }
           };
         }
       }
     });
 
-    let (sender, receiver) = crossbeam_channel::unbounded::<(BundleTask, Vec<u8>)>();
+    let (sender, receiver) = crossbeam_channel::unbounded::<BundleTask>();
     thread::spawn({
       let pages = pages.clone();
       let virtual_pointers = virtual_pointers.clone();
@@ -414,8 +440,18 @@ impl LogBuffer {
         while !disconnected {
           // TODO Tune and allow configuring hyperparameter.
           match receiver.recv_timeout(Duration::from_micros(100)) {
-            Ok((task, mut log_buffer_entry_serialised)) => {
-              buf.append(&mut log_buffer_entry_serialised);
+            Ok(task) => {
+              match &task {
+                BundleTask::Upsert { key, data, .. } => {
+                  buf.push(LogBufferPersistedEntry::Upsert as u8);
+                  key.serialise(&mut buf);
+                  data.serialise(&mut buf);
+                }
+                BundleTask::Delete { key, .. } => {
+                  buf.push(LogBufferPersistedEntry::Delete as u8);
+                  key.serialise(&mut buf);
+                }
+              };
               pending_log_flush.push(task);
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -423,8 +459,11 @@ impl LogBuffer {
               disconnected = true;
             }
           };
+          if pending_log_flush.is_empty() {
+            continue;
+          };
           let now = Instant::now();
-          let buf_len = u64!(buf.len());
+          let mut buf_len = u64!(buf.len());
           // TODO Tune and allow configuring duration hyperparameter. This doesn't have to match the `recv_timeout` as they handle different scenarios: the `recv_timeout` determines how often to check in again and see if a flush is necessary, while this determines when a flush is necessary.
           if disconnected
             || buf_len >= MAX_BUF_LEN
@@ -434,7 +473,8 @@ impl LogBuffer {
             // - to avoid double writing the last spage between flushes
             // - to allow parallel flushes (without padding, flushes will likely overlap and clobber each other in the last spage)
             if mod_pow2(buf_len, pages.spage_size_pow2) > 0 {
-              buf.push(PERSISTED_ENTRY_TAG_PADDING);
+              buf.push(LogBufferPersistedEntry::Padding as u8);
+              buf_len += 1;
             };
             metrics
               .0
@@ -498,7 +538,7 @@ impl LogBuffer {
                 let flush_write_started = Instant::now();
                 if let Some(write_wraparound_at) = write_wraparound_at {
                   let mut raw = pages.allocate_uninitialised(pages.spage_size());
-                  raw[0] = PERSISTED_ENTRY_TAG_WRAPAROUND;
+                  raw[0] = LogBufferPersistedEntry::Wraparound as u8;
                   data_dev.write_at(write_wraparound_at, raw).await;
                 }
                 data_dev.write_at(physical_offset, buf_padded).await;
@@ -536,42 +576,34 @@ impl LogBuffer {
     // We're taking a bold step here and not using any in-memory bundle cache, because each read of a random spage is extremely fast on NVMe devices and (assuming good hashing and bucket load factor) we should very rarely re-read a bundle unless we re-read the same key (which we don't need to optimise for).
     // We don't even need to acquire some read lock, because even if the log commits just as we're about to read or reading, the bundle spage read should still be atomic (i.e. either state before or after our commit), and technically either state is legal and correct. For a similar reason, it's safe to just read any `self.overlay` map entry; all entries represent legal persisted state.
     // WARNING: We must never return a value that has not persisted to the log or bundle yet, even if in memory, as that gives misleading confirmation of durable persistence.
-    {
-      let overlay = self.overlay.read();
-      if let Some(e) = overlay.uncommitted.get(&key).cloned().or_else(|| {
+    let overlay = self.overlay.read().clone();
+    match overlay
+      .uncommitted
+      .get(&key)
+      .map(|e| e.clone())
+      .or_else(|| {
         overlay
           .committing
           .as_ref()
-          .and_then(|m| m.get(&key).cloned())
+          .and_then(|m| m.get(&key).map(|e| e.clone()))
       }) {
-        return match e {
-          LogBufferOverlayEntry::Deleted {} => None,
-          LogBufferOverlayEntry::Upserted { data } => Some(data),
-        };
-      };
-    };
-    // TODO OPTIMISATION: Avoid initial Vec allocation.
-    load_bundle_from_device(&self.bundles_dev, &self.pages, bundle_idx)
-      .await
-      .into_iter()
-      .find(|t| t.key == key)
-      .map(|t| t.data)
+      Some(e) => match e {
+        LogBufferOverlayEntry::Deleted {} => None,
+        LogBufferOverlayEntry::Upserted { data } => Some(data),
+      },
+      None => load_bundle_from_device(&self.bundles_dev, &self.pages, bundle_idx)
+        .await
+        .find(|t| t.key == key)
+        .map(|t| t.data),
+    }
   }
 
   pub async fn upsert_tuple(&self, key: TinyBuf, data: ObjectTupleData) {
     let key = ObjectTupleKey::from_raw(key);
     let (fut, signal) = SignalFuture::new();
-    // Serialise outside of flush thread to parallelise.
-    let mut log_entry = Vec::new();
-    LogBufferPersistedEntry::Upsert {
-      key: key.clone(),
-      data: data.clone(),
-    }
-    .serialize(&mut rmp_serde::Serializer::new(&mut log_entry))
-    .unwrap();
     self
       .sender
-      .send((BundleTask::Upsert { key, data, signal }, log_entry))
+      .send(BundleTask::Upsert { key, data, signal })
       .unwrap();
     fut.await;
   }
@@ -579,14 +611,9 @@ impl LogBuffer {
   pub async fn delete_tuple(&self, key: TinyBuf) {
     let key = ObjectTupleKey::from_raw(key);
     let (fut, signal) = SignalFuture::new();
-    // Serialise outside of flush thread to parallelise.
-    let mut log_entry = Vec::new();
-    LogBufferPersistedEntry::Delete { key: key.clone() }
-      .serialize(&mut rmp_serde::Serializer::new(&mut log_entry))
-      .unwrap();
     self
       .sender
-      .send((BundleTask::Delete { key, signal }, log_entry))
+      .send(BundleTask::Delete { key, signal })
       .unwrap();
     fut.await;
   }
