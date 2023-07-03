@@ -20,6 +20,7 @@ use itertools::Itertools;
 use off64::int::Off64ReadInt;
 use off64::int::Off64WriteMutInt;
 use off64::u64;
+use off64::usz;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
@@ -28,6 +29,7 @@ use serde::Serialize;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
 use std::collections::BTreeMap;
+use std::io::Cursor;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -35,14 +37,15 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use tinybuf::TinyBuf;
+use tokio::runtime::Handle;
 use tokio::spawn;
 use tokio::time::timeout;
 
 const OFFSETOF_VIRTUAL_HEAD: u64 = 0;
 const OFFSETOF_VIRTUAL_TAIL: u64 = OFFSETOF_VIRTUAL_HEAD + 8;
 
-const PERSISTED_ENTRY_TAG_PADDING: u8 = 0xc1; // This byte is never used by MessagePack.
-const PERSISTED_ENTRY_TAG_WRAPAROUND: u8 = 0xc0; // `nil` in MessagePack.
+const PERSISTED_ENTRY_TAG_PADDING: u8 = 0xc1; // This byte is never used by MessagePack. When parsing, this means to skip to the next spage as the rest of the current spage is junk.
+const PERSISTED_ENTRY_TAG_WRAPAROUND: u8 = 0xc0; // `nil` in MessagePack. When parsing, this means to skip to the next virtual offset where the physical offset is zero as the rest of the physical log buffer is junk.
 
 pub(crate) enum BundleTask {
   Upsert {
@@ -131,14 +134,72 @@ impl LogBuffer {
     bundle_count: u64,
     commit_threshold: u64,
   ) -> Self {
-    let handle = tokio::runtime::Handle::current();
+    let handle = Handle::current();
 
     let state_raw = state_dev.read_at(0, pages.spage_size()).await;
     let init_virtual_head = state_raw.read_u64_le_at(OFFSETOF_VIRTUAL_HEAD);
     let init_virtual_tail = state_raw.read_u64_le_at(OFFSETOF_VIRTUAL_TAIL);
+    assert_eq!(mod_pow2(init_virtual_head, pages.spage_size_pow2), 0);
+    assert_eq!(mod_pow2(init_virtual_tail, pages.spage_size_pow2), 0);
+    assert!(init_virtual_head <= init_virtual_tail);
+
+    // If this is async-locked, it means someone is writing to the log buffer state.
+    let virtual_pointers = Arc::new(tokio::sync::RwLock::new(LogBufferState {
+      head: init_virtual_head,
+      tail: init_virtual_tail,
+    }));
 
     // TODO Regularly shrink_to_fit if capacity is excessively high.
-    let overlay: Arc<RwLock<Overlay>> = Default::default();
+    let overlay: Arc<RwLock<Overlay>> = {
+      let mut overlay = Overlay::default();
+      let mut vnext = init_virtual_head;
+      let vend = init_virtual_tail;
+      // TODO Allow configuring.
+      const BUFSIZE: u64 = 1024 * 1024 * 128;
+      let mut buf = Vec::new();
+      while vnext < vend {
+        // Use a loop as we may be near the physical end and so will need more than one read.
+        loop {
+          let avail = u64!(buf.len());
+          assert_eq!(mod_pow2(vnext + avail, pages.spage_size_pow2), 0);
+          assert!(vnext + avail <= vend);
+          if avail >= BUFSIZE || vnext + avail == vend {
+            break;
+          }
+          // The buffer's running dry and there's still more to read. Our MessagePack deserialiser is synchronous (so we cannot just use an async buffered reader) and we don't know how long the serialised messages are, so we need to have enough buffered to ensure that any error is because of corruption/bugs and not because unexpected EOF.
+          let physical_offset = (vnext + avail) % data_dev.len();
+          let to_read = BUFSIZE
+            .min(vend - (vnext + avail))
+            .min(data_dev.len() - physical_offset);
+          let rd = data_dev.read_at(physical_offset, to_read).await;
+          buf.extend_from_slice(&rd);
+        }
+        let to_skip = if buf[0] == PERSISTED_ENTRY_TAG_PADDING {
+          let to_skip = pages.spage_size() - mod_pow2(vnext, pages.spage_size_pow2);
+          assert!(to_skip > 0 && to_skip < pages.spage_size());
+          to_skip
+        } else if buf[0] == PERSISTED_ENTRY_TAG_WRAPAROUND {
+          let to_skip = data_dev.len() - (vnext % data_dev.len());
+          assert!(to_skip > 0 && to_skip < data_dev.len());
+          to_skip
+        } else {
+          // Use a custom deserialiser so we can use a cursor, which will allow access to the rmp_serde::Deserializer::position method so we can determine the metadata byte size.
+          let mut deserialiser = rmp_serde::Deserializer::new(Cursor::new(&buf));
+          match LogBufferPersistedEntry::deserialize(&mut deserialiser).unwrap() {
+            LogBufferPersistedEntry::Upsert { key, data } => overlay
+              .uncommitted
+              .insert(key, LogBufferOverlayEntry::Upserted { data }),
+            LogBufferPersistedEntry::Delete { key } => overlay
+              .uncommitted
+              .insert(key, LogBufferOverlayEntry::Deleted {}),
+          };
+          deserialiser.position()
+        };
+        vnext += to_skip;
+        buf.drain(..usz!(to_skip));
+      }
+      Arc::new(RwLock::new(overlay))
+    };
 
     // This separate background future and async channel exists so that completed flushes can continue to be enqueued while this is writing the log state asynchronously.
     let (completer_send, mut completer_recv) =
@@ -148,17 +209,13 @@ impl LogBuffer {
       let metrics = metrics.clone();
       let overlay = overlay.clone();
       let pages = pages.clone();
+      let virtual_pointers = virtual_pointers.clone();
       async move {
         let mut backlog: BTreeMap<u64, CompletedFlushesBacklogEntry> = Default::default();
         let mut next_flush_id: u64 = 0;
         let currently_committing = Arc::new(AtomicBool::new(false));
-        // If this is async-locked, it means someone is writing to the log buffer state.
-        let virtual_pointers = Arc::new(tokio::sync::RwLock::new(LogBufferState {
-          head: init_virtual_head,
-          tail: init_virtual_tail,
-        }));
         loop {
-          // Check if we need to do a commit. We should always be able to unlock `virtual_pointers` because the only other thread that could lock (other than us) is the commit future, which we checked isn't running.
+          // Check if we need to do a commit. We should always be able to read-lock `virtual_pointers` because the only other thread that could write-lock (other than us) is the commit future, which we checked isn't running.
           if !currently_committing.load(Relaxed)
             && virtual_pointers
               .try_read()
@@ -344,6 +401,7 @@ impl LogBuffer {
     let (sender, receiver) = crossbeam_channel::unbounded::<(BundleTask, Vec<u8>)>();
     thread::spawn({
       let pages = pages.clone();
+      let virtual_pointers = virtual_pointers.clone();
       move || {
         let mut virtual_tail = init_virtual_tail;
         // TODO Tune and allow configuring hyperparameter.
@@ -398,6 +456,7 @@ impl LogBuffer {
             };
             let mut buf_padded =
               pages.allocate_uninitialised(ceil_pow2(buf_len, pages.spage_size_pow2));
+
             metrics
               .0
               .log_buffer_flush_padding_bytes
@@ -407,9 +466,25 @@ impl LogBuffer {
 
             let flush_id = next_flush_id;
             next_flush_id += 1;
-            // TODO Wrapping across physical boundaries, ensuring there's enough space, inserting marker if remaining physical space is skipped for wraparound.
-            let physical_offset = virtual_tail;
+            assert_eq!(mod_pow2(virtual_tail, pages.spage_size_pow2), 0);
+            let mut physical_offset = virtual_tail % data_dev.len();
+            let write_wraparound_at = if physical_offset + u64!(buf_padded.len()) > data_dev.len() {
+              // We don't have enough room at the end, so wraparound.
+              // TODO This is not efficient use of space if `buf_padded` is large, as some entries could probably still fit.
+              let write_wraparound_at = physical_offset;
+              virtual_tail += data_dev.len() - physical_offset;
+              physical_offset = 0;
+              assert_eq!(virtual_tail % data_dev.len(), physical_offset);
+              Some(write_wraparound_at)
+            } else {
+              None
+            };
             virtual_tail += u64!(buf_padded.len());
+            // Check this AFTER possible wraparound. This is always safe as `head` can only increase, so we can only have false positives, not false negatives.
+            if virtual_tail - virtual_pointers.blocking_read().head >= data_dev.len() {
+              // TODO Better handling.
+              panic!("out of log buffer space");
+            };
 
             let new_virtual_tail_to_write = virtual_tail;
             let pending_log_flush = pending_log_flush.drain(..).collect_vec();
@@ -418,8 +493,14 @@ impl LogBuffer {
               let completer_send = completer_send.clone();
               let data_dev = data_dev.clone();
               let metrics = metrics.clone();
+              let pages = pages.clone();
               async move {
                 let flush_write_started = Instant::now();
+                if let Some(write_wraparound_at) = write_wraparound_at {
+                  let mut raw = pages.allocate_uninitialised(pages.spage_size());
+                  raw[0] = PERSISTED_ENTRY_TAG_WRAPAROUND;
+                  data_dev.write_at(write_wraparound_at, raw).await;
+                }
                 data_dev.write_at(physical_offset, buf_padded).await;
                 metrics
                   .0

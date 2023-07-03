@@ -1,8 +1,10 @@
 use crate::allocator::Allocator;
+use crate::backing_store::uring::URING_LEN_MAX;
 use crate::backing_store::BackingStore;
 use crate::backing_store::BoundedStore;
 use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
+use crate::util::ceil_pow2;
 use bufpool::buf::Buf;
 use off64::int::create_u24_le;
 use off64::int::create_u40_be;
@@ -11,7 +13,6 @@ use off64::u8;
 use off64::usz;
 use serde::Deserialize;
 use serde::Serialize;
-use std::cmp::max;
 use std::cmp::min;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -208,8 +209,7 @@ pub(crate) async fn format_device_for_tuples(
   pages: &Pages,
   heap_dev_offset: u64,
 ) {
-  // We cannot use 4 GiB as io_uring uses i32 for return value, which we use to assert correct amount of bytes read/written. It's unknown why the max return value is off by 4096, but alas it is.
-  let bufsize = 1024 * 1024 * 1024 * 2 - max(4096, pages.spage_size());
+  let bufsize = ceil_pow2(URING_LEN_MAX, pages.spage_size_pow2);
   let mut blank = pages.slow_allocate_with_zeros(bufsize);
   for offset in (0..heap_dev_offset).step_by(usz!(bufsize)) {
     let size = min(heap_dev_offset - offset, bufsize);
@@ -236,8 +236,7 @@ pub(crate) async fn load_tuples_from_device(
 ) -> LoadedTuplesFromDevice {
   let mut heap_allocator =
     Allocator::new(heap_dev_offset, heap_size, pages.clone(), metrics.clone());
-  // We cannot use 4 GiB as io_uring uses i32 for return value, which we use to assert correct amount of bytes read/written. It's unknown why the max return value is off by 4096, but alas it is.
-  let bufsize = 1024 * 1024 * 1024 * 2 - max(4096, pages.spage_size());
+  let bufsize = ceil_pow2(URING_LEN_MAX, pages.spage_size_pow2);
   for offset in (0..heap_dev_offset).step_by(usz!(bufsize)) {
     let size = min(heap_dev_offset - offset, bufsize);
     let raw = dev.read_at(offset, size).await;

@@ -28,6 +28,9 @@ use strum::Display;
 use tokio::time::Instant;
 use tracing::trace;
 
+// io_uring uses i32 for return value, which we use to assert correct amount of bytes read/written. It's unknown why the max return value is off by 4096, but alas it is.
+pub(crate) const URING_LEN_MAX: u64 = 1024 * 1024 * 1024 * 2 - 4096;
+
 fn assert_result_is_ok(req: &Request, res: i32) -> u32 {
   if res < 0 {
     panic!(

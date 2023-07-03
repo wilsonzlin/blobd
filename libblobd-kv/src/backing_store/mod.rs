@@ -36,6 +36,10 @@ impl BoundedStore {
     }
   }
 
+  pub fn len(&self) -> u64 {
+    self.len
+  }
+
   pub async fn read_at(&self, offset: u64, len: u64) -> Buf {
     assert!(
       offset + len <= self.len,
