@@ -41,7 +41,7 @@ impl<T: AsRef<[u8]>> Index<usize> for ByteConsumer<T> {
   type Output = u8;
 
   fn index(&self, index: usize) -> &Self::Output {
-    &self.data.as_ref()[index]
+    &self.data.as_ref()[self.offset + index]
   }
 }
 

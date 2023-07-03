@@ -79,7 +79,7 @@ pub(crate) enum BundleTask {
 }
 
 // We intentionally don't use structs here, instead using this enum as just the raw u8 tag, as otherwise it makes it hard to try and serialise without owning (i.e. a lot of memcpy) while deserialising with ownership (since it's almost always from raw device read buffers that will be discarded).
-#[derive(FromPrimitive)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, FromPrimitive)]
 #[repr(u8)]
 enum LogBufferPersistedEntry {
   Upsert = 1,
@@ -184,15 +184,16 @@ impl LogBuffer {
         loop {
           assert!(buf_drained <= buf.len());
           let avail = u64!(buf.len() - buf_drained);
-          assert_eq!(mod_pow2(vnext + avail, pages.spage_size_pow2), 0);
-          assert!(vnext + avail <= vend);
-          if avail >= BUFSIZE || vnext + avail == vend {
+          let buf_vafter = vnext + avail;
+          assert_eq!(mod_pow2(buf_vafter, pages.spage_size_pow2), 0);
+          assert!(buf_vafter <= vend);
+          if avail >= BUFSIZE || buf_vafter == vend {
             break;
           }
           // The buffer's running dry and there's still more to read. We don't know how long the serialised entries are, so we need to have enough buffered to ensure that any error is because of corruption/bugs and not because unexpected EOF.
-          let physical_offset = (vnext + avail) % data_dev.len();
+          let physical_offset = buf_vafter % data_dev.len();
           let to_read = BUFSIZE
-            .min(vend - (vnext + avail))
+            .min(vend - buf_vafter)
             .min(data_dev.len() - physical_offset);
           let rd = data_dev.read_at(physical_offset, to_read).await;
           buf_vbase += u64!(buf_drained);

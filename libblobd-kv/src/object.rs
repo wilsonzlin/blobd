@@ -8,8 +8,10 @@ use crate::util::ceil_pow2;
 use crate::util::ByteConsumer;
 use bufpool::buf::Buf;
 use off64::int::create_u24_le;
+use off64::int::create_u32_le;
 use off64::int::create_u40_be;
 use off64::int::Off64ReadInt;
+use off64::u32;
 use off64::u8;
 use off64::usz;
 use std::cmp::min;
@@ -31,8 +33,14 @@ Structure
 } key
 {
   u1 is_inline
-  u7 + u8[] varint_inline_len // Little endian, each byte represents 7 bits of the number, and ends when the MSB is clear (i.e. less than 128).
-  u8[inline_len] inline_data
+  {
+    u7 == 127 is_inline_and_longer_than_127_bytes
+    u32 inline_len
+    u8[inline_len] inline_data
+  } | {
+    u7 inline_len_less_than_127_bytes
+    u8[inline_len] inline_data
+  }
 } | {
   u40be dev_offset_rshift9 // Must be big endian so that first bit is flag for `is_inline`.
   u24 size_minus1 // Subtract one so that the largest value can fit (zero will be handled by inline mode).
@@ -120,19 +128,11 @@ impl ObjectTupleData {
   pub fn serialise<T: Write>(&self, out: &mut T) {
     match self {
       ObjectTupleData::Inline(i) => {
-        if i.len() < 128 {
-          // Special handling is required as the MSB must be set even though it's the last byte (because it only has one byte). Also, we need to push a byte even if the length is zero.
+        if i.len() < 127 {
           out.write_all(&[u8!(i.len()) | 0b1000_0000]).unwrap();
         } else {
-          let mut rem = i.len();
-          while rem != 0 {
-            let mut b = u8!(rem & 0b0111_1111);
-            rem >>= 7;
-            if rem != 0 {
-              b |= 0b1000_0000;
-            };
-            out.write_all(&[b]).unwrap();
-          }
+          out.write_all(&[127 | 0b1000_0000]).unwrap();
+          out.write_all(&create_u32_le(u32!(i.len()))).unwrap();
         };
         out.write_all(&i).unwrap();
       }
@@ -148,15 +148,13 @@ impl ObjectTupleData {
 
   pub fn deserialise<T: AsRef<[u8]>>(raw: &mut ByteConsumer<T>) -> Self {
     if raw[0] & 0b1000_0000 != 0 {
-      let mut len = 0;
-      for i in 0.. {
-        let b = raw.consume(1)[0];
-        len |= usz!(b & 0x7f) << (7 * i);
-        if b & 0b1000_0000 == 0 {
-          break;
-        };
-      }
-      ObjectTupleData::Inline(TinyBuf::from_slice(raw.consume(len.into())))
+      let ilen = raw.consume(1)[0] & 0x7f;
+      let len = if ilen < 127 {
+        usz!(ilen)
+      } else {
+        usz!(raw.consume(4).read_u32_le_at(0))
+      };
+      ObjectTupleData::Inline(TinyBuf::from_slice(raw.consume(len)))
     } else {
       let dev_offset = raw.consume(5).read_u40_be_at(0) << 9;
       let size = raw.consume(3).read_u24_le_at(0) + 1;
