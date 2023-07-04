@@ -112,6 +112,8 @@ impl BlobdProvider for Direct {
     ]
   }
 
+  async fn wait_for_end(&self) {}
+
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput {
     let res = self
       .blobd

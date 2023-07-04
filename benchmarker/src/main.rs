@@ -305,6 +305,9 @@ async fn main() {
     );
   };
 
+  blobd.wait_for_end().await;
+  info!("blobd ended");
+
   let final_metrics = blobd.metrics();
   for (key, value) in final_metrics {
     info!(key, value, "final metric");

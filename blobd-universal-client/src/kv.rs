@@ -127,6 +127,10 @@ impl BlobdProvider for Kv {
     ]
   }
 
+  async fn wait_for_end(&self) {
+    self.blobd.wait_for_any_current_log_buffer_commit().await;
+  }
+
   async fn create_object(&self, _input: CreateObjectInput) -> CreateObjectOutput {
     CreateObjectOutput {
       token: Arc::new(()),

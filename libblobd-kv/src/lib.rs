@@ -237,6 +237,10 @@ impl Blobd {
     &self.metrics
   }
 
+  pub async fn wait_for_any_current_log_buffer_commit(&self) {
+    self.ctx.log_buffer.wait_for_any_current_commit().await;
+  }
+
   pub async fn delete_object(&self, input: OpDeleteObjectInput) -> OpResult<OpDeleteObjectOutput> {
     op_delete_object(self.ctx.clone(), input).await
   }

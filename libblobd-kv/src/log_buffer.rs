@@ -43,6 +43,7 @@ use tinybuf::TinyBuf;
 use tokio::runtime::Handle;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
+use tokio::time::sleep;
 use tokio::time::timeout;
 use tracing::info;
 use tracing::warn;
@@ -133,6 +134,7 @@ impl LogBufferState {
 pub(crate) struct LogBuffer {
   bundle_count: u64,
   bundles_dev: BoundedStore,
+  currently_committing: Arc<AtomicBool>,
   overlay: Arc<RwLock<Overlay>>,
   pages: Pages,
   // std::sync::mpsc::Sender is not Send.
@@ -158,6 +160,7 @@ impl LogBuffer {
     commit_threshold: u64,
   ) -> Self {
     let handle = Handle::current();
+    let currently_committing = Arc::new(AtomicBool::new(false));
 
     let state_raw = state_dev.read_at(0, pages.spage_size()).await;
     let init_virtual_head = state_raw.read_u64_le_at(OFFSETOF_VIRTUAL_HEAD);
@@ -263,6 +266,7 @@ impl LogBuffer {
       tokio::sync::mpsc::unbounded_channel::<(u64, CompletedFlushesBacklogEntry)>();
     spawn({
       let bundles_dev = bundles_dev.clone();
+      let currently_committing = currently_committing.clone();
       let metrics = metrics.clone();
       let overlay = overlay.clone();
       let pages = pages.clone();
@@ -270,7 +274,6 @@ impl LogBuffer {
       async move {
         let mut backlog: AHashMap<u64, CompletedFlushesBacklogEntry> = Default::default();
         let mut next_flush_id: u64 = 0;
-        let currently_committing = Arc::new(AtomicBool::new(false));
         loop {
           // Check if we need to do a commit. We should always be able to read-lock `virtual_pointers` because the only other thread that could write-lock (other than us) is the commit future, which we checked isn't running.
           if !currently_committing.load(Relaxed)
@@ -676,9 +679,16 @@ impl LogBuffer {
     Self {
       bundle_count,
       bundles_dev,
+      currently_committing,
       overlay,
       pages,
       sender,
+    }
+  }
+
+  pub async fn wait_for_any_current_commit(&self) {
+    while self.currently_committing.load(Relaxed) {
+      sleep(Duration::from_millis(1)).await;
     }
   }
 

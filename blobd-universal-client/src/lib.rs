@@ -82,6 +82,7 @@ pub struct DeleteObjectInput {
 #[async_trait]
 pub trait BlobdProvider: Send + Sync {
   fn metrics(&self) -> Vec<(&'static str, u64)>;
+  async fn wait_for_end(&self);
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput;
   async fn write_object<'a>(&'a self, input: WriteObjectInput<'a>);
   async fn commit_object(&self, input: CommitObjectInput) -> CommitObjectOutput;
