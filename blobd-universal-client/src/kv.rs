@@ -93,13 +93,15 @@ impl BlobdProvider for Kv {
 
       ("log_buffer_commit_count", metrics.log_buffer_commit_count()),
       ("log_buffer_commit_entry_count", metrics.log_buffer_commit_entry_count()),
+      ("log_buffer_commit_object_grouping_us", metrics.log_buffer_commit_object_grouping_us()),
       ("log_buffer_commit_object_heap_move_count", metrics.log_buffer_commit_object_heap_move_count()),
+      ("log_buffer_commit_object_heap_move_bytes", metrics.log_buffer_commit_object_heap_move_bytes()),
       ("log_buffer_commit_object_heap_move_write_us", metrics.log_buffer_commit_object_heap_move_write_us()),
       ("log_buffer_commit_bundle_committed_count", metrics.log_buffer_commit_bundle_committed_count()),
       ("log_buffer_commit_bundle_count", metrics.log_buffer_commit_bundle_count()),
       ("log_buffer_commit_bundle_read_us", metrics.log_buffer_commit_bundle_read_us()),
       ("log_buffer_commit_bundle_write_us", metrics.log_buffer_commit_bundle_write_us()),
-      ("log_buffer_commit_total_us", metrics.log_buffer_commit_total_us()),
+      ("log_buffer_commit_bundles_update_us", metrics.log_buffer_commit_bundles_update_us()),
 
       ("log_buffer_flush_entry_count", metrics.log_buffer_flush_entry_count()),
       ("log_buffer_flush_count", metrics.log_buffer_flush_count()),

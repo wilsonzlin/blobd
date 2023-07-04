@@ -29,13 +29,15 @@ pub(crate) struct Inner {
 
   pub(crate) log_buffer_commit_count: AtomicU64,
   pub(crate) log_buffer_commit_entry_count: AtomicU64,
+  pub(crate) log_buffer_commit_object_grouping_us: AtomicU64, // How long it took to group entries into bundles and allocate space for object heap moves.
   pub(crate) log_buffer_commit_object_heap_move_count: AtomicU64, // How many objects were moved to the heap.
+  pub(crate) log_buffer_commit_object_heap_move_bytes: AtomicU64,
   pub(crate) log_buffer_commit_object_heap_move_write_us: AtomicU64, // How long it took to move objects to the heap.
   pub(crate) log_buffer_commit_bundle_committed_count: AtomicU64, // This only differs from `log_buffer_commit_bundle_count` while a commit is executing.
   pub(crate) log_buffer_commit_bundle_count: AtomicU64,
-  pub(crate) log_buffer_commit_bundle_read_us: AtomicU64, // How long it took to read existing bundles from the device.
-  pub(crate) log_buffer_commit_bundle_write_us: AtomicU64, // How long it took to write new bundles to the device.
-  pub(crate) log_buffer_commit_total_us: AtomicU64,
+  pub(crate) log_buffer_commit_bundle_read_us: AtomicU64, // Total amount of time spent reading existing bundles from the device; not equal to wall time since reads are parallelised.
+  pub(crate) log_buffer_commit_bundle_write_us: AtomicU64, // Total amount of time spent writing new bundles to the device; not equal to wall time since writes are parallelised.
+  pub(crate) log_buffer_commit_bundles_update_us: AtomicU64,
 
   pub(crate) log_buffer_flush_entry_count: AtomicU64, // How many log buffer entries were flushed.
   pub(crate) log_buffer_flush_count: AtomicU64, // How many log buffer flushes occurred.
@@ -87,13 +89,15 @@ impl BlobdMetrics {
 
   pub fn log_buffer_commit_count(&self) -> u64 { self.0.log_buffer_commit_count.load(Relaxed) }
   pub fn log_buffer_commit_entry_count(&self) -> u64 { self.0.log_buffer_commit_entry_count.load(Relaxed) }
+  pub fn log_buffer_commit_object_grouping_us(&self) -> u64 { self.0.log_buffer_commit_object_grouping_us.load(Relaxed) }
   pub fn log_buffer_commit_object_heap_move_count(&self) -> u64 { self.0.log_buffer_commit_object_heap_move_count.load(Relaxed) }
+  pub fn log_buffer_commit_object_heap_move_bytes(&self) -> u64 { self.0.log_buffer_commit_object_heap_move_bytes.load(Relaxed) }
   pub fn log_buffer_commit_object_heap_move_write_us(&self) -> u64 { self.0.log_buffer_commit_object_heap_move_write_us.load(Relaxed) }
   pub fn log_buffer_commit_bundle_committed_count(&self) -> u64 { self.0.log_buffer_commit_bundle_committed_count.load(Relaxed) }
   pub fn log_buffer_commit_bundle_count(&self) -> u64 { self.0.log_buffer_commit_bundle_count.load(Relaxed) }
   pub fn log_buffer_commit_bundle_read_us(&self) -> u64 { self.0.log_buffer_commit_bundle_read_us.load(Relaxed) }
   pub fn log_buffer_commit_bundle_write_us(&self) -> u64 { self.0.log_buffer_commit_bundle_write_us.load(Relaxed) }
-  pub fn log_buffer_commit_total_us(&self) -> u64 { self.0.log_buffer_commit_total_us.load(Relaxed) }
+  pub fn log_buffer_commit_bundles_update_us(&self) -> u64 { self.0.log_buffer_commit_bundles_update_us.load(Relaxed) }
 
   pub fn log_buffer_flush_entry_count(&self) -> u64 { self.0.log_buffer_flush_entry_count.load(Relaxed) }
   pub fn log_buffer_flush_count(&self) -> u64 { self.0.log_buffer_flush_count.load(Relaxed) }

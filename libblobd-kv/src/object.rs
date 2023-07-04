@@ -53,11 +53,10 @@ pub(crate) const OBJECT_SIZE_MAX: usize = 1 << LPAGE_SIZE_POW2;
 
 // This should be as small as possible. Using only a few bytes out of an allocated page is wasteful; overflowing a bundle is fatal (requires an expensive offline migration).
 pub(crate) const OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD: usize = 7;
-// This should be an optimal value for maximum SSD write performance, probably around an erase block size.
-// TODO Allow configuring.
-pub(crate) const LOG_ENTRY_DATA_LEN_INLINE_THRESHOLD: usize = 8 * 1024 * 1024;
+// This should be not too high, as otherwise we'll do a lot of double writes when moving out of the log buffer into the heap, and that will also cause log commits to take a long time. The ideal value is the smallest possible such that the write ops per second is the peak.
+pub(crate) const LOG_ENTRY_DATA_LEN_INLINE_THRESHOLD: usize = 8191;
 
-#[derive(PartialEq, Eq, Clone, Hash)]
+#[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub(crate) enum ObjectTupleKey {
   Hash([u8; 32]),
   Literal(TinyBuf),
@@ -109,7 +108,7 @@ impl ObjectTupleKey {
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum ObjectTupleData {
   Inline(TinyBuf),
   // WARNING: Do not reorder fields, the serialised MessagePack format does not store field names.
