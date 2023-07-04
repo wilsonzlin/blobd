@@ -34,6 +34,7 @@ use std::fs::OpenOptions;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::info;
 
 pub mod allocator;
 pub mod backing_store;
@@ -174,6 +175,15 @@ impl BlobdLoader {
   }
 
   pub async fn load_and_start(self) -> Blobd {
+    info!(
+      heap_dev_offset = self.heap_dev_offset,
+      heap_size = self.heap_size,
+      log_data_dev_offset = self.log_data_dev_offset,
+      log_data_size = self.log_data_size,
+      log_state_dev_offset = self.log_state_dev_offset,
+      "loading blobd",
+    );
+
     let LoadedTuplesFromDevice { heap_allocator } = load_tuples_from_device(
       &self.dev,
       &self.pages,

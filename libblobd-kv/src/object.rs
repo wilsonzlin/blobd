@@ -18,6 +18,7 @@ use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tinybuf::TinyBuf;
+use tracing::info;
 
 /*
 
@@ -243,7 +244,10 @@ pub(crate) async fn load_tuples_from_device(
   let mut heap_allocator =
     Allocator::new(heap_dev_offset, heap_size, pages.clone(), metrics.clone());
   let bufsize = ceil_pow2(URING_LEN_MAX, pages.spage_size_pow2);
+  let mut object_count = 0;
   for offset in (0..heap_dev_offset).step_by(usz!(bufsize)) {
+    let progress = format!("{:.2}%", offset as f64 / heap_dev_offset as f64 * 100.0);
+    info!(progress, object_count, "loading tuples");
     let size = min(heap_dev_offset - offset, bufsize);
     let raw = dev.read_at(offset, size).await;
     for bundle_raw in raw.chunks_exact(usz!(pages.spage_size())) {
@@ -258,9 +262,14 @@ pub(crate) async fn load_tuples_from_device(
               .fetch_add(size.into(), Ordering::Relaxed);
           }
         };
-        metrics.0.object_count.fetch_add(1, Ordering::Relaxed);
+        object_count += 1;
       }
     }
   }
+  metrics
+    .0
+    .object_count
+    .store(object_count, Ordering::Relaxed);
+  info!(object_count, "loaded tuples");
   LoadedTuplesFromDevice { heap_allocator }
 }

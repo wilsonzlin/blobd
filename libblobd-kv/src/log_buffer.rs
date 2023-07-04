@@ -176,6 +176,11 @@ impl LogBuffer {
       .0
       .log_buffer_virtual_tail
       .store(init_virtual_tail, Relaxed);
+    info!(
+      virtual_head = init_virtual_head,
+      virtual_tail = init_virtual_tail,
+      "loading log buffer"
+    );
 
     // If this is async-locked, it means someone is writing to the log buffer state.
     let virtual_pointers = Arc::new(tokio::sync::RwLock::new(LogBufferState {
@@ -258,6 +263,7 @@ impl LogBuffer {
         };
         buf_drained += to_skip;
       }
+      info!(entries = overlay.uncommitted.len(), "loaded log buffer");
       Arc::new(RwLock::new(overlay))
     };
 
