@@ -134,11 +134,19 @@ impl LogBufferState {
 pub(crate) struct LogBuffer {
   bundle_count: u64,
   bundles_dev: BoundedStore,
+  commit_threshold: u64,
   currently_committing: Arc<AtomicBool>,
+  data_dev: BoundedStore,
+  dev: Arc<dyn BackingStore>,
+  heap_allocator: Arc<Mutex<Allocator>>,
+  metrics: BlobdMetrics,
   overlay: Arc<RwLock<Overlay>>,
   pages: Pages,
+  state_dev: BoundedStore,
+  virtual_pointers: Arc<tokio::sync::RwLock<LogBufferState>>,
   // std::sync::mpsc::Sender is not Send.
   sender: crossbeam_channel::Sender<BundleTask>,
+  receiver: Mutex<Option<crossbeam_channel::Receiver<BundleTask>>>, // This will be taken and left as None after calling `start`.
 }
 
 impl LogBuffer {
@@ -159,7 +167,6 @@ impl LogBuffer {
     bundle_count: u64,
     commit_threshold: u64,
   ) -> Self {
-    let handle = Handle::current();
     let currently_committing = Arc::new(AtomicBool::new(false));
 
     let state_raw = state_dev.read_at(0, pages.spage_size()).await;
@@ -267,16 +274,47 @@ impl LogBuffer {
       Arc::new(RwLock::new(overlay))
     };
 
+    let (sender, receiver) = crossbeam_channel::unbounded::<BundleTask>();
+
+    Self {
+      bundle_count,
+      bundles_dev,
+      commit_threshold,
+      currently_committing,
+      data_dev,
+      dev,
+      heap_allocator,
+      metrics,
+      overlay,
+      pages,
+      receiver: Mutex::new(Some(receiver)),
+      sender,
+      state_dev,
+      virtual_pointers,
+    }
+  }
+
+  /// WARNING: This must only be called once.
+  pub async fn start_background_threads(&self) {
+    let handle = Handle::current();
+    let init_virtual_tail = self.virtual_pointers.try_read().unwrap().tail;
+    let receiver = self.receiver.lock().take().unwrap();
+    let bundle_count = self.bundle_count;
+    let commit_threshold = self.commit_threshold;
+
     // This separate background future and async channel exists so that completed flushes can continue to be enqueued while this is writing the log state asynchronously.
     let (completer_send, mut completer_recv) =
       tokio::sync::mpsc::unbounded_channel::<(u64, CompletedFlushesBacklogEntry)>();
     spawn({
-      let bundles_dev = bundles_dev.clone();
-      let currently_committing = currently_committing.clone();
-      let metrics = metrics.clone();
-      let overlay = overlay.clone();
-      let pages = pages.clone();
-      let virtual_pointers = virtual_pointers.clone();
+      let bundles_dev = self.bundles_dev.clone();
+      let currently_committing = self.currently_committing.clone();
+      let dev = self.dev.clone();
+      let heap_allocator = self.heap_allocator.clone();
+      let metrics = self.metrics.clone();
+      let overlay = self.overlay.clone();
+      let pages = self.pages.clone();
+      let state_dev = self.state_dev.clone();
+      let virtual_pointers = self.virtual_pointers.clone();
       async move {
         let mut backlog: AHashMap<u64, CompletedFlushesBacklogEntry> = Default::default();
         let mut next_flush_id: u64 = 0;
@@ -545,10 +583,11 @@ impl LogBuffer {
       }
     });
 
-    let (sender, receiver) = crossbeam_channel::unbounded::<BundleTask>();
     thread::spawn({
-      let pages = pages.clone();
-      let virtual_pointers = virtual_pointers.clone();
+      let data_dev = self.data_dev.clone();
+      let metrics = self.metrics.clone();
+      let pages = self.pages.clone();
+      let virtual_pointers = self.virtual_pointers.clone();
       move || {
         let mut virtual_tail = init_virtual_tail;
         // TODO Tune and allow configuring hyperparameter.
@@ -681,15 +720,6 @@ impl LogBuffer {
         }
       }
     });
-
-    Self {
-      bundle_count,
-      bundles_dev,
-      currently_committing,
-      overlay,
-      pages,
-      sender,
-    }
   }
 
   pub async fn wait_for_any_current_commit(&self) {

@@ -13,6 +13,7 @@ use off64::int::Off64ReadInt;
 use off64::u32;
 use off64::u8;
 use off64::usz;
+use parking_lot::Mutex;
 use std::cmp::min;
 use std::io::Write;
 use std::sync::atomic::Ordering;
@@ -230,19 +231,13 @@ pub(crate) async fn format_device_for_tuples(
   }
 }
 
-pub(crate) struct LoadedTuplesFromDevice {
-  pub heap_allocator: Allocator,
-}
-
 pub(crate) async fn load_tuples_from_device(
   dev: &Arc<dyn BackingStore>,
   pages: &Pages,
   metrics: &BlobdMetrics,
+  heap_allocator: Arc<Mutex<Allocator>>,
   heap_dev_offset: u64,
-  heap_size: u64,
-) -> LoadedTuplesFromDevice {
-  let mut heap_allocator =
-    Allocator::new(heap_dev_offset, heap_size, pages.clone(), metrics.clone());
+) {
   let bufsize = ceil_pow2(URING_LEN_MAX, pages.spage_size_pow2);
   let mut object_count = 0;
   for offset in (0..heap_dev_offset).step_by(usz!(bufsize)) {
@@ -255,7 +250,7 @@ pub(crate) async fn load_tuples_from_device(
         match data {
           ObjectTupleData::Inline(_) => {}
           ObjectTupleData::Heap { size, dev_offset } => {
-            heap_allocator.mark_as_allocated(dev_offset, size);
+            heap_allocator.lock().mark_as_allocated(dev_offset, size);
             metrics
               .0
               .heap_object_data_bytes
@@ -271,5 +266,4 @@ pub(crate) async fn load_tuples_from_device(
     .object_count
     .store(object_count, Ordering::Relaxed);
   info!(object_count, "loaded tuples");
-  LoadedTuplesFromDevice { heap_allocator }
 }

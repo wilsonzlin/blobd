@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+use crate::allocator::Allocator;
 use crate::backing_store::file::FileBackingStore;
 #[cfg(target_os = "linux")]
 use crate::backing_store::uring::UringBackingStore;
@@ -17,7 +18,6 @@ use log_buffer::LogBuffer;
 use metrics::BlobdMetrics;
 use object::format_device_for_tuples;
 use object::load_tuples_from_device;
-use object::LoadedTuplesFromDevice;
 use op::delete_object::op_delete_object;
 use op::delete_object::OpDeleteObjectInput;
 use op::delete_object::OpDeleteObjectOutput;
@@ -34,6 +34,7 @@ use std::fs::OpenOptions;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::join;
 use tracing::info;
 
 pub mod allocator;
@@ -184,19 +185,22 @@ impl BlobdLoader {
       "loading blobd",
     );
 
-    let LoadedTuplesFromDevice { heap_allocator } = load_tuples_from_device(
-      &self.dev,
-      &self.pages,
-      &self.metrics,
+    let heap_allocator = Arc::new(Mutex::new(Allocator::new(
       self.heap_dev_offset,
       self.heap_size,
-    )
-    .await;
+      self.pages.clone(),
+      self.metrics.clone(),
+    )));
 
-    let heap_allocator = Arc::new(Mutex::new(heap_allocator));
-
-    let ctx = Arc::new(Ctx {
-      log_buffer: LogBuffer::load_from_device(
+    let (_, log_buffer) = join! {
+      load_tuples_from_device(
+        &self.dev,
+        &self.pages,
+        &self.metrics,
+        heap_allocator.clone(),
+        self.heap_dev_offset,
+      ),
+      LogBuffer::load_from_device(
         self.dev.clone(),
         BoundedStore::new(self.dev.clone(), 0, self.heap_dev_offset),
         BoundedStore::new(
@@ -214,8 +218,14 @@ impl BlobdLoader {
         self.metrics.clone(),
         self.heap_dev_offset / self.pages.spage_size(),
         self.log_commit_threshold,
-      )
-      .await,
+      ),
+    };
+
+    // WARNING: Only start after `load_tuples_from_device` has been completed; we cannot simply call this immediately after `LogBuffer::load_from_device`.
+    log_buffer.start_background_threads().await;
+
+    let ctx = Arc::new(Ctx {
+      log_buffer,
       device: self.dev,
       heap_allocator,
       metrics: self.metrics.clone(),
