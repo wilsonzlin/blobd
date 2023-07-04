@@ -21,6 +21,7 @@ use libblobd_kv::BlobdCfg;
 use libblobd_kv::BlobdCfgBackingStore;
 use libblobd_kv::BlobdLoader;
 use off64::u8;
+use off64::usz;
 use std::sync::Arc;
 use tracing::info;
 
@@ -41,8 +42,9 @@ impl Kv {
       backing_store: BlobdCfgBackingStore::Uring,
       device_len: device_cfg.len,
       device_path: device_cfg.path.clone(),
-      log_buffer_commit_threshold: cfg.log_buffer_size / 2,
+      log_buffer_commit_threshold: cfg.log_buffer_size / 2, // TODO
       log_buffer_size: cfg.log_buffer_size,
+      log_entry_data_len_inline_threshold: usz!(cfg.lpage_size), // TODO
       object_tuples_area_reserved_space: cfg.object_count * 512,
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
       #[cfg(target_os = "linux")]

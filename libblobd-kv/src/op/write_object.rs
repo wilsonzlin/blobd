@@ -4,7 +4,6 @@ use crate::allocator::Allocator;
 use crate::ctx::Ctx;
 use crate::metrics::BlobdMetrics;
 use crate::object::ObjectTupleData;
-use crate::object::LOG_ENTRY_DATA_LEN_INLINE_THRESHOLD;
 use crate::object::OBJECT_SIZE_MAX;
 use crate::pages::Pages;
 use crate::util::ceil_pow2;
@@ -57,7 +56,7 @@ pub(crate) async fn op_write_object(
   };
 
   // This will go into the log first, so the threshold is not `OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD`.
-  let tuple_data = if size <= LOG_ENTRY_DATA_LEN_INLINE_THRESHOLD {
+  let tuple_data = if size <= ctx.log_entry_data_len_inline_threshold {
     ObjectTupleData::Inline(req.data.into())
   } else {
     let (dev_offset, size_on_dev) = allocate_object_on_heap(

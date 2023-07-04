@@ -8,6 +8,7 @@ use crate::backing_store::uring::UringBackingStore;
 use crate::backing_store::uring::UringCfg;
 use crate::backing_store::BackingStore;
 use crate::object::LPAGE_SIZE_POW2;
+use crate::object::OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD;
 use crate::object::SPAGE_SIZE_POW2_MIN;
 use crate::pages::Pages;
 use crate::util::ceil_pow2;
@@ -63,6 +64,8 @@ pub struct BlobdCfg {
   pub device_len: u64,
   pub log_buffer_commit_threshold: u64,
   pub log_buffer_size: u64,
+  // This should be not too high, as otherwise we'll do a lot of double writes when moving out of the log buffer into the heap, and that will also cause log commits to take a long time. The ideal value is the smallest possible such that the write ops per second is the peak.
+  pub log_entry_data_len_inline_threshold: usize,
   /// The amount of bytes to reserve for storing object tuples. This cannot be changed later on. This will be rounded up to the nearest multiple of the lpage size.
   pub object_tuples_area_reserved_space: u64,
   /// The device must support atomic writes of this size. It's recommended to use the physical sector size, instead of the logical sector size, for better performance. On Linux, use `blockdev --getpbsz /dev/my_device` to get the physical sector size.
@@ -91,14 +94,15 @@ impl BlobdCfg {
 pub struct BlobdLoader {
   cfg: BlobdCfg,
   dev: Arc<dyn BackingStore>,
-  pages: Pages,
-  metrics: BlobdMetrics,
   heap_dev_offset: u64,
   heap_size: u64,
   log_commit_threshold: u64,
   log_data_dev_offset: u64,
   log_data_size: u64,
+  log_entry_data_len_inline_threshold: usize,
   log_state_dev_offset: u64,
+  metrics: BlobdMetrics,
+  pages: Pages,
 }
 
 impl BlobdLoader {
@@ -111,6 +115,9 @@ impl BlobdLoader {
     let log_commit_threshold = cfg.log_buffer_commit_threshold;
     assert!(log_data_size > 1024 * 1024 * 64); // Sanity check: ensure reasonable value and not misconfiguration.
     assert!(log_commit_threshold < log_data_size);
+
+    let log_entry_data_len_inline_threshold = cfg.log_entry_data_len_inline_threshold;
+    assert!(log_entry_data_len_inline_threshold > OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD);
 
     let tuples_area_size = ceil_pow2(cfg.object_tuples_area_reserved_space, LPAGE_SIZE_POW2);
     let heap_dev_offset = tuples_area_size;
@@ -155,6 +162,7 @@ impl BlobdLoader {
       log_commit_threshold,
       log_data_dev_offset,
       log_data_size,
+      log_entry_data_len_inline_threshold,
       log_state_dev_offset,
       metrics,
       pages,
@@ -225,9 +233,10 @@ impl BlobdLoader {
     log_buffer.start_background_threads().await;
 
     let ctx = Arc::new(Ctx {
-      log_buffer,
       device: self.dev,
       heap_allocator,
+      log_buffer,
+      log_entry_data_len_inline_threshold: self.log_entry_data_len_inline_threshold,
       metrics: self.metrics.clone(),
       pages: self.pages,
     });

@@ -10,6 +10,7 @@ pub(crate) struct Ctx {
   pub device: Arc<dyn BackingStore>,
   pub heap_allocator: Arc<Mutex<Allocator>>,
   pub log_buffer: LogBuffer,
+  pub log_entry_data_len_inline_threshold: usize,
   pub metrics: BlobdMetrics,
   pub pages: Pages,
 }
