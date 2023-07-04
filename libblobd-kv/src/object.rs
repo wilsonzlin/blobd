@@ -1,7 +1,6 @@
 use crate::allocator::Allocator;
 use crate::backing_store::uring::URING_LEN_MAX;
 use crate::backing_store::BackingStore;
-use crate::backing_store::BoundedStore;
 use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
 use crate::util::ceil_pow2;
@@ -163,38 +162,9 @@ impl ObjectTupleData {
   }
 }
 
-pub(crate) struct ObjectTuple {
-  pub key: ObjectTupleKey,
-  pub data: ObjectTupleData,
-}
-
-impl ObjectTuple {
-  pub fn serialise<T: Write>(&self, out: &mut T) {
-    self.key.serialise(out);
-    self.data.serialise(out);
-  }
-
-  pub fn deserialise<T: AsRef<[u8]>>(raw: &mut ByteConsumer<T>) -> Self {
-    let key = ObjectTupleKey::deserialise(raw);
-    let data = ObjectTupleData::deserialise(raw);
-    Self { key, data }
-  }
-}
-
 pub(crate) fn get_bundle_index_for_key(hash: &[u8; 32], bundle_count: u64) -> u64 {
   // Read as big endian so we always use trailing bytes.
   hash.read_u64_be_at(24) % bundle_count
-}
-
-pub(crate) async fn load_bundle_from_device(
-  dev: &BoundedStore,
-  pages: &Pages,
-  bundle_idx: u64,
-) -> BundleDeserialiser<Buf> {
-  let bundle_raw = dev
-    .read_at(bundle_idx * pages.spage_size(), pages.spage_size())
-    .await;
-  BundleDeserialiser::new(bundle_raw)
 }
 
 // This exists to provide an iterator, possibly saving the cost of a pointless Vec allocation if it's not needed by the caller.
@@ -207,23 +177,27 @@ impl<T: AsRef<[u8]>> BundleDeserialiser<T> {
 }
 
 impl<T: AsRef<[u8]>> Iterator for BundleDeserialiser<T> {
-  type Item = ObjectTuple;
+  type Item = (ObjectTupleKey, ObjectTupleData);
 
   fn next(&mut self) -> Option<Self::Item> {
     if self.0.is_empty() || self.0[0] == 0 {
       return None;
     };
-    Some(ObjectTuple::deserialise(&mut self.0))
+    Some((
+      ObjectTupleKey::deserialise(&mut self.0),
+      ObjectTupleData::deserialise(&mut self.0),
+    ))
   }
 }
 
 pub(crate) fn serialise_bundle(
   pages: &Pages,
-  tuples: impl IntoIterator<Item = ObjectTuple>,
+  tuples: impl IntoIterator<Item = (ObjectTupleKey, ObjectTupleData)>,
 ) -> Buf {
   let mut buf = pages.allocate(pages.spage_size());
-  for t in tuples {
-    t.serialise(&mut buf);
+  for (key, data) in tuples {
+    key.serialise(&mut buf);
+    data.serialise(&mut buf);
   }
   if buf.len() < usz!(pages.spage_size()) {
     // End of tuples marker.
@@ -274,8 +248,8 @@ pub(crate) async fn load_tuples_from_device(
     let size = min(heap_dev_offset - offset, bufsize);
     let raw = dev.read_at(offset, size).await;
     for bundle_raw in raw.chunks_exact(usz!(pages.spage_size())) {
-      for tuple in BundleDeserialiser::new(bundle_raw) {
-        match tuple.data {
+      for (_key, data) in BundleDeserialiser::new(bundle_raw) {
+        match data {
           ObjectTupleData::Inline(_) => {}
           ObjectTupleData::Heap { size, dev_offset } => {
             heap_allocator.mark_as_allocated(dev_offset, size);

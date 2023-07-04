@@ -3,9 +3,8 @@ use crate::backing_store::BackingStore;
 use crate::backing_store::BoundedStore;
 use crate::metrics::BlobdMetrics;
 use crate::object::get_bundle_index_for_key;
-use crate::object::load_bundle_from_device;
 use crate::object::serialise_bundle;
-use crate::object::ObjectTuple;
+use crate::object::BundleDeserialiser;
 use crate::object::ObjectTupleData;
 use crate::object::ObjectTupleKey;
 use crate::object::OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD;
@@ -31,6 +30,7 @@ use rustc_hash::FxHashMap;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
 use std::collections::BTreeMap;
+use std::mem::take;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -40,7 +40,10 @@ use std::time::Instant;
 use tinybuf::TinyBuf;
 use tokio::runtime::Handle;
 use tokio::spawn;
+use tokio::task::spawn_blocking;
 use tokio::time::timeout;
+use tracing::info;
+use tracing::warn;
 
 /*
 
@@ -101,6 +104,7 @@ struct CompletedFlushesBacklogEntry {
 }
 
 // If we just have standard HashMap and hold a read lock, then read performance quickly becomes single-threaded; DashMap is much faster for this reason. However, we still need some way to quickly switch between maps for commits. Therefore, we use a light lock and quickly clone the inner Arc<DashMap> to try and get the best of both worlds.
+// WARNING: Do not use FxHasher, as it makes the maps poorly distributed and causes high CPU usage from many key comparisons.
 #[derive(Clone, Default)]
 struct Overlay {
   committing: Option<Arc<DashMap<ObjectTupleKey, LogBufferOverlayEntry>>>,
@@ -159,6 +163,14 @@ impl LogBuffer {
     assert_eq!(mod_pow2(init_virtual_head, pages.spage_size_pow2), 0);
     assert_eq!(mod_pow2(init_virtual_tail, pages.spage_size_pow2), 0);
     assert!(init_virtual_head <= init_virtual_tail);
+    metrics
+      .0
+      .log_buffer_virtual_head
+      .store(init_virtual_head, Relaxed);
+    metrics
+      .0
+      .log_buffer_virtual_tail
+      .store(init_virtual_tail, Relaxed);
 
     // If this is async-locked, it means someone is writing to the log buffer state.
     let virtual_pointers = Arc::new(tokio::sync::RwLock::new(LogBufferState {
@@ -190,7 +202,7 @@ impl LogBuffer {
           if avail >= BUFSIZE || buf_vafter == vend {
             break;
           }
-          // The buffer's running dry and there's still more to read. We don't know how long the serialised entries are, so we need to have enough buffered to ensure that any error is because of corruption/bugs and not because unexpected EOF.
+          // The buffer's running dry and there's still more to read. We don't know how long each serialised entry is, so we need to have enough buffered to ensure that any deserialisation error is because of corruption/bugs and not because unexpected EOF.
           let physical_offset = buf_vafter % data_dev.len();
           let to_read = BUFSIZE
             .min(vend - buf_vafter)
@@ -207,6 +219,11 @@ impl LogBuffer {
           LogBufferPersistedEntry::Upsert => {
             let key = ObjectTupleKey::deserialise(&mut rd);
             let data = ObjectTupleData::deserialise(&mut rd);
+            metrics.0.log_buffer_write_entry_count.fetch_add(1, Relaxed);
+            metrics
+              .0
+              .log_buffer_write_entry_data_bytes
+              .fetch_add(u64!(data.len()), Relaxed);
             overlay
               .uncommitted
               .insert(key, LogBufferOverlayEntry::Upserted { data });
@@ -214,6 +231,10 @@ impl LogBuffer {
           }
           LogBufferPersistedEntry::Delete => {
             let key = ObjectTupleKey::deserialise(&mut rd);
+            metrics
+              .0
+              .log_buffer_delete_entry_count
+              .fetch_add(1, Relaxed);
             overlay
               .uncommitted
               .insert(key, LogBufferOverlayEntry::Deleted {});
@@ -262,11 +283,21 @@ impl LogBuffer {
             let log_entries_to_commit = {
               let mut overlay = overlay.write();
               assert!(overlay.committing.is_none());
-              let entry_map = std::mem::take(&mut overlay.uncommitted);
+              let entry_map = take(&mut overlay.uncommitted);
               overlay.committing = Some(entry_map.clone());
               entry_map
             };
             let commit_up_to_tail = virtual_pointers.try_read().unwrap().tail;
+            info!(
+              entries = log_entries_to_commit.len(),
+              up_to_virtual_tail = commit_up_to_tail,
+              "beginning log buffer commit"
+            );
+            metrics.0.log_buffer_commit_count.fetch_add(1, Relaxed);
+            metrics
+              .0
+              .log_buffer_commit_entry_count
+              .fetch_add(u64!(log_entries_to_commit.len()), Relaxed);
             spawn({
               let bundles_dev = bundles_dev.clone();
               let currently_committing = currently_committing.clone();
@@ -278,18 +309,21 @@ impl LogBuffer {
               let state_dev = state_dev.clone();
               let virtual_pointers = virtual_pointers.clone();
               async move {
-                let mut by_bundle_idx: FxHashMap<
-                  u64,
-                  Vec<(ObjectTupleKey, LogBufferOverlayEntry)>,
-                > = Default::default();
-                for e in log_entries_to_commit.iter() {
-                  let (key, ent) = e.pair();
-                  let bundle_idx = get_bundle_index_for_key(&key.hash(), bundle_count);
-                  by_bundle_idx
-                    .entry(bundle_idx)
-                    .or_default()
-                    .push((key.clone(), ent.clone()));
-                }
+                let commit_started = Instant::now();
+                let by_bundle_idx = spawn_blocking(move || {
+                  log_entries_to_commit
+                    .iter()
+                    .map(|e| (e.key().clone(), e.value().clone()))
+                    .into_group_map_by(|(key, _)| {
+                      get_bundle_index_for_key(&key.hash(), bundle_count)
+                    })
+                })
+                .await
+                .unwrap();
+                metrics
+                  .0
+                  .log_buffer_commit_bundle_count
+                  .fetch_add(u64!(by_bundle_idx.len()), Relaxed);
                 iter(by_bundle_idx)
                   .for_each_concurrent(None, |(bundle_idx, overlay_entries)| {
                     let bundles_dev = bundles_dev.clone();
@@ -298,10 +332,17 @@ impl LogBuffer {
                     let metrics = metrics.clone();
                     let pages = pages.clone();
                     async move {
-                      let mut bundle = load_bundle_from_device(&bundles_dev, &pages, bundle_idx)
-                        .await
-                        .map(|t| (t.key, t.data))
-                        .collect::<FxHashMap<_, _>>();
+                      let read_started = Instant::now();
+                      let bundle_raw = bundles_dev
+                        .read_at(bundle_idx * pages.spage_size(), pages.spage_size())
+                        .await;
+                      metrics
+                        .0
+                        .log_buffer_commit_bundle_read_us
+                        .fetch_add(u64!(read_started.elapsed().as_micros()), Relaxed);
+
+                      let mut bundle =
+                        BundleDeserialiser::new(bundle_raw).collect::<FxHashMap<_, _>>();
                       for (key, ent) in overlay_entries {
                         let existing_object_to_delete = match ent {
                           LogBufferOverlayEntry::Deleted {} => bundle.remove(&key),
@@ -314,9 +355,25 @@ impl LogBuffer {
                               {
                                 // We're now writing to the tuples area which has a much smaller treshold for inline data than the log buffer, so we need to rewrite the object.
                                 // TODO Handle ENOSPC.
-                                write_object_on_heap(&dev, &heap_allocator, &pages, &metrics, &data)
-                                  .await
-                                  .unwrap()
+                                let write_started = Instant::now();
+                                let obj = write_object_on_heap(
+                                  &dev,
+                                  &heap_allocator,
+                                  &pages,
+                                  &metrics,
+                                  &data,
+                                )
+                                .await
+                                .unwrap();
+                                metrics
+                                  .0
+                                  .log_buffer_commit_object_heap_move_count
+                                  .fetch_add(1, Relaxed);
+                                metrics
+                                  .0
+                                  .log_buffer_commit_object_heap_move_write_us
+                                  .fetch_add(u64!(write_started.elapsed().as_micros()), Relaxed);
+                                obj
                               }
                               d => d,
                             };
@@ -336,16 +393,19 @@ impl LogBuffer {
                         };
                       }
                       // TODO Better error/panic message on overflow.
-                      // TODO Avoid clone.
-                      let new_bundle = serialise_bundle(
-                        &pages,
-                        bundle
-                          .into_iter()
-                          .map(|(key, data)| ObjectTuple { key, data }),
-                      );
+                      let new_bundle = serialise_bundle(&pages, bundle);
+                      let write_started = Instant::now();
                       dev
                         .write_at(bundle_idx * pages.spage_size(), new_bundle)
                         .await;
+                      metrics
+                        .0
+                        .log_buffer_commit_bundle_committed_count
+                        .fetch_add(1, Relaxed);
+                      metrics
+                        .0
+                        .log_buffer_commit_bundle_write_us
+                        .fetch_add(u64!(write_started.elapsed().as_micros()), Relaxed);
                     }
                   })
                   .await;
@@ -356,6 +416,11 @@ impl LogBuffer {
                 };
                 assert!(overlay.write().committing.take().is_some());
                 currently_committing.store(false, Relaxed);
+                metrics
+                  .0
+                  .log_buffer_commit_total_us
+                  .fetch_add(u64!(commit_started.elapsed().as_micros()), Relaxed);
+                info!("log buffer commit completed");
               }
             });
           }
@@ -371,55 +436,60 @@ impl LogBuffer {
             assert!(backlog.insert(flush_id, ent).is_none());
           }
 
-          let mut seq_ents = Vec::new();
+          let mut flushed_entries = Vec::new();
           while backlog
             .first_key_value()
             .filter(|(id, _)| **id == next_flush_id)
             .is_some()
           {
             let (_, ent) = backlog.pop_first().unwrap();
-            seq_ents.push(ent);
+            flushed_entries.push(ent);
             next_flush_id += 1;
           }
-          if !seq_ents.is_empty() {
-            let new_virtual_tail = seq_ents.last().unwrap().new_virtual_tail_to_write;
+          if !flushed_entries.is_empty() {
+            let new_virtual_tail = flushed_entries.last().unwrap().new_virtual_tail_to_write;
             {
               let mut v = virtual_pointers.write().await;
               v.tail = new_virtual_tail;
               v.flush(&state_dev, &pages, &metrics).await;
             };
             let overlay = overlay.read().clone();
-            for ent in seq_ents {
-              for msg in ent.tasks {
-                match msg {
-                  BundleTask::Delete { key, signal } => {
-                    metrics
-                      .0
-                      .log_buffer_delete_entry_count
-                      .fetch_add(1, Relaxed);
-                    overlay
-                      .uncommitted
-                      .insert(key, LogBufferOverlayEntry::Deleted {});
-                    signal.signal(());
-                  }
-                  BundleTask::Upsert { key, data, signal } => {
-                    metrics.0.log_buffer_write_entry_count.fetch_add(1, Relaxed);
-                    metrics
-                      .0
-                      .log_buffer_write_entry_data_bytes
-                      .fetch_add(u64!(data.len()), Relaxed);
-                    overlay
-                      .uncommitted
-                      .insert(key, LogBufferOverlayEntry::Upserted { data });
-                    signal.signal(());
-                  }
-                };
+            let metrics = metrics.clone();
+            spawn_blocking(move || {
+              for ent in flushed_entries {
+                for msg in ent.tasks {
+                  match msg {
+                    BundleTask::Delete { key, signal } => {
+                      metrics
+                        .0
+                        .log_buffer_delete_entry_count
+                        .fetch_add(1, Relaxed);
+                      overlay
+                        .uncommitted
+                        .insert(key, LogBufferOverlayEntry::Deleted {});
+                      signal.signal(());
+                    }
+                    BundleTask::Upsert { key, data, signal } => {
+                      metrics.0.log_buffer_write_entry_count.fetch_add(1, Relaxed);
+                      metrics
+                        .0
+                        .log_buffer_write_entry_data_bytes
+                        .fetch_add(u64!(data.len()), Relaxed);
+                      overlay
+                        .uncommitted
+                        .insert(key, LogBufferOverlayEntry::Upserted { data });
+                      signal.signal(());
+                    }
+                  };
+                }
+                metrics
+                  .0
+                  .log_buffer_flush_total_us
+                  .fetch_add(u64!(ent.started.elapsed().as_micros()), Relaxed);
               }
-              metrics
-                .0
-                .log_buffer_flush_total_us
-                .fetch_add(u64!(ent.started.elapsed().as_micros()), Relaxed);
-            }
+            })
+            .await
+            .unwrap();
           };
         }
       }
@@ -512,6 +582,7 @@ impl LogBuffer {
             let write_wraparound_at = if physical_offset + u64!(buf_padded.len()) > data_dev.len() {
               // We don't have enough room at the end, so wraparound.
               // TODO This is not efficient use of space if `buf_padded` is large, as some entries could probably still fit.
+              warn!("log buffer wrapped");
               let write_wraparound_at = physical_offset;
               virtual_tail += data_dev.len() - physical_offset;
               physical_offset = 0;
@@ -592,10 +663,17 @@ impl LogBuffer {
         LogBufferOverlayEntry::Deleted {} => None,
         LogBufferOverlayEntry::Upserted { data } => Some(data),
       },
-      None => load_bundle_from_device(&self.bundles_dev, &self.pages, bundle_idx)
-        .await
-        .find(|t| t.key == key)
-        .map(|t| t.data),
+      None => BundleDeserialiser::new(
+        self
+          .bundles_dev
+          .read_at(
+            bundle_idx * self.pages.spage_size(),
+            self.pages.spage_size(),
+          )
+          .await,
+      )
+      .find(|(tuple_key, _data)| tuple_key == &key)
+      .map(|(_, data)| data),
     }
   }
 
