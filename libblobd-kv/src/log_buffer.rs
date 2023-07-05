@@ -319,7 +319,7 @@ impl LogBuffer {
         let mut backlog: AHashMap<u64, CompletedFlushesBacklogEntry> = Default::default();
         let mut next_flush_id: u64 = 0;
         loop {
-          // Check if we need to do a commit. We should always be able to read-lock `virtual_pointers` because the only other thread that could write-lock (other than us) is the commit future, which we checked isn't running.
+          // Check if we need to do a commit. We should always be able to read-lock `virtual_pointers` because the only other thread that could write-lock (other than this future loop) is the commit future, which we checked isn't running.
           if !currently_committing.load(Relaxed)
             && virtual_pointers
               .try_read()
@@ -332,6 +332,7 @@ impl LogBuffer {
             let log_entries_to_commit = {
               let mut overlay = overlay.write();
               assert!(overlay.committing.is_none());
+              // It's safe to take this and interpret it as a frozen map because the only thread that modifies this Arc-shared map is us and we are currently not writing to it.
               let entry_map = take(&mut overlay.uncommitted);
               overlay.committing = Some(entry_map.clone());
               entry_map
@@ -441,8 +442,9 @@ impl LogBuffer {
 
                 // Read then update then write tuple bundles.
                 let bundles_update_started = Instant::now();
+                // TODO Allow configuring concurrrency level. Do not set too high as otherwise we'll run out of system memory, because all futures will spawn.
                 iter(by_bundle_idx)
-                  .for_each_concurrent(None, |(bundle_idx, overlay_entries)| {
+                  .for_each_concurrent(Some(1_000_000), |(bundle_idx, overlay_entries)| {
                     let bundles_dev = bundles_dev.clone();
                     let dev = dev.clone();
                     let heap_allocator = heap_allocator.clone();

@@ -117,7 +117,7 @@ impl BlobdLoader {
     assert!(log_commit_threshold < log_data_size);
 
     let log_entry_data_len_inline_threshold = cfg.log_entry_data_len_inline_threshold;
-    assert!(log_entry_data_len_inline_threshold > OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD);
+    assert!(log_entry_data_len_inline_threshold >= OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD);
 
     let tuples_area_size = ceil_pow2(cfg.object_tuples_area_reserved_space, LPAGE_SIZE_POW2);
     let heap_dev_offset = tuples_area_size;
