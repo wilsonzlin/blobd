@@ -152,7 +152,7 @@ impl BlobdProvider for Kv {
   }
 
   async fn commit_object(&self, _input: CommitObjectInput) -> CommitObjectOutput {
-    CommitObjectOutput { object_id: 0 }
+    CommitObjectOutput { object_id: None }
   }
 
   async fn inspect_object(&self, input: InspectObjectInput) -> InspectObjectOutput {
@@ -166,7 +166,7 @@ impl BlobdProvider for Kv {
       .await
       .unwrap();
     InspectObjectOutput {
-      id: 0,
+      id: None,
       size: res.object_size,
     }
   }

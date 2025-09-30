@@ -149,7 +149,7 @@ impl BlobdProvider for Lite {
       .await
       .unwrap();
     CommitObjectOutput {
-      object_id: res.object_id,
+      object_id: Some(res.object_id),
     }
   }
 
@@ -163,7 +163,7 @@ impl BlobdProvider for Lite {
       .await
       .unwrap();
     InspectObjectOutput {
-      id: res.id,
+      id: Some(res.id),
       size: res.size,
     }
   }

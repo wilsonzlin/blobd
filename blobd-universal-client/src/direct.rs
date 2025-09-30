@@ -157,7 +157,7 @@ impl BlobdProvider for Direct {
       .await
       .unwrap();
     CommitObjectOutput {
-      object_id: res.object_id.unwrap(),
+      object_id: Some(res.object_id.unwrap()),
     }
   }
 
@@ -171,7 +171,7 @@ impl BlobdProvider for Direct {
       .await
       .unwrap();
     InspectObjectOutput {
-      id: res.id,
+      id: Some(res.id),
       size: res.size,
     }
   }

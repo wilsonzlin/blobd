@@ -9,6 +9,9 @@ use tinybuf::TinyBuf;
 pub mod direct;
 pub mod kv;
 pub mod lite;
+pub mod fs;
+pub mod rocksdb;
+pub mod s3;
 
 pub struct InitCfgPartition {
   pub path: PathBuf,
@@ -49,7 +52,7 @@ pub struct CommitObjectInput {
 }
 
 pub struct CommitObjectOutput {
-  pub object_id: u64,
+  pub object_id: Option<u64>,
 }
 
 pub struct InspectObjectInput {
@@ -58,7 +61,7 @@ pub struct InspectObjectInput {
 }
 
 pub struct InspectObjectOutput {
-  pub id: u64,
+  pub id: Option<u64>,
   pub size: u64,
 }
 

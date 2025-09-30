@@ -163,7 +163,7 @@ enum Task {
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
-    object_id: u64,
+    object_id: Option<u64>,
   },
   Read {
     key_prefix: u64,
@@ -172,13 +172,13 @@ enum Task {
     data_len: u64,
     data_offset: u64,
     chunk_offset: u64,
-    object_id: u64,
+    object_id: Option<u64>,
   },
   Delete {
     key_prefix: u64,
     key_len: u64,
     key_offset: u64,
-    object_id: u64,
+    object_id: Option<u64>,
   },
 }
 
