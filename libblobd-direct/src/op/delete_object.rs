@@ -46,7 +46,10 @@ pub(crate) async fn op_delete_object(
   ctx: Arc<Ctx>,
   req: OpDeleteObjectInput,
 ) -> OpResult<OpDeleteObjectOutput> {
-  let Some((_, obj)) = ctx.committed_objects.remove_if(&req.key, |_, o| req.id.is_none() || Some(o.id()) == req.id) else {
+  let Some((_, obj)) = ctx
+    .committed_objects
+    .remove_if(&req.key, |_, o| req.id.is_none() || Some(o.id()) == req.id)
+  else {
     return Err(OpError::ObjectNotFound);
   };
 

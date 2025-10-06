@@ -50,7 +50,18 @@ pub(crate) async fn op_read_object(
   );
 
   // WARNING: Drop bucket lock immediately.
-  let Some(FoundObject { dev_offset: object_dev_offset, id: object_id, size: object_size, .. }) = ctx.buckets.get_bucket_for_key(&req.key).await.find_object(req.id).await else {
+  let Some(FoundObject {
+    dev_offset: object_dev_offset,
+    id: object_id,
+    size: object_size,
+    ..
+  }) = ctx
+    .buckets
+    .get_bucket_for_key(&req.key)
+    .await
+    .find_object(req.id)
+    .await
+  else {
     return Err(OpError::ObjectNotFound);
   };
   let start = req.start;

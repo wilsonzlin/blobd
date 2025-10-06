@@ -166,7 +166,8 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
       dev_offset: obj_dev_offset,
       id: object_id,
       ..
-    }) = self.find_object(id).await else {
+    }) = self.find_object(id).await
+    else {
       return None;
     };
 

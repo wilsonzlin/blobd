@@ -61,12 +61,16 @@ pub async fn endpoint_batch_create_objects(
     };
     let size = size_raw.read_u40_be_at(0);
 
-    let Ok(creation) = ctx.blobd.create_object(OpCreateObjectInput {
-      key: key.into(),
-      size,
-      #[cfg(feature = "blobd-lite")]
-      assoc_data: tinybuf::TinyBuf::empty(),
-    }).await else {
+    let Ok(creation) = ctx
+      .blobd
+      .create_object(OpCreateObjectInput {
+        key: key.into(),
+        size,
+        #[cfg(feature = "blobd-lite")]
+        assoc_data: tinybuf::TinyBuf::empty(),
+      })
+      .await
+    else {
       break;
     };
 
@@ -75,17 +79,28 @@ pub async fn endpoint_batch_create_objects(
       let Ok(_) = body.read_exact(&mut chunk).await else {
         break 'outer;
       };
-      let Ok(_) = ctx.blobd.write_object(OpWriteObjectInput {
-        data_len: chunk.len().try_into().unwrap(),
-        data_stream: once(async { Ok(chunk) }).boxed(),
-        incomplete_token: creation.token,
-        offset,
-      }).await else {
+      let Ok(_) = ctx
+        .blobd
+        .write_object(OpWriteObjectInput {
+          data_len: chunk.len().try_into().unwrap(),
+          data_stream: once(async { Ok(chunk) }).boxed(),
+          incomplete_token: creation.token,
+          offset,
+        })
+        .await
+      else {
         break 'outer;
       };
     }
 
-    let Ok(_) = ctx.blobd.commit_object(OpCommitObjectInput { incomplete_token: creation.token, if_not_exists: false }).await else {
+    let Ok(_) = ctx
+      .blobd
+      .commit_object(OpCommitObjectInput {
+        incomplete_token: creation.token,
+        if_not_exists: false,
+      })
+      .await
+    else {
       break;
     };
 

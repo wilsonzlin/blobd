@@ -23,7 +23,12 @@ pub(crate) async fn op_inspect_object(
   ctx: Arc<Ctx>,
   req: OpInspectObjectInput,
 ) -> OpResult<OpInspectObjectOutput> {
-  let Some(obj) = ctx.committed_objects.get(&req.key).filter(|o| req.id.is_none() || Some(o.id()) == req.id).map(|e| e.value().clone()) else {
+  let Some(obj) = ctx
+    .committed_objects
+    .get(&req.key)
+    .filter(|o| req.id.is_none() || Some(o.id()) == req.id)
+    .map(|e| e.value().clone())
+  else {
     return Err(OpError::ObjectNotFound);
   };
   ctx.metrics.0.inspect_op_count.fetch_add(1, Relaxed);

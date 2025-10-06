@@ -92,7 +92,10 @@ pub(crate) async fn op_create_object(
   ctx.tuples.insert_object(tuple).await;
 
   // Out of abundance of caution, insert AFTER tuple is certain to have persisted.
-  let None = ctx.incomplete_objects.write().insert(object_id, Object::new(object_id, ObjectState::Incomplete, metadata, metadata_size)) else {
+  let None = ctx.incomplete_objects.write().insert(
+    object_id,
+    Object::new(object_id, ObjectState::Incomplete, metadata, metadata_size),
+  ) else {
     unreachable!();
   };
 

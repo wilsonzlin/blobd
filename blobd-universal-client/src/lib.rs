@@ -7,9 +7,9 @@ use std::sync::Arc;
 use tinybuf::TinyBuf;
 
 pub mod direct;
+pub mod fs;
 pub mod kv;
 pub mod lite;
-pub mod fs;
 pub mod rocksdb;
 pub mod s3;
 

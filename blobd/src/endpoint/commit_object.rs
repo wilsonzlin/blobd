@@ -31,7 +31,8 @@ pub async fn endpoint_commit_object(
     return StatusCode::UNAUTHORIZED;
   };
 
-  let Some((incomplete_token, object_size)) = ctx.parse_and_verify_upload_token(&req.upload_token) else {
+  let Some((incomplete_token, object_size)) = ctx.parse_and_verify_upload_token(&req.upload_token)
+  else {
     return StatusCode::NOT_FOUND;
   };
 

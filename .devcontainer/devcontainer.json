@@ -1,0 +1,15 @@
+{
+    "name": "Rust",
+    "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+    "customizations": {
+      "vscode": {
+        "extensions": [
+          "rust-lang.rust-analyzer"
+        ]
+      }
+    },
+    "mounts": [
+      "type=bind,source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,readonly"
+    ],
+    "remoteUser": "vscode"
+  }
