@@ -21,9 +21,12 @@ use base64::Engine;
 use dashmap::DashMap;
 use futures::StreamExt;
 use itertools::Itertools;
+use serde::Deserialize;
+use serde::Serialize;
 use std::sync::Arc;
 use tokio_util::io::ReaderStream;
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct S3StoreConfig {
   pub region: String,
   pub endpoint: String,
@@ -97,7 +100,7 @@ impl BlobdProvider for S3Store {
 
   async fn write_object<'a>(&'a self, input: WriteObjectInput<'a>) {
     assert_eq!(input.offset % self.part_size, 0);
-    let part_number = i32::try_from(input.offset / self.part_size).unwrap();
+    let part_number = i32::try_from(input.offset / self.part_size).unwrap() + 1;
     let key = BASE64_URL_SAFE_NO_PAD.encode(&input.key);
     let upload_id = input.incomplete_token.downcast::<String>().unwrap();
     let res = self

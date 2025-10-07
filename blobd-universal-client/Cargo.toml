@@ -14,11 +14,11 @@ futures = "0.3.28"
 itertools = "0.14.0"
 libblobd-direct = { version = "0.5.4", path = "../libblobd-direct" }
 libblobd-kv = { version = "0.7.2", path = "../libblobd-kv" }
-libblobd-lite = { version = "0.2.0", path = "../libblobd-lite" }
+libblobd-lite = { version = "0.2.0", path = "../libblobd-lite", default-features = false, features = ["io_file"] }
 num_cpus = "1.15.0"
 off64 = "0.6.0"
 rocksdb = "0.24.0"
-seekable-async-file = "0.11.3"
+seekable-async-file = { version = "0.11.3", default-features = false, features = ["tokio_file"] }
 serde = "1.0.160"
 tinybuf = "0.3.0"
 tokio = { version = "1.28.0", features = ["macros", "time", "rt"] }

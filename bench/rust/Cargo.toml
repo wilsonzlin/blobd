@@ -7,5 +7,5 @@ edition = "2021"
 clap = { version = "3", features = ["derive"] }
 futures = { version = "0.3" }
 tokio = { version = "1", features = ["full"] }
-num-derive = "0.3"
+num-derive = "0.4"
 num-traits = "0.2"

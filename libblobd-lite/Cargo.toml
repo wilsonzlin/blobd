@@ -9,7 +9,6 @@ authors = ["Wilson Lin <code@wilsonl.in>"]
 edition = "2021"
 
 [features]
-default = ["io_mmap"]
 io_file = ["seekable-async-file/tokio_file", "write-journal/io_file"]
 io_mmap = ["seekable-async-file/mmap", "write-journal/io_mmap"]
 
@@ -21,7 +20,7 @@ chrono = "0.4.24"
 dashmap = "5.4.0"
 futures = "0.3"
 itertools = "0.10"
-num-derive = "0.3"
+num-derive = "0.4"
 num-traits = "0.2"
 off64 = "0.6"
 parking_lot = "0.12.1"

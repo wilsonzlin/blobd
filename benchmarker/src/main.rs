@@ -1,6 +1,8 @@
 use blobd_universal_client::direct::Direct;
+use blobd_universal_client::fs::FileSystemStore;
 use blobd_universal_client::kv::Kv;
 use blobd_universal_client::lite::Lite;
+use blobd_universal_client::s3::S3StoreConfig;
 use blobd_universal_client::BlobdProvider;
 use blobd_universal_client::CommitObjectInput;
 use blobd_universal_client::CreateObjectInput;
@@ -11,16 +13,21 @@ use blobd_universal_client::InspectObjectInput;
 use blobd_universal_client::ReadObjectInput;
 use blobd_universal_client::WriteObjectInput;
 use bytesize::ByteSize;
+use chrono::DateTime;
+use chrono::Utc;
+use clap::Parser;
 use futures::stream::iter;
 use futures::StreamExt;
 use off64::int::create_u64_be;
 use off64::usz;
 use serde::Deserialize;
+use serde::Serialize;
 use std::cmp::min;
-use std::env;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::spawn;
 use tokio::time::Instant;
 use tracing::info;
 
@@ -46,29 +53,65 @@ Despite these limitations, the benchmarker can be useful to find hotspots and sl
 
 const EMPTY_POOL: [u8; 16_777_216] = [0u8; 16_777_216];
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, Serialize)]
 enum TargetType {
   Direct,
   Kv,
   Lite,
+  Fs,
+  S3,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct ConfigPartition {
   path: PathBuf,
   offset: u64,
   len: u64,
 }
 
-#[derive(Deserialize)]
+fn default_read_size() -> ByteSize {
+  ByteSize::mib(4)
+}
+
+fn default_read_stream_buffer_size() -> ByteSize {
+  ByteSize::kib(16)
+}
+
+fn default_concurrency() -> usize {
+  64
+}
+
+fn default_lpage_size() -> ByteSize {
+  ByteSize::mib(16)
+}
+
+fn default_spage_size() -> ByteSize {
+  ByteSize::b(512)
+}
+
+fn default_log_buffer_size() -> ByteSize {
+  ByteSize::gib(1)
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
   target: TargetType,
 
+  /// Only applicable for the "fs" target.
+  prefix: Option<PathBuf>,
+
+  /// Only applicable for the "fs" target.
+  tiering: Option<usize>,
+
+  /// Only applicable for the "s3" target.
+  s3: Option<S3StoreConfig>,
+
   /// For the "lite" target, there must only be one partition and its offset must be zero.
+  #[serde(default)]
   partitions: Vec<ConfigPartition>,
 
-  // How many buckets to allocate. Only applicable for the "lite" target. Defaults to `objects * 2`.
+  // How many buckets to allocate. Only applicable for the "lite" target.
   buckets: Option<u64>,
 
   /// Objects to create.
@@ -78,68 +121,108 @@ struct Config {
   object_size: ByteSize,
 
   /// Read size. Defaults to 4 MiB.
-  read_size: Option<ByteSize>,
+  #[serde(default = "default_read_size")]
+  read_size: ByteSize,
 
   /// Read stream buffer size. Defaults to 16 KiB.
-  read_stream_buffer_size: Option<ByteSize>,
-
-  /// Concurrency level. Defaults to 64.
-  concurrency: Option<usize>,
+  #[serde(default = "default_read_stream_buffer_size")]
+  read_stream_buffer_size: ByteSize,
 
   /// Lpage size. Defaults to 16 MiB.
-  lpage_size: Option<ByteSize>,
+  #[serde(default = "default_lpage_size")]
+  lpage_size: ByteSize,
 
   /// Spage size. Defaults to 512 bytes.
-  spage_size: Option<ByteSize>,
+  #[serde(default = "default_spage_size")]
+  spage_size: ByteSize,
 
   /// Only applies to Kv target. Defaults to 1 GiB.
-  log_buffer_size: Option<ByteSize>,
+  #[serde(default = "default_log_buffer_size")]
+  log_buffer_size: ByteSize,
+}
+
+#[derive(Parser)]
+struct Cli {
+  /// Path to the config file
+  config: PathBuf,
 
   /// Skips formatting the device.
-  #[serde(default)]
+  #[arg(long)]
   skip_device_format: bool,
 
   /// Skips creating, writing, and committing objects. Useful for benchmarking across invocations, where a previous invocation has already created all objects but didn't delete them.
-  #[serde(default)]
+  #[arg(long)]
   skip_creation: bool,
 
   /// Skips deleting objects.
-  #[serde(default)]
+  #[arg(long)]
   skip_deletion: bool,
+
+  /// Concurrency level. Defaults to 64.
+  #[arg(long, default_value_t = default_concurrency())]
+  concurrency: usize,
+}
+
+#[derive(Serialize)]
+struct OpResult {
+  started: DateTime<Utc>,
+  exec_secs: f64,
+}
+
+#[derive(Default, Serialize)]
+struct OpResults {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  create: Option<OpResult>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  write: Option<OpResult>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  commit: Option<OpResult>,
+  inspect: Option<OpResult>,
+  read: Option<OpResult>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  delete: Option<OpResult>,
+}
+
+#[derive(Serialize)]
+struct BenchmarkResults {
+  cfg: Config,
+  op: OpResults,
+  final_metrics: HashMap<String, u64>,
 }
 
 #[tokio::main]
 async fn main() {
   tracing_subscriber::fmt::init();
 
-  let cli: Config = serde_yaml::from_str(
-    &fs::read_to_string(env::args().nth(1).expect("config file path argument"))
-      .expect("read config file"),
-  )
-  .expect("parse config file");
-  let object_count = cli.objects;
-  let bucket_count = cli.buckets.unwrap_or(object_count * 2);
-  let concurrency = cli.concurrency.unwrap_or(64);
-  let lpage_size = cli.lpage_size.map(|s| s.as_u64()).unwrap_or(16_777_216);
-  let object_size = cli.object_size.as_u64();
-  let read_size = cli.read_size.map(|s| s.as_u64()).unwrap_or(1024 * 1024 * 4);
-  let read_stream_buffer_size = cli
-    .read_stream_buffer_size
-    .map(|s| s.as_u64())
-    .unwrap_or(1024 * 16);
-  let spage_size = cli.spage_size.map(|s| s.as_u64()).unwrap_or(512);
+  let cli = Cli::parse();
+  let concurrency = cli.concurrency;
+
+  let cfg: Config =
+    serde_yaml::from_str(&fs::read_to_string(&cli.config).expect("read config file"))
+      .expect("parse config file");
+
+  let mut results = BenchmarkResults {
+    cfg: cfg.clone(),
+    op: OpResults::default(),
+    final_metrics: HashMap::new(),
+  };
+
+  let object_count = cfg.objects;
+  let bucket_count = cfg.buckets.unwrap();
+  let lpage_size = cfg.lpage_size.as_u64();
+  let object_size = cfg.object_size.as_u64();
+  let read_size = cfg.read_size.as_u64();
+  let read_stream_buffer_size = cfg.read_stream_buffer_size.as_u64();
+  let spage_size = cfg.spage_size.as_u64();
 
   let init_cfg = InitCfg {
     bucket_count,
     do_not_format_device: cli.skip_device_format,
-    log_buffer_size: cli
-      .log_buffer_size
-      .map(|s| s.as_u64())
-      .unwrap_or(1024 * 1024 * 1024),
+    log_buffer_size: cfg.log_buffer_size.as_u64(),
     lpage_size,
     object_count,
     spage_size,
-    partitions: cli
+    partitions: cfg
       .partitions
       .into_iter()
       .map(|p| InitCfgPartition {
@@ -150,21 +233,27 @@ async fn main() {
       .collect(),
   };
 
-  let blobd: Arc<dyn BlobdProvider> = match cli.target {
+  let blobd: Arc<dyn BlobdProvider> = match cfg.target {
     TargetType::Direct => Arc::new(Direct::start(init_cfg).await),
     TargetType::Kv => Arc::new(Kv::start(init_cfg).await),
     TargetType::Lite => Arc::new(Lite::start(init_cfg).await),
+    TargetType::Fs => Arc::new(FileSystemStore::new(
+      cfg.prefix.unwrap(),
+      cfg.tiering.unwrap(),
+    )),
+    TargetType::S3 => Arc::new(cfg.s3.unwrap().build_store().await),
   };
 
   if !cli.skip_creation {
     let incomplete_tokens = Arc::new(parking_lot::Mutex::new(Vec::new()));
 
+    let create_started = Utc::now();
     let now = Instant::now();
     iter(0..object_count)
-      .for_each_concurrent(Some(concurrency), |i| {
+      .for_each_concurrent(concurrency, async |i| {
         let blobd = blobd.clone();
         let incomplete_tokens = incomplete_tokens.clone();
-        async move {
+        spawn(async move {
           let res = blobd
             .create_object(CreateObjectInput {
               key: create_u64_be(i).into(),
@@ -172,36 +261,49 @@ async fn main() {
             })
             .await;
           incomplete_tokens.lock().push((i, res.token));
-        }
+        })
+        .await
+        .unwrap();
       })
       .await;
     let create_exec_secs = now.elapsed().as_secs_f64();
+    results.op.create = Some(OpResult {
+      started: create_started,
+      exec_secs: create_exec_secs,
+    });
     info!(
       create_exec_secs,
       create_ops_per_second = (object_count as f64) / create_exec_secs,
       "completed all create ops",
     );
 
+    let write_started = Utc::now();
     let now = Instant::now();
-    iter(incomplete_tokens.lock().as_slice())
-      .for_each_concurrent(Some(concurrency), |(key, incomplete_token)| {
+    iter(incomplete_tokens.lock().to_vec())
+      .for_each_concurrent(concurrency, async |(key, incomplete_token)| {
         let blobd = blobd.clone();
-        async move {
+        spawn(async move {
           for offset in (0..object_size).step_by(usz!(lpage_size)) {
             let data_len = min(object_size - offset, lpage_size);
             blobd
               .write_object(WriteObjectInput {
-                key: create_u64_be(*key).into(),
+                key: create_u64_be(key).into(),
                 offset,
                 incomplete_token: incomplete_token.clone(),
                 data: &EMPTY_POOL[..usz!(data_len)],
               })
               .await;
           }
-        }
+        })
+        .await
+        .unwrap();
       })
       .await;
     let write_exec_secs = now.elapsed().as_secs_f64();
+    results.op.write = Some(OpResult {
+      started: write_started,
+      exec_secs: write_exec_secs,
+    });
     info!(
       write_exec_secs,
       write_ops_per_second = object_count as f64 / write_exec_secs,
@@ -210,20 +312,27 @@ async fn main() {
       "completed all write ops",
     );
 
+    let commit_started = Utc::now();
     let now = Instant::now();
-    iter(incomplete_tokens.lock().as_slice())
-      .for_each_concurrent(Some(concurrency), |(_, incomplete_token)| {
+    iter(incomplete_tokens.lock().to_vec())
+      .for_each_concurrent(concurrency, async |(_, incomplete_token)| {
         let blobd = blobd.clone();
-        async move {
+        spawn(async move {
           blobd
             .commit_object(CommitObjectInput {
               incomplete_token: incomplete_token.clone(),
             })
             .await;
-        }
+        })
+        .await
+        .unwrap();
       })
       .await;
     let commit_exec_secs = now.elapsed().as_secs_f64();
+    results.op.commit = Some(OpResult {
+      started: commit_started,
+      exec_secs: commit_exec_secs,
+    });
     info!(
       commit_exec_secs,
       commit_ops_per_second = (object_count as f64) / commit_exec_secs,
@@ -231,32 +340,40 @@ async fn main() {
     );
   };
 
+  let inspect_started = Utc::now();
   let now = Instant::now();
   iter(0..object_count)
-    .for_each_concurrent(Some(concurrency), |i| {
+    .for_each_concurrent(concurrency, async |i| {
       let blobd = blobd.clone();
-      async move {
+      spawn(async move {
         blobd
           .inspect_object(InspectObjectInput {
             key: create_u64_be(i).into(),
             id: None,
           })
           .await;
-      }
+      })
+      .await
+      .unwrap();
     })
     .await;
   let inspect_exec_secs = now.elapsed().as_secs_f64();
+  results.op.inspect = Some(OpResult {
+    started: inspect_started,
+    exec_secs: inspect_exec_secs,
+  });
   info!(
     inspect_exec_secs,
     inspect_ops_per_second = (object_count as f64) / inspect_exec_secs,
     "completed all inspect ops",
   );
 
+  let read_started = Utc::now();
   let now = Instant::now();
   iter(0..object_count)
-    .for_each_concurrent(Some(concurrency), |i| {
+    .for_each_concurrent(concurrency, async |i| {
       let blobd = blobd.clone();
-      async move {
+      spawn(async move {
         for start in (0..object_size).step_by(usz!(read_size)) {
           let res = blobd
             .read_object(ReadObjectInput {
@@ -271,10 +388,16 @@ async fn main() {
           // Do something with `page_count` so that the compiler doesn't just drop it, and then possibly drop the stream too.
           assert!(page_count > 0);
         }
-      }
+      })
+      .await
+      .unwrap();
     })
     .await;
   let read_exec_secs = now.elapsed().as_secs_f64();
+  results.op.read = Some(OpResult {
+    started: read_started,
+    exec_secs: read_exec_secs,
+  });
   info!(
     read_exec_secs,
     read_ops_per_second = object_count as f64 / read_exec_secs,
@@ -283,21 +406,28 @@ async fn main() {
   );
 
   if !cli.skip_deletion {
+    let delete_started = Utc::now();
     let now = Instant::now();
     iter(0..object_count)
-      .for_each_concurrent(Some(concurrency), |i| {
+      .for_each_concurrent(concurrency, async |i| {
         let blobd = blobd.clone();
-        async move {
+        spawn(async move {
           blobd
             .delete_object(DeleteObjectInput {
               key: create_u64_be(i).into(),
               id: None,
             })
             .await;
-        }
+        })
+        .await
+        .unwrap();
       })
       .await;
     let delete_exec_secs = now.elapsed().as_secs_f64();
+    results.op.delete = Some(OpResult {
+      started: delete_started,
+      exec_secs: delete_exec_secs,
+    });
     info!(
       delete_exec_secs,
       delete_ops_per_second = (object_count as f64) / delete_exec_secs,
@@ -309,9 +439,16 @@ async fn main() {
   info!("blobd ended");
 
   let final_metrics = blobd.metrics();
-  for (key, value) in final_metrics {
+  for (key, value) in &final_metrics {
     info!(key, value, "final metric");
   }
+  results.final_metrics = final_metrics
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+
+  let json_output = serde_json::to_string_pretty(&results).unwrap();
+  fs::write("benchmarker-results.json", json_output).unwrap();
 
   info!("all done");
 }

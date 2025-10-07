@@ -48,14 +48,8 @@ impl Lite {
     assert_eq!(device_cfg.offset, 0);
 
     let io_metrics = Arc::new(SeekableAsyncFileMetrics::default());
-    let device = SeekableAsyncFile::open(
-      &device_cfg.path,
-      device_cfg.len,
-      io_metrics,
-      Duration::from_micros(200),
-      0,
-    )
-    .await;
+    let device =
+      SeekableAsyncFile::open(&device_cfg.path, io_metrics, Duration::from_micros(200), 0).await;
 
     let blobd = BlobdLoader::new(device.clone(), device_cfg.len, BlobdCfg {
       bucket_count_log2,
