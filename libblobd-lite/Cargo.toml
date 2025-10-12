@@ -2,7 +2,7 @@
 name = "libblobd-lite"
 version = "0.2.0"
 description = "Library for blobd, lite variant"
-license = "SSPL-1.0"
+license = "Apache-2.0"
 homepage = "https://github.com/wilsonzlin/blobd"
 repository = "https://github.com/wilsonzlin/blobd.git"
 authors = ["Wilson Lin <code@wilsonl.in>"]

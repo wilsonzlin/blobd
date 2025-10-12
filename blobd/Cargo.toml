@@ -2,7 +2,7 @@
 name = "blobd"
 version = "0.2.1"
 description = "Blob storage designed for huge amounts of random reads and small objects with constant latency"
-license = "SSPL-1.0"
+license = "Apache-2.0"
 homepage = "https://github.com/wilsonzlin/blobd"
 repository = "https://github.com/wilsonzlin/blobd.git"
 readme = "README.md"
