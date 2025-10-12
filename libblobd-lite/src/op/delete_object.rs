@@ -2,10 +2,9 @@ use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 pub struct OpDeleteObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   // Only useful if versioning is enabled.
   pub id: Option<u64>,
 }
@@ -33,10 +32,9 @@ pub(crate) async fn op_delete_object(
   // We must always commit the transaction (otherwise our journal will wait forever), so we cannot return before this if the object does not exist.
   ctx.journal.commit_transaction(txn).await;
 
-  let Some(e) = deleted else {
+  if !deleted {
     return Err(OpError::ObjectNotFound);
   };
-  ctx.stream_in_memory.add_event_to_in_memory_list(e);
 
   Ok(OpDeleteObjectOutput {})
 }

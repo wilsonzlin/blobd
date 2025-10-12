@@ -10,13 +10,11 @@ use io_uring::types;
 use io_uring::IoUring;
 use off64::u32;
 use off64::usz;
-use rustc_hash::FxHasher;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
 use std::collections::VecDeque;
 use std::fmt;
 use std::fs::File;
-use std::hash::BuildHasherDefault;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -95,8 +93,7 @@ impl UringBackingStore {
   /// `offset` must be a multiple of the underlying device's sector size.
   pub fn new(file: File, pages: Pages, cfg: UringCfg) -> Self {
     let (sender, receiver) = crossbeam_channel::unbounded::<Request>();
-    let pending: Arc<DashMap<u64, (Request, Instant), BuildHasherDefault<FxHasher>>> =
-      Default::default();
+    let pending: Arc<DashMap<u64, (Request, Instant)>> = Default::default();
     let ring = {
       let mut builder = IoUring::<SEntry, CEntry>::builder();
       builder.setup_clamp();

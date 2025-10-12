@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-async-trait = "0.1.68"
+async-trait = "0.1"
 aws-config = { version = "1.8.6", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1.2.6", features = ["hardcoded-credentials"] }
 aws-sdk-s3 = "1.106.0"
@@ -14,13 +14,12 @@ futures = "0.3.28"
 itertools = "0.14.0"
 libblobd-direct = { version = "0.5.4", path = "../libblobd-direct" }
 libblobd-kv = { version = "0.7.2", path = "../libblobd-kv" }
-libblobd-lite = { version = "0.2.0", path = "../libblobd-lite", default-features = false, features = ["io_file"] }
+libblobd-lite = { version = "0.2.0", path = "../libblobd-lite" }
 num_cpus = "1.15.0"
-off64 = "0.6.0"
+off64 = "0.8"
 rocksdb = "0.24.0"
-seekable-async-file = { version = "0.11.3", default-features = false, features = ["tokio_file"] }
+seekable-async-file = { version = "0.14", features = ["tokio_file"] }
 serde = "1.0.160"
-tinybuf = "0.3.0"
 tokio = { version = "1.28.0", features = ["macros", "time", "rt"] }
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.16", features = ["io"] }

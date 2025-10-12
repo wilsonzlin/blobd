@@ -1,26 +1,21 @@
+use crate::allocator::Allocations;
 use crate::ctx::Ctx;
 use crate::ctx::State;
+use crate::device::IDevice;
 use crate::metrics::BlobdMetrics;
 use crate::object::release_object;
 use crate::object::OBJECT_OFF;
-use crate::page::ObjectPageHeader;
-use crate::page::ObjectState;
+use crate::object_header::Headers;
+use crate::object_header::ObjectState;
 use crate::page::Pages;
-#[cfg(test)]
-use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
-#[cfg(test)]
-use crate::test_util::journal::TestTransaction as Transaction;
 use crate::util::get_now_sec;
 use off64::int::create_u48_be;
-use off64::int::Off64AsyncReadInt;
 use off64::usz;
-#[cfg(not(test))]
-use seekable_async_file::SeekableAsyncFile;
 use std::cmp::max;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-#[cfg(not(test))]
 use write_journal::Transaction;
 
 /*
@@ -38,36 +33,39 @@ u48 tail
 
 */
 
-const OFFSETOF_HEAD: u64 = 0;
-const OFFSETOF_TAIL: u64 = OFFSETOF_HEAD + 5;
-pub(crate) const DELETED_LIST_STATE_SIZE: u64 = OFFSETOF_TAIL + 5;
+pub(crate) const DELETED_LIST_OFFSETOF_HEAD: u64 = 0;
+pub(crate) const DELETED_LIST_OFFSETOF_TAIL: u64 = DELETED_LIST_OFFSETOF_HEAD + 5;
+pub(crate) const DELETED_LIST_STATE_SIZE: u64 = DELETED_LIST_OFFSETOF_TAIL + 5;
 
 /// WARNING: Same safety requirements and warnings as `IncompleteList`.
 /// WARNING: Readers and writers must check if inode still exists while reading/writing no later than `DELETE_REAP_DELAY_SEC_MIN / 2` seconds since the last check. Otherwise, the reaper may reap the object from under them, and the reader/writer will be reading from/writing to released pages. Be conservative to prevent race conditions and clock drift issues.
 pub(crate) struct DeletedList {
   dev_offset: u64,
-  dev: SeekableAsyncFile,
+  dev: Arc<dyn IDevice>,
   head: u64,
   metrics: Arc<BlobdMetrics>,
-  pages: Arc<Pages>,
+  headers: Headers,
+  pages: Pages,
   reap_objects_after_secs: u64,
   tail: u64,
 }
 
 impl DeletedList {
-  pub async fn load_from_device(
-    dev: SeekableAsyncFile,
+  pub fn new(
+    dev: Arc<dyn IDevice>,
     dev_offset: u64,
-    pages: Arc<Pages>,
+    headers: Headers,
+    pages: Pages,
     metrics: Arc<BlobdMetrics>,
     reap_objects_after_secs: u64,
+    head: u64,
+    tail: u64,
   ) -> Self {
-    let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD).await;
-    let tail = dev.read_u48_be_at(dev_offset + OFFSETOF_TAIL).await;
     Self {
       dev_offset,
       dev,
       head,
+      headers,
       metrics,
       pages,
       reap_objects_after_secs,
@@ -75,33 +73,33 @@ impl DeletedList {
     }
   }
 
-  pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
+  pub async fn format_device(dev: &Arc<dyn IDevice>, dev_offset: u64) {
     let raw = vec![0u8; usz!(DELETED_LIST_STATE_SIZE)];
-    dev.write_at(dev_offset, raw).await;
+    dev.write_at(dev_offset, &raw).await;
   }
 
   fn update_head(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
     txn.write(
-      self.dev_offset + OFFSETOF_HEAD,
-      create_u48_be(page_dev_offset),
+      self.dev_offset + DELETED_LIST_OFFSETOF_HEAD,
+      create_u48_be(page_dev_offset).to_vec(),
     );
     self.head = page_dev_offset;
   }
 
   fn update_tail(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
     txn.write(
-      self.dev_offset + OFFSETOF_TAIL,
-      create_u48_be(page_dev_offset),
+      self.dev_offset + DELETED_LIST_OFFSETOF_TAIL,
+      create_u48_be(page_dev_offset).to_vec(),
     );
     self.tail = page_dev_offset;
   }
 
   /// WARNING: This will overwrite the page header.
   pub async fn attach(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
-    self.metrics.incr_deleted_object_count(txn, 1);
+    self.metrics.deleted_object_count.fetch_add(1, Relaxed);
     self
-      .pages
-      .update_page_header::<ObjectPageHeader>(txn, page_dev_offset, |o| {
+      .headers
+      .update_header(txn, page_dev_offset, |o| {
         debug_assert_ne!(o.state, ObjectState::Deleted);
         debug_assert_eq!(o.deleted_sec, None);
         o.state = ObjectState::Deleted;
@@ -114,8 +112,8 @@ impl DeletedList {
     };
     if self.tail != 0 {
       self
-        .pages
-        .update_page_header::<ObjectPageHeader>(txn, self.tail, |i| {
+        .headers
+        .update_header(txn, self.tail, |i| {
           debug_assert_eq!(i.state, ObjectState::Deleted);
           debug_assert_ne!(i.deleted_sec, None);
           i.next = page_dev_offset;
@@ -132,6 +130,7 @@ pub(crate) async fn maybe_reap_next_deleted(
   state: &mut State,
   metrics: &BlobdMetrics,
   txn: &mut Transaction,
+  to_free: &mut Allocations,
 ) -> Result<(), u64> {
   let page_dev_offset = state.deleted_list.head;
   if page_dev_offset == 0 {
@@ -139,8 +138,8 @@ pub(crate) async fn maybe_reap_next_deleted(
   };
   let hdr = state
     .deleted_list
-    .pages
-    .read_page_header::<ObjectPageHeader>(page_dev_offset)
+    .headers
+    .read_header(page_dev_offset)
     .await;
 
   // SAFETY: Object must still exist because only this function reaps and we haven't processed this object yet.
@@ -163,18 +162,21 @@ pub(crate) async fn maybe_reap_next_deleted(
   };
   // `alloc.release` called by `release_object` will clear the page header.
   let obj = release_object(
-    txn,
+    to_free,
     &state.deleted_list.dev,
-    &state.deleted_list.pages,
-    &mut state.allocator,
+    state.deleted_list.pages,
     page_dev_offset,
     hdr.metadata_size_pow2,
   )
   .await;
-  metrics.decr_deleted_object_count(txn, 1);
-  metrics.decr_object_count(txn, 1);
-  metrics.decr_object_data_bytes(txn, obj.object_data_size);
-  metrics.decr_object_metadata_bytes(txn, obj.object_metadata_size);
+  metrics.deleted_object_count.fetch_sub(1, Relaxed);
+  metrics.object_count.fetch_sub(1, Relaxed);
+  metrics
+    .object_data_bytes
+    .fetch_sub(obj.object_data_size, Relaxed);
+  metrics
+    .object_metadata_bytes
+    .fetch_sub(obj.object_metadata_size, Relaxed);
   state.deleted_list.update_head(txn, hdr.next);
   if hdr.next == 0 {
     state.deleted_list.update_tail(txn, 0);
@@ -184,16 +186,18 @@ pub(crate) async fn maybe_reap_next_deleted(
 
 pub(crate) async fn start_deleted_list_reaper_background_loop(ctx: Arc<Ctx>) {
   loop {
-    let (txn, sleep_sec) = {
+    let (txn, sleep_sec, to_free) = {
       let mut state = ctx.state.lock().await;
       let mut txn = ctx.journal.begin_transaction();
-      let sleep_sec = maybe_reap_next_deleted(&mut state, &ctx.metrics, &mut txn)
+      let mut to_free = Allocations::new();
+      let sleep_sec = maybe_reap_next_deleted(&mut state, &ctx.metrics, &mut txn, &mut to_free)
         .await
         .err()
         .unwrap_or(0);
-      (txn, sleep_sec)
+      (txn, sleep_sec, to_free)
     };
     ctx.journal.commit_transaction(txn).await;
+    ctx.allocator.lock().release_all(&to_free);
     sleep(Duration::from_secs(sleep_sec)).await;
   }
 }

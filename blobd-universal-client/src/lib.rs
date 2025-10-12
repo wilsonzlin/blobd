@@ -4,7 +4,6 @@ use std::any::Any;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 pub mod direct;
 pub mod fs;
@@ -32,7 +31,7 @@ pub struct InitCfg {
 pub type IncompleteToken = Arc<dyn Any + Send + Sync>;
 
 pub struct CreateObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub size: u64,
 }
 
@@ -41,7 +40,7 @@ pub struct CreateObjectOutput {
 }
 
 pub struct WriteObjectInput<'a> {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub offset: u64,
   pub incomplete_token: IncompleteToken,
   pub data: &'a [u8],
@@ -56,7 +55,7 @@ pub struct CommitObjectOutput {
 }
 
 pub struct InspectObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub id: Option<u64>,
 }
 
@@ -66,7 +65,7 @@ pub struct InspectObjectOutput {
 }
 
 pub struct ReadObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub id: Option<u64>,
   pub start: u64,
   pub end: Option<u64>,
@@ -78,7 +77,7 @@ pub struct ReadObjectOutput {
 }
 
 pub struct DeleteObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub id: Option<u64>,
 }
 

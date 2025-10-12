@@ -26,15 +26,14 @@ clap = { version = "4.1", features = ["derive"] }
 data-encoding = "2.3"
 futures = "0.3"
 itertools = "0.10"
-libblobd-lite = { version = "0.2.0", path = "../libblobd-lite", optional = true, default-features = false, features = ["io_file"] }
+libblobd-lite = { version = "0.2.0", path = "../libblobd-lite", optional = true }
 libblobd-direct = { version = "0.5.4", path = "../libblobd-direct", optional = true }
-off64 = "0.6"
+off64 = "0.8"
 percent-encoding = "2.2"
 rand = "0.8.5"
 rmp-serde = "1.1.1"
-seekable-async-file = { version = "0.11.3", default-features = false, features = ["tokio_file"] }
+seekable-async-file = { version = "0.14", features = ["tokio_file"] }
 serde = { version = "1.0", features = ["derive"] }
-tinybuf = "0.3.0"
 tokio = { version = "1", features = ["full"] }
 toml = "0.7"
 tower-http = { version = "0.4.0", features = ["cors", "trace"] }

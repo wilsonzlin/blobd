@@ -5,10 +5,9 @@ use chrono::DateTime;
 use chrono::Utc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 pub struct OpInspectObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   // Only useful if versioning is enabled.
   pub id: Option<u64>,
 }

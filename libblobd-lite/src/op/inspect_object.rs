@@ -3,10 +3,9 @@ use super::OpResult;
 use crate::bucket::FoundObject;
 use crate::ctx::Ctx;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 pub struct OpInspectObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   // Only useful if versioning is enabled.
   pub id: Option<u64>,
 }

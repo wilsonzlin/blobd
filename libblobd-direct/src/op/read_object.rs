@@ -19,11 +19,10 @@ use std::cmp::max;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 use tracing::trace;
 
 pub struct OpReadObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   // Only useful if versioning is enabled.
   pub id: Option<u64>,
   pub start: u64,

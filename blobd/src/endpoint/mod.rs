@@ -12,7 +12,6 @@ use off64::usz;
 use percent_encoding::percent_decode;
 use rmp_serde::Serializer;
 use serde::Serialize;
-use tinybuf::TinyBuf;
 
 pub mod batch_create_objects;
 pub mod commit_object;
@@ -122,8 +121,6 @@ pub fn transform_op_error(err: OpError) -> StatusCode {
 
 // TODO Deny %2F (if slash is intentional, provide it directly; if not, it will be mixed with literal slashes once decoded).
 // TODO Deny empty string.
-pub fn parse_key(uri: &Uri) -> TinyBuf {
-  TinyBuf::from_iter(percent_decode(
-    uri.path().strip_prefix("/").unwrap().as_bytes(),
-  ))
+pub fn parse_key(uri: &Uri) -> Vec<u8> {
+  percent_decode(uri.path().strip_prefix("/").unwrap().as_bytes()).collect()
 }

@@ -1,4 +1,6 @@
+use crate::device::IDevice;
 use crate::util::div_mod_pow2;
+use ahash::HashSet;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use off64::chrono::Off64AsyncReadChrono;
@@ -10,29 +12,28 @@ use off64::usz;
 use off64::Off64AsyncRead;
 use off64::Off64AsyncWrite;
 use off64::Off64WriteMut;
-use rustc_hash::FxHashSet;
-use rustc_hash::FxHasher;
+use seekable_async_file::WriteRequest;
 use std::cmp::min;
-use std::hash::BuildHasherDefault;
-use tinybuf::TinyBuf;
 
 const PAGE_SIZE_POW2: u8 = 12;
 const PAGE_SIZE: u64 = 1 << PAGE_SIZE_POW2;
 
 /// NOTE: When testing, prefer to build expected version and test for equality, instead of performing/testing individual reads, to ensure entire device is correct (e.g. no writes to invalid locations).
 #[derive(Clone)]
-pub struct TestSeekableAsyncFile {
-  pub pages: DashMap<u64, Box<[u8; PAGE_SIZE as usize]>, BuildHasherDefault<FxHasher>>,
+pub struct MockSeekableAsyncFile {
+  pub pages: DashMap<u64, Box<[u8; PAGE_SIZE as usize]>>,
 }
 
-impl TestSeekableAsyncFile {
+impl MockSeekableAsyncFile {
   pub fn new() -> Self {
     Self {
       pages: Default::default(),
     }
   }
+}
 
-  pub async fn read_at(&self, start: u64, len: u64) -> TinyBuf {
+impl MockSeekableAsyncFile {
+  pub fn read_at(&self, start: u64, len: u64) -> Vec<u8> {
     let mut data = Vec::with_capacity(usz!(len));
 
     let end = start + len;
@@ -52,7 +53,7 @@ impl TestSeekableAsyncFile {
     data.into()
   }
 
-  pub async fn write_at<D: AsRef<[u8]>>(&self, start: u64, data: D) {
+  pub fn write_at<D: AsRef<[u8]>>(&self, start: u64, data: D) {
     let mut cur = &data.as_ref()[..];
 
     let end = start + u64!(cur.len());
@@ -69,13 +70,20 @@ impl TestSeekableAsyncFile {
       next += n;
     }
   }
-
-  pub async fn sync_data(&self) {}
 }
 
-impl PartialEq for TestSeekableAsyncFile {
+#[async_trait]
+impl IDevice for MockSeekableAsyncFile {
+  async fn sync_data(&self) {}
+
+  async fn write_at_with_delayed_sync(&self, _writes: Vec<WriteRequest<Vec<u8>>>) {
+    unimplemented!()
+  }
+}
+
+impl PartialEq for MockSeekableAsyncFile {
   fn eq(&self, other: &Self) -> bool {
-    let mut missing_self: FxHashSet<u64> = self.pages.iter().map(|e| *e.key()).collect();
+    let mut missing_self: HashSet<u64> = self.pages.iter().map(|e| *e.key()).collect();
     for e in other.pages.iter() {
       let (offset, page) = e.pair();
       if !missing_self.remove(&offset) {
@@ -89,22 +97,22 @@ impl PartialEq for TestSeekableAsyncFile {
   }
 }
 
-impl Eq for TestSeekableAsyncFile {}
+impl Eq for MockSeekableAsyncFile {}
 
 #[async_trait]
-impl<'a> Off64AsyncRead<'a, TinyBuf> for TestSeekableAsyncFile {
-  async fn read_at(&self, offset: u64, len: u64) -> TinyBuf {
-    TestSeekableAsyncFile::read_at(self, offset, len).await
+impl<'a> Off64AsyncRead<'a, Vec<u8>> for MockSeekableAsyncFile {
+  async fn read_at(&self, offset: u64, len: u64) -> Vec<u8> {
+    self.read_at(offset, len)
   }
 }
-impl<'a> Off64AsyncReadChrono<'a, TinyBuf> for TestSeekableAsyncFile {}
-impl<'a> Off64AsyncReadInt<'a, TinyBuf> for TestSeekableAsyncFile {}
+impl<'a> Off64AsyncReadChrono<'a, Vec<u8>> for MockSeekableAsyncFile {}
+impl<'a> Off64AsyncReadInt<'a, Vec<u8>> for MockSeekableAsyncFile {}
 
 #[async_trait]
-impl Off64AsyncWrite for TestSeekableAsyncFile {
+impl Off64AsyncWrite for MockSeekableAsyncFile {
   async fn write_at(&self, offset: u64, value: &[u8]) {
-    TestSeekableAsyncFile::write_at(self, offset, value).await
+    self.write_at(offset, value)
   }
 }
-impl Off64AsyncWriteChrono for TestSeekableAsyncFile {}
-impl Off64AsyncWriteInt for TestSeekableAsyncFile {}
+impl Off64AsyncWriteChrono for MockSeekableAsyncFile {}
+impl Off64AsyncWriteInt for MockSeekableAsyncFile {}

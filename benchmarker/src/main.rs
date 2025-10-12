@@ -1,3 +1,5 @@
+use ahash::HashMap;
+use ahash::HashMapExt;
 use blobd_universal_client::direct::Direct;
 use blobd_universal_client::fs::FileSystemStore;
 use blobd_universal_client::kv::Kv;
@@ -23,7 +25,6 @@ use off64::usz;
 use serde::Deserialize;
 use serde::Serialize;
 use std::cmp::min;
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;

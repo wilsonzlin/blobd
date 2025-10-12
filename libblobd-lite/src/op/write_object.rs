@@ -5,8 +5,7 @@ use crate::incomplete_token::IncompleteToken;
 use crate::object::calc_object_layout;
 use crate::object::ObjectLayout;
 use crate::object::OBJECT_OFF;
-use crate::page::ObjectPageHeader;
-use crate::page::ObjectState;
+use crate::object_header::ObjectState;
 use crate::util::div_pow2;
 use crate::util::is_multiple_of_pow2;
 use futures::Stream;
@@ -62,10 +61,7 @@ pub(crate) async fn op_write_object<
 
   let incomplete_object_is_still_valid = || async {
     // Our incomplete reaper simply deletes incomplete objects instead of reaping directly, which avoids some clock drift issues, so we only need to check the type, and should not check if it's expired based on its creation time. This is always correct, as if the page still exists, it's definitely still the same object, as we check well before any deleted object would be reaped.
-    let hdr = ctx
-      .pages
-      .read_page_header::<ObjectPageHeader>(object_dev_offset)
-      .await;
+    let hdr = ctx.headers.read_header(object_dev_offset).await;
     hdr.state == ObjectState::Incomplete
   };
 
@@ -110,7 +106,7 @@ pub(crate) async fn op_write_object<
   let ObjectLayout {
     lpage_count,
     tail_page_sizes_pow2,
-  } = calc_object_layout(&ctx.pages, size);
+  } = calc_object_layout(ctx.pages, size);
   let off = OBJECT_OFF
     .with_key_len(key_len)
     .with_lpages(lpage_count)
@@ -121,7 +117,8 @@ pub(crate) async fn op_write_object<
     if idx < lpage_count {
       vec![(
         ctx.pages.lpage_size(),
-        Off64AsyncReadInt::read_u48_be_at(&ctx.device, object_dev_offset + off.lpage(idx)).await,
+        Off64AsyncReadInt::read_u48_be_at(ctx.device.as_ref(), object_dev_offset + off.lpage(idx))
+          .await,
       )]
     } else {
       let raw = ctx
@@ -195,7 +192,7 @@ pub(crate) async fn op_write_object<
       .device
       .write_at(
         page_dev_offset,
-        buf.drain(..usz!(amount_to_write)).collect_vec(),
+        &buf.drain(..usz!(amount_to_write)).collect_vec(),
       )
       .await;
     trace!(
@@ -218,10 +215,7 @@ pub(crate) async fn op_write_object<
 
   // Optimisation: perform fdatasync in batches.
   #[cfg(not(test))]
-  ctx
-    .device
-    .write_at_with_delayed_sync::<&'static [u8]>(vec![])
-    .await;
+  ctx.device.write_at_with_delayed_sync(vec![]).await;
 
   Ok(OpWriteObjectOutput {})
 }

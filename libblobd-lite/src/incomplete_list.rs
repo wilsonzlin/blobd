@@ -1,24 +1,18 @@
 use crate::ctx::Ctx;
 use crate::ctx::State;
+use crate::device::IDevice;
 use crate::metrics::BlobdMetrics;
 use crate::object::OBJECT_OFF;
-use crate::page::ObjectPageHeader;
-use crate::page::ObjectState;
-use crate::page::Pages;
-#[cfg(test)]
-use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
-#[cfg(test)]
-use crate::test_util::journal::TestTransaction as Transaction;
+use crate::object_header::Headers;
+use crate::object_header::ObjectHeader;
+use crate::object_header::ObjectState;
 use crate::util::get_now_sec;
 use off64::int::create_u48_be;
-use off64::int::Off64AsyncReadInt;
 use off64::usz;
-#[cfg(not(test))]
-use seekable_async_file::SeekableAsyncFile;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-#[cfg(not(test))]
 use write_journal::Transaction;
 
 /*
@@ -36,9 +30,9 @@ u48 tail
 
 */
 
-const OFFSETOF_HEAD: u64 = 0;
-const OFFSETOF_TAIL: u64 = OFFSETOF_HEAD + 5;
-pub(crate) const INCOMPLETE_LIST_STATE_SIZE: u64 = OFFSETOF_TAIL + 5;
+pub(crate) const INCOMPLETE_LIST_OFFSETOF_HEAD: u64 = 0;
+pub(crate) const INCOMPLETE_LIST_OFFSETOF_TAIL: u64 = INCOMPLETE_LIST_OFFSETOF_HEAD + 5;
+pub(crate) const INCOMPLETE_LIST_STATE_SIZE: u64 = INCOMPLETE_LIST_OFFSETOF_TAIL + 5;
 
 /// WARNING: All methods on this struct must be called from within a transaction, **including non-mut ones.** If *any* incomplete inode page changes type or merges without this struct knowing about/performing it, including due to very subtle race conditions and/or concurrency, **corruption will occur.**
 /// This is because all methods will read a page's header as a IncompleteInodePageHeader, even if it's a different type or the page has been merged/split and doesn't exist at the time.
@@ -46,62 +40,62 @@ pub(crate) const INCOMPLETE_LIST_STATE_SIZE: u64 = OFFSETOF_TAIL + 5;
 /// WARNING: Writers must not begin or continue writing if within one hour of an incomplete object's reap time. Otherwise, the reaper may reap the object from under them, and the writer will be writing to released pages. If streaming, check in regularly. Stop before one hour to prevent race conditions and clock drift issues. Commits are safe because they acquire the state lock.
 pub(crate) struct IncompleteList {
   dev_offset: u64,
-  dev: SeekableAsyncFile,
+  dev: Arc<dyn IDevice>,
   head: u64,
   metrics: Arc<BlobdMetrics>,
-  pages: Arc<Pages>,
+  headers: Headers,
   reap_objects_after_secs: u64,
   tail: u64,
 }
 
 impl IncompleteList {
-  pub async fn load_from_device(
-    dev: SeekableAsyncFile,
+  pub fn new(
+    dev: Arc<dyn IDevice>,
     dev_offset: u64,
-    pages: Arc<Pages>,
+    headers: Headers,
     metrics: Arc<BlobdMetrics>,
     reap_objects_after_secs: u64,
+    head: u64,
+    tail: u64,
   ) -> Self {
-    let head = dev.read_u48_be_at(dev_offset + OFFSETOF_HEAD).await;
-    let tail = dev.read_u48_be_at(dev_offset + OFFSETOF_TAIL).await;
     Self {
       dev_offset,
       dev,
       head,
+      headers,
       metrics,
-      pages,
       reap_objects_after_secs,
       tail,
     }
   }
 
-  pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64) {
+  pub async fn format_device(dev: &Arc<dyn IDevice>, dev_offset: u64) {
     let raw = vec![0u8; usz!(INCOMPLETE_LIST_STATE_SIZE)];
-    dev.write_at(dev_offset, raw).await;
+    dev.write_at(dev_offset, &raw).await;
   }
 
   fn update_head(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
     txn.write(
-      self.dev_offset + OFFSETOF_HEAD,
-      create_u48_be(page_dev_offset),
+      self.dev_offset + INCOMPLETE_LIST_OFFSETOF_HEAD,
+      create_u48_be(page_dev_offset).to_vec(),
     );
     self.head = page_dev_offset;
   }
 
   fn update_tail(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
     txn.write(
-      self.dev_offset + OFFSETOF_TAIL,
-      create_u48_be(page_dev_offset),
+      self.dev_offset + INCOMPLETE_LIST_OFFSETOF_TAIL,
+      create_u48_be(page_dev_offset).to_vec(),
     );
     self.tail = page_dev_offset;
   }
 
   /// WARNING: This will overwrite the page header.
   pub async fn attach(&mut self, txn: &mut Transaction, page_dev_offset: u64, page_size_pow2: u8) {
-    self.metrics.incr_incomplete_object_count(txn, 1);
+    self.metrics.incomplete_object_count.fetch_add(1, Relaxed);
     self
-      .pages
-      .write_page_header(txn, page_dev_offset, ObjectPageHeader {
+      .headers
+      .write_header(txn, page_dev_offset, ObjectHeader {
         deleted_sec: None,
         metadata_size_pow2: page_size_pow2,
         next: 0,
@@ -113,8 +107,8 @@ impl IncompleteList {
     };
     if self.tail != 0 {
       self
-        .pages
-        .update_page_header::<ObjectPageHeader>(txn, self.tail, |i| {
+        .headers
+        .update_header(txn, self.tail, |i| {
           debug_assert_eq!(i.state, ObjectState::Incomplete);
           debug_assert_eq!(i.deleted_sec, None);
           i.next = page_dev_offset;
@@ -126,17 +120,14 @@ impl IncompleteList {
 
   /// WARNING: This does not update, overwrite, or clear the page header.
   pub async fn detach(&mut self, txn: &mut Transaction, page_dev_offset: u64) {
-    self.metrics.decr_incomplete_object_count(txn, 1);
-    let hdr = self
-      .pages
-      .read_page_header::<ObjectPageHeader>(page_dev_offset)
-      .await;
+    self.metrics.incomplete_object_count.fetch_sub(1, Relaxed);
+    let hdr = self.headers.read_header(page_dev_offset).await;
     if hdr.prev == 0 {
       self.update_head(txn, hdr.next);
     } else {
       self
-        .pages
-        .update_page_header::<ObjectPageHeader>(txn, hdr.prev, |i| {
+        .headers
+        .update_header(txn, hdr.prev, |i| {
           debug_assert_eq!(i.state, ObjectState::Incomplete);
           debug_assert_eq!(i.deleted_sec, None);
           i.next = hdr.next;
@@ -147,8 +138,8 @@ impl IncompleteList {
       self.update_tail(txn, hdr.prev);
     } else {
       self
-        .pages
-        .update_page_header::<ObjectPageHeader>(txn, hdr.next, |i| {
+        .headers
+        .update_header(txn, hdr.next, |i| {
           debug_assert_eq!(i.state, ObjectState::Incomplete);
           debug_assert_eq!(i.deleted_sec, None);
           i.prev = hdr.prev;

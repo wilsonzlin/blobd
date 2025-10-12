@@ -39,7 +39,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use tinybuf::TinyBuf;
 use tokio::runtime::Handle;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
@@ -730,7 +729,7 @@ impl LogBuffer {
     }
   }
 
-  pub async fn read_tuple(&self, key_raw: TinyBuf) -> Option<ObjectTupleData> {
+  pub async fn read_tuple(&self, key_raw: Vec<u8>) -> Option<ObjectTupleData> {
     let hash = blake3::hash(&key_raw);
     let bundle_idx = get_bundle_index_for_key(hash.as_bytes(), self.bundle_count);
     let key = ObjectTupleKey::from_raw_and_hash(key_raw, hash);
@@ -766,7 +765,7 @@ impl LogBuffer {
     }
   }
 
-  pub async fn upsert_tuple(&self, key: TinyBuf, data: ObjectTupleData) {
+  pub async fn upsert_tuple(&self, key: Vec<u8>, data: ObjectTupleData) {
     let key = ObjectTupleKey::from_raw(key);
     let (fut, signal) = SignalFuture::new();
     self
@@ -776,7 +775,7 @@ impl LogBuffer {
     fut.await;
   }
 
-  pub async fn delete_tuple(&self, key: TinyBuf) {
+  pub async fn delete_tuple(&self, key: Vec<u8>) {
     let key = ObjectTupleKey::from_raw(key);
     let (fut, signal) = SignalFuture::new();
     self

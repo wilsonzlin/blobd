@@ -1,18 +1,12 @@
-use crate::allocator::Allocator;
+use crate::allocator::Allocations;
+use crate::device::IDevice;
+use crate::object_header::OBJECT_HEADER_SIZE;
 use crate::page::Pages;
-use crate::page::PAGE_HEADER_CAP;
-#[cfg(test)]
-use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
-#[cfg(test)]
-use crate::test_util::journal::TestTransaction as Transaction;
 use crate::util::ceil_pow2;
 use crate::util::div_mod_pow2;
 use off64::int::Off64ReadInt;
 use off64::u8;
-#[cfg(not(test))]
-use seekable_async_file::SeekableAsyncFile;
-#[cfg(not(test))]
-use write_journal::Transaction;
+use std::sync::Arc;
 
 /**
 
@@ -80,7 +74,7 @@ impl ObjectOffsets {
   }
 
   pub fn created_ms(self) -> u64 {
-    self._reserved_by_header() + PAGE_HEADER_CAP
+    self._reserved_by_header() + OBJECT_HEADER_SIZE
   }
 
   pub fn size(self) -> u64 {
@@ -241,7 +235,7 @@ pub(crate) struct ObjectLayout {
   pub tail_page_sizes_pow2: TailPageSizes,
 }
 
-pub(crate) fn calc_object_layout(pages: &Pages, object_size: u64) -> ObjectLayout {
+pub(crate) fn calc_object_layout(pages: Pages, object_size: u64) -> ObjectLayout {
   let (lpage_count, tail_size) = div_mod_pow2(object_size, pages.lpage_size_pow2);
   let mut rem = ceil_pow2(tail_size, pages.spage_size_pow2);
   let mut tail_page_sizes_pow2 = TailPageSizes::new();
@@ -268,10 +262,9 @@ pub(crate) struct ReleasedObject {
 
 /// WARNING: This does not verify the page type, nor detach the inode from whatever list it's on, but will clear the page header via `alloc.release`.
 pub(crate) async fn release_object(
-  txn: &mut Transaction,
-  dev: &SeekableAsyncFile,
-  pages: &Pages,
-  alloc: &mut Allocator,
+  to_free: &mut Allocations,
+  dev: &Arc<dyn IDevice>,
+  pages: Pages,
   page_dev_offset: u64,
   page_size_pow2: u8,
 ) -> ReleasedObject {
@@ -289,17 +282,13 @@ pub(crate) async fn release_object(
     .with_tail_pages(tail_page_sizes_pow2.len());
   for i in 0..lpage_count {
     let page_dev_offset = raw.read_u48_be_at(off.lpage(i));
-    alloc
-      .release(txn, page_dev_offset, pages.lpage_size_pow2)
-      .await;
+    to_free.add(page_dev_offset, pages.lpage_size_pow2);
   }
   for (i, tail_page_size_pow2) in tail_page_sizes_pow2 {
     let page_dev_offset = raw.read_u48_be_at(off.tail_page(i));
-    alloc
-      .release(txn, page_dev_offset, tail_page_size_pow2)
-      .await;
+    to_free.add(page_dev_offset, tail_page_size_pow2);
   }
-  alloc.release(txn, page_dev_offset, page_size_pow2).await;
+  to_free.add(page_dev_offset, page_size_pow2);
   ReleasedObject {
     object_data_size: object_size,
     object_metadata_size: off._total_size(),

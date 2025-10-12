@@ -2,10 +2,9 @@ use super::OpResult;
 use crate::ctx::Ctx;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 pub struct OpDeleteObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
 }
 
 pub struct OpDeleteObjectOutput {}

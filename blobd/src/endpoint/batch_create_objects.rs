@@ -67,7 +67,7 @@ pub async fn endpoint_batch_create_objects(
         key: key.into(),
         size,
         #[cfg(feature = "blobd-lite")]
-        assoc_data: tinybuf::TinyBuf::empty(),
+        assoc_data: Vec::new(),
       })
       .await
     else {

@@ -10,10 +10,9 @@ use off64::usz;
 use std::cmp::max;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 pub struct OpReadObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub start: u64,
   // Exclusive.
   pub end: Option<u64>,

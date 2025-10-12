@@ -13,10 +13,9 @@ use off64::Off64WriteMut;
 use std::cmp::max;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 pub struct OpWriteObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub data: Vec<u8>,
 }
 

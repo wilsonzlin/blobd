@@ -16,11 +16,10 @@ use serde::Serialize;
 use std::cmp::max;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 use tracing::trace;
 
 pub struct OpCreateObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub size: u64,
 }
 

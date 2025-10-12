@@ -19,7 +19,6 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct BlobdExporterMarker {
@@ -46,7 +45,7 @@ impl PartialOrd for BlobdExporterMarker {
 pub struct BlobdExportedObject {
   // This is generally a blobd internal value and not that useful, but we'll export it anyway.
   pub id: u64,
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub size: u64,
   pub created: DateTime<Utc>,
   pub data_stream: Pin<Box<dyn Stream<Item = Buf> + Send>>,

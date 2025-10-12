@@ -31,7 +31,6 @@ use std::time::Duration;
 use stochastic_queue::stochastic_channel;
 use stochastic_queue::StochasticMpmcRecvError;
 use strum_macros::Display;
-use tinybuf::TinyBuf;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
 use tokio::time::sleep;
@@ -124,7 +123,7 @@ impl Pool {
     &self.data[start..end]
   }
 
-  fn get_then_prefix(&self, offset: u64, len: u64, prefix: u64) -> TinyBuf {
+  fn get_then_prefix(&self, offset: u64, len: u64, prefix: u64) -> Vec<u8> {
     let mut out = create_u64_le(prefix).to_vec();
     out.extend_from_slice(self.get(offset, len));
     out.into()
@@ -448,7 +447,7 @@ async fn main() {
             let res = blobd
               .inspect_object(InspectObjectInput {
                 key: pool.get_then_prefix(key_offset, key_len, key_prefix),
-                id: Some(object_id),
+                id: object_id,
               })
               .await;
             completed_by_type.inspect.fetch_add(1, Ordering::Relaxed);
@@ -483,7 +482,7 @@ async fn main() {
                 start: chunk_offset,
                 key: pool.get_then_prefix(key_offset, key_len, key_prefix),
                 stream_buffer_size: 1024 * 16,
-                id: Some(object_id),
+                id: object_id,
               })
               .await;
             while let Some(chunk) = res.data_stream.next().await {
@@ -527,7 +526,7 @@ async fn main() {
             blobd
               .delete_object(DeleteObjectInput {
                 key: pool.get_then_prefix(key_offset, key_len, key_prefix),
-                id: Some(object_id),
+                id: object_id,
               })
               .await;
             if completed_by_type.delete.fetch_add(1, Ordering::Relaxed) + 1 == object_count {

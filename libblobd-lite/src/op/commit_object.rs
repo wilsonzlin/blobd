@@ -2,13 +2,12 @@ use super::OpError;
 use super::OpResult;
 use crate::ctx::Ctx;
 use crate::incomplete_token::IncompleteToken;
+use crate::object::OBJECT_KEY_LEN_MAX;
 use crate::object::OBJECT_OFF;
+use crate::object_header::ObjectState;
 use crate::op::key_debug_str;
-use crate::page::ObjectPageHeader;
-use crate::page::ObjectState;
-use crate::stream::StreamEvent;
-use crate::stream::StreamEventType;
-use off64::int::Off64AsyncReadInt;
+use off64::int::Off64ReadInt;
+use off64::Off64Read;
 use std::sync::Arc;
 use tracing::trace;
 
@@ -34,20 +33,18 @@ pub(crate) async fn op_commit_object(
     return Err(OpError::ObjectNotFound);
   };
 
-  let object_id = ctx
+  let raw = ctx
     .device
-    .read_u64_be_at(object_dev_offset + OBJECT_OFF.id())
+    .read_at(
+      object_dev_offset,
+      OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages(),
+    )
     .await;
-  let key_len = ctx
-    .device
-    .read_u16_be_at(object_dev_offset + OBJECT_OFF.key_len())
-    .await;
-  let key = ctx
-    .device
-    .read_at(object_dev_offset + OBJECT_OFF.key(), key_len.into())
-    .await;
+  let object_id = raw.read_u64_be_at(OBJECT_OFF.id());
+  let key_len = raw.read_u16_be_at(OBJECT_OFF.key_len());
+  let key = raw.read_at(OBJECT_OFF.key(), key_len.into());
 
-  let (txn, event) = {
+  let txn = {
     let mut state = ctx.state.lock().await;
 
     let mut bkt = ctx.buckets.get_bucket_mut_for_key(&key).await;
@@ -59,10 +56,7 @@ pub(crate) async fn op_commit_object(
     );
 
     // Check while holding lock to prevent two commits to the same object.
-    let hdr = ctx
-      .pages
-      .read_page_header::<ObjectPageHeader>(object_dev_offset)
-      .await;
+    let hdr = ctx.headers.read_header(object_dev_offset).await;
     if hdr.state != ObjectState::Incomplete {
       return Err(OpError::ObjectNotFound);
     };
@@ -91,8 +85,8 @@ pub(crate) async fn op_commit_object(
 
     // Update inode next pointer.
     ctx
-      .pages
-      .update_page_header::<ObjectPageHeader>(&mut txn, object_dev_offset, |o| {
+      .headers
+      .update_header(&mut txn, object_dev_offset, |o| {
         debug_assert_eq!(o.state, ObjectState::Incomplete);
         debug_assert_eq!(o.deleted_sec, None);
         o.state = ObjectState::Committed;
@@ -100,19 +94,10 @@ pub(crate) async fn op_commit_object(
       })
       .await;
 
-    // Create stream event.
-    let event = state.stream.create_event_on_device(&mut txn, StreamEvent {
-      typ: StreamEventType::ObjectCommit,
-      bucket_id: bkt.bucket_id(),
-      object_id,
-    });
-
-    (txn, event)
+    txn
   };
 
   ctx.journal.commit_transaction(txn).await;
-
-  ctx.stream_in_memory.add_event_to_in_memory_list(event);
 
   trace!(
     key = key_debug_str(&key),

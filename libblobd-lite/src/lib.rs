@@ -1,28 +1,39 @@
 #![allow(non_snake_case)]
 
+use crate::allocator::AllocDir;
 use crate::allocator::Allocator;
-use crate::allocator::ALLOCSTATE_SIZE;
 use crate::bucket::Buckets;
+use crate::bucket::BUCKETS_OFFSETOF_BUCKET;
 use crate::deleted_list::start_deleted_list_reaper_background_loop;
 use crate::deleted_list::DeletedList;
+use crate::deleted_list::DELETED_LIST_OFFSETOF_HEAD;
+use crate::deleted_list::DELETED_LIST_OFFSETOF_TAIL;
 use crate::deleted_list::DELETED_LIST_STATE_SIZE;
+use crate::device::IDevice;
 use crate::incomplete_list::start_incomplete_list_reaper_background_loop;
 use crate::incomplete_list::IncompleteList;
+use crate::incomplete_list::INCOMPLETE_LIST_OFFSETOF_HEAD;
+use crate::incomplete_list::INCOMPLETE_LIST_OFFSETOF_TAIL;
 use crate::incomplete_list::INCOMPLETE_LIST_STATE_SIZE;
-use crate::metrics::METRICS_STATE_SIZE;
+use crate::journal::IJournal;
+use crate::object::calc_object_layout;
+use crate::object::OBJECT_KEY_LEN_MAX;
+use crate::object::OBJECT_OFF;
+use crate::object_header::Headers;
+use crate::object_header::ObjectHeader;
+use crate::object_header::OBJECT_HEADER_SIZE;
 use crate::object_id::ObjectIdSerial;
-use crate::stream::Stream;
-use crate::stream::STREAM_SIZE;
-#[cfg(test)]
-use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
-#[cfg(test)]
-use crate::test_util::journal::TestWriteJournal as WriteJournal;
+use crate::page::MIN_PAGE_SIZE_POW2;
 use crate::util::ceil_pow2;
 use bucket::BUCKETS_SIZE;
 use ctx::Ctx;
 use ctx::State;
 use futures::join;
+use futures::stream::iter;
+use futures::StreamExt;
 use metrics::BlobdMetrics;
+use off64::int::Off64ReadInt;
+use off64::usz;
 use op::commit_object::op_commit_object;
 use op::commit_object::OpCommitObjectInput;
 use op::commit_object::OpCommitObjectOutput;
@@ -43,32 +54,29 @@ use op::write_object::OpWriteObjectInput;
 use op::write_object::OpWriteObjectOutput;
 use op::OpResult;
 use page::Pages;
-#[cfg(not(test))]
+use parking_lot::Mutex as SyncMutex;
 use seekable_async_file::SeekableAsyncFile;
 use std::error::Error;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use stream::StreamEvent;
-use stream::StreamEventExpiredError;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::info;
-#[cfg(not(test))]
 use write_journal::WriteJournal;
 
 pub mod allocator;
 pub mod bucket;
 pub mod ctx;
 pub mod deleted_list;
+pub mod device;
 pub mod incomplete_list;
 pub mod incomplete_token;
+pub mod journal;
 pub mod metrics;
 pub mod object;
+pub mod object_header;
 pub mod object_id;
 pub mod op;
 pub mod page;
-pub mod stream;
-#[cfg(test)]
-pub mod test_util;
 pub mod util;
 
 /**
@@ -79,12 +87,9 @@ DEVICE
 Structure
 ---------
 
-metrics
 object_id_serial
-stream
 incomplete_list_state
 deleted_list_state
-allocator_state
 buckets
 journal // Placed here to make use of otherwise unused space due to heap alignment.
 heap
@@ -119,25 +124,50 @@ impl BlobdCfg {
   }
 }
 
-pub struct BlobdLoader {
-  device: SeekableAsyncFile,
-  device_size: Arc<AtomicU64>, // To allow online resizing, this must be atomically mutable at any time.
-  journal: Arc<WriteJournal>,
-  cfg: BlobdCfg,
+struct ObjectsLoad {
+  allocator: Arc<SyncMutex<Allocator>>,
+  headers: Headers,
+  metrics: Arc<BlobdMetrics>,
+}
 
-  metrics_dev_offset: u64,
+pub struct BlobdLoader {
+  device: Arc<dyn IDevice>,
+  journal: Arc<dyn IJournal>,
+  cfg: BlobdCfg,
+  pages: Pages,
+
   object_id_serial_dev_offset: u64,
-  stream_dev_offset: u64,
   incomplete_list_dev_offset: u64,
   deleted_list_dev_offset: u64,
-  allocator_dev_offset: u64,
   buckets_dev_offset: u64,
 
   heap_dev_offset: u64,
+  heap_size: u64,
 }
 
 impl BlobdLoader {
   pub fn new(device: SeekableAsyncFile, device_size: u64, cfg: BlobdCfg) -> Self {
+    Self::new_with_device_and_journal(
+      Arc::new(device.clone()),
+      |journal_dev_offset, journal_size| {
+        Arc::new(WriteJournal::new(
+          device.clone(),
+          journal_dev_offset,
+          journal_size,
+          Duration::from_micros(200),
+        ))
+      },
+      device_size,
+      cfg,
+    )
+  }
+
+  pub(crate) fn new_with_device_and_journal(
+    device: Arc<dyn IDevice>,
+    journal: impl FnOnce(u64, u64) -> Arc<dyn IJournal>,
+    device_size: u64,
+    cfg: BlobdCfg,
+  ) -> Self {
     assert!(cfg.bucket_count_log2 >= 12 && cfg.bucket_count_log2 <= 48);
     let bucket_count = 1u64 << cfg.bucket_count_log2;
 
@@ -145,13 +175,10 @@ impl BlobdLoader {
 
     const JOURNAL_SIZE_MIN: u64 = 1024 * 1024 * 32;
 
-    let metrics_dev_offset = 0;
-    let object_id_serial_dev_offset = metrics_dev_offset + METRICS_STATE_SIZE;
-    let stream_dev_offset = object_id_serial_dev_offset + 8;
-    let incomplete_list_dev_offset = stream_dev_offset + STREAM_SIZE;
+    let object_id_serial_dev_offset = 0;
+    let incomplete_list_dev_offset = object_id_serial_dev_offset + 8;
     let deleted_list_dev_offset = incomplete_list_dev_offset + INCOMPLETE_LIST_STATE_SIZE;
-    let allocator_dev_offset = deleted_list_dev_offset + DELETED_LIST_STATE_SIZE;
-    let buckets_dev_offset = allocator_dev_offset + ALLOCSTATE_SIZE;
+    let buckets_dev_offset = deleted_list_dev_offset + DELETED_LIST_STATE_SIZE;
     let buckets_size = BUCKETS_SIZE(bucket_count);
     let journal_dev_offset = buckets_dev_offset + buckets_size;
     let min_reserved_space = journal_dev_offset + JOURNAL_SIZE_MIN;
@@ -159,103 +186,188 @@ impl BlobdLoader {
     // `heap_dev_offset` is equivalent to the reserved size.
     let heap_dev_offset = ceil_pow2(min_reserved_space, cfg.lpage_size_pow2);
     let journal_size = heap_dev_offset - journal_dev_offset;
+    let heap_size = device_size - heap_dev_offset;
+
+    let pages = Pages::new(cfg.spage_size_pow2, cfg.lpage_size_pow2);
 
     info!(
       device_size,
       buckets_size,
       journal_size,
       reserved_size = heap_dev_offset,
+      heap_size,
       lpage_size = 1 << cfg.lpage_size_pow2,
       spage_size = 1 << cfg.spage_size_pow2,
       "init",
     );
 
-    #[cfg(not(test))]
-    let journal = Arc::new(WriteJournal::new(
-      device.clone(),
-      journal_dev_offset,
-      journal_size,
-      std::time::Duration::from_micros(200),
-    ));
-    #[cfg(test)]
-    let journal = Arc::new(WriteJournal::new(device.clone()));
+    let journal = journal(journal_dev_offset, journal_size);
 
     Self {
-      allocator_dev_offset,
       buckets_dev_offset,
       cfg,
       deleted_list_dev_offset,
-      device_size: Arc::new(AtomicU64::new(device_size)),
       device,
       heap_dev_offset,
+      heap_size,
       incomplete_list_dev_offset,
       journal,
-      metrics_dev_offset,
       object_id_serial_dev_offset,
-      stream_dev_offset,
+      pages,
     }
   }
 
   pub async fn format(&self) {
     let dev = &self.device;
     join! {
-      BlobdMetrics::format_device(dev, self.metrics_dev_offset),
       ObjectIdSerial::format_device(dev, self.object_id_serial_dev_offset),
-      Stream::format_device(dev, self.stream_dev_offset),
       IncompleteList::format_device(dev, self.incomplete_list_dev_offset),
       DeletedList::format_device(dev, self.deleted_list_dev_offset),
-      Allocator::format_device(dev, self.allocator_dev_offset, self.heap_dev_offset),
       Buckets::format_device(dev, self.buckets_dev_offset, self.cfg.bucket_count_log2),
       self.journal.format_device(),
     };
     dev.sync_data().await;
   }
 
+  async fn load_object_list(&self, l: &ObjectsLoad, mut cur: u64) {
+    while cur != 0 {
+      let raw = self
+        .device
+        .read_at(
+          cur,
+          OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).assoc_data_len(),
+        )
+        .await;
+      let hdr = ObjectHeader::deserialize(&raw[..usz!(OBJECT_HEADER_SIZE)]);
+      let size = raw.read_u40_be_at(OBJECT_OFF.size());
+      let alloc = calc_object_layout(self.pages, size);
+      let mut allocator = l.allocator.lock();
+      for i in 0..alloc.lpage_count {
+        let lpage_dev_offset = raw.read_u48_be_at(OBJECT_OFF.lpage(i));
+        allocator.mark_as_allocated(lpage_dev_offset, self.pages.lpage_size_pow2);
+      }
+      for (i, pow2) in alloc.tail_page_sizes_pow2.into_iter() {
+        let tail_page_dev_offset = raw.read_u48_be_at(OBJECT_OFF.tail_page(i));
+        allocator.mark_as_allocated(tail_page_dev_offset, pow2);
+      }
+      cur = hdr.next;
+    }
+  }
+
+  async fn load_buckets(&self, l: &ObjectsLoad) {
+    // TODO Allow configuring concurrency.
+    iter(0..self.cfg.bucket_count())
+      .for_each_concurrent(64, async |bkt_id| {
+        let cur = self
+          .device
+          .read_u40_be_at(self.buckets_dev_offset + BUCKETS_OFFSETOF_BUCKET(bkt_id))
+          .await
+          >> MIN_PAGE_SIZE_POW2;
+        self.load_object_list(l, cur).await;
+      })
+      .await;
+  }
+
+  async fn load_incomplete_list(&self, l: &ObjectsLoad) -> IncompleteList {
+    let dev_offset = self.incomplete_list_dev_offset;
+    let head = self
+      .device
+      .read_u48_be_at(dev_offset + INCOMPLETE_LIST_OFFSETOF_HEAD)
+      .await;
+    let tail = self
+      .device
+      .read_u48_be_at(dev_offset + INCOMPLETE_LIST_OFFSETOF_TAIL)
+      .await;
+    self.load_object_list(l, head).await;
+    IncompleteList::new(
+      self.device.clone(),
+      dev_offset,
+      l.headers.clone(),
+      l.metrics.clone(),
+      self.cfg.reap_objects_after_secs,
+      head,
+      tail,
+    )
+  }
+
+  async fn load_deleted_list(&self, l: &ObjectsLoad) -> DeletedList {
+    let dev_offset = self.deleted_list_dev_offset;
+    let head = self
+      .device
+      .read_u48_be_at(dev_offset + DELETED_LIST_OFFSETOF_HEAD)
+      .await;
+    let tail = self
+      .device
+      .read_u48_be_at(dev_offset + DELETED_LIST_OFFSETOF_TAIL)
+      .await;
+    self.load_object_list(l, head).await;
+    DeletedList::new(
+      self.device.clone(),
+      dev_offset,
+      l.headers.clone(),
+      self.pages,
+      l.metrics.clone(),
+      self.cfg.reap_objects_after_secs,
+      head,
+      tail,
+    )
+  }
+
   pub async fn load(self) -> Blobd {
     self.journal.recover().await;
 
-    let dev = &self.device;
-
-    let pages = Arc::new(Pages::new(
-      self.journal.clone(),
-      self.heap_dev_offset,
-      self.cfg.spage_size_pow2,
-      self.cfg.lpage_size_pow2,
-    ));
-
     // Ensure journal has been recovered first before loading any other data.
-    let metrics = Arc::new(BlobdMetrics::load_from_device(dev, self.metrics_dev_offset).await);
-    let (
-      object_id_serial,
-      (stream, stream_in_memory),
-      incomplete_list,
-      deleted_list,
-      allocator,
-      buckets,
-    ) = join! {
-      ObjectIdSerial::load_from_device(dev, self.object_id_serial_dev_offset),
-      Stream::load_from_device(dev, self.stream_dev_offset),
-      IncompleteList::load_from_device(dev.clone(), self.incomplete_list_dev_offset, pages.clone(), metrics.clone(), self.cfg.reap_objects_after_secs),
-      DeletedList::load_from_device(dev.clone(), self.deleted_list_dev_offset, pages.clone(), metrics.clone(), self.cfg.reap_objects_after_secs),
-      Allocator::load_from_device(dev, self.device_size.clone(), self.allocator_dev_offset, pages.clone(), metrics.clone(), self.heap_dev_offset),
-      Buckets::load_from_device(dev.clone(), self.journal.clone(), pages.clone(), self.buckets_dev_offset, self.cfg.bucket_lock_count_log2),
+    let dev = self.device.clone();
+    let journal = self.journal.clone();
+    let metrics = Arc::new(BlobdMetrics::new());
+    let pages = self.pages;
+    let headers = Headers::new(
+      journal.clone(),
+      self.heap_dev_offset,
+      self.pages.spage_size_pow2,
+    );
+    let buckets = Buckets::new(
+      dev.clone(),
+      journal.clone(),
+      headers.clone(),
+      self.buckets_dev_offset,
+      self.cfg.bucket_count_log2,
+      self.cfg.bucket_lock_count_log2,
+    );
+    let objects_load = ObjectsLoad {
+      allocator: Arc::new(SyncMutex::new(Allocator::new(
+        self.heap_dev_offset,
+        self.heap_size,
+        pages,
+        AllocDir::Left,
+        metrics.clone(),
+      ))),
+      headers: headers.clone(),
+      metrics: metrics.clone(),
     };
+    let (object_id_serial, incomplete_list, deleted_list, _) = join! {
+      ObjectIdSerial::load_from_device(&dev, self.object_id_serial_dev_offset),
+      self.load_incomplete_list(&objects_load),
+      self.load_deleted_list(&objects_load),
+      self.load_buckets(&objects_load),
+    };
+    let ObjectsLoad { allocator, .. } = objects_load;
+    let allocator = Arc::try_unwrap(allocator).ok().unwrap();
 
     let ctx = Arc::new(Ctx {
+      allocator,
       buckets,
-      device: dev.clone(),
-      journal: self.journal.clone(),
-      metrics: metrics.clone(),
-      pages: pages.clone(),
+      device: dev,
+      headers,
+      journal,
+      metrics,
+      pages,
       reap_objects_after_secs: self.cfg.reap_objects_after_secs,
-      stream_in_memory,
       versioning: self.cfg.versioning,
       state: Mutex::new(State {
-        allocator,
         deleted_list,
         incomplete_list,
         object_id_serial,
-        stream,
       }),
     });
 
@@ -286,13 +398,6 @@ impl Blobd {
       start_incomplete_list_reaper_background_loop(self.ctx.clone()),
       start_deleted_list_reaper_background_loop(self.ctx.clone()),
     };
-  }
-
-  pub async fn get_stream_event(
-    &self,
-    id: u64,
-  ) -> Result<Option<StreamEvent>, StreamEventExpiredError> {
-    self.ctx.stream_in_memory.get_event(id)
   }
 
   pub async fn commit_object(&self, input: OpCommitObjectInput) -> OpResult<OpCommitObjectOutput> {

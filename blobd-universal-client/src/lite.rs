@@ -29,7 +29,6 @@ use seekable_async_file::SeekableAsyncFile;
 use seekable_async_file::SeekableAsyncFileMetrics;
 use std::sync::Arc;
 use std::time::Duration;
-use tinybuf::TinyBuf;
 use tokio::join;
 use tokio::spawn;
 use tracing::info;
@@ -87,14 +86,12 @@ impl BlobdProvider for Lite {
   fn metrics(&self) -> Vec<(&'static str, u64)> {
     let metrics = self.blobd.metrics();
     vec![
-      ("allocated_block_count", metrics.allocated_block_count()),
-      ("allocated_page_count", metrics.allocated_page_count()),
+      ("allocated_bytes", metrics.allocated_bytes()),
       ("deleted_object_count", metrics.deleted_object_count()),
       ("incomplete_object_count", metrics.incomplete_object_count()),
       ("object_count", metrics.object_count()),
       ("object_data_bytes", metrics.object_data_bytes()),
       ("object_metadata_bytes", metrics.object_metadata_bytes()),
-      ("used_bytes", metrics.used_bytes()),
     ]
   }
 
@@ -104,7 +101,7 @@ impl BlobdProvider for Lite {
     let res = self
       .blobd
       .create_object(OpCreateObjectInput {
-        assoc_data: TinyBuf::empty(),
+        assoc_data: Vec::new(),
         key: input.key,
         size: input.size,
       })

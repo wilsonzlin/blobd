@@ -4,24 +4,21 @@ use crate::bucket::FoundObject;
 use crate::ctx::Ctx;
 use crate::object::calc_object_layout;
 use crate::object::OBJECT_OFF;
+use crate::object_header::ObjectState;
 use crate::op::key_debug_str;
-use crate::page::ObjectPageHeader;
-use crate::page::ObjectState;
 use crate::util::div_pow2;
 use crate::util::mod_pow2;
 use futures::Stream;
-use off64::int::Off64AsyncReadInt;
 use off64::u16;
 use off64::u8;
 use std::cmp::min;
 use std::pin::Pin;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 use tokio::time::Instant;
 use tracing::trace;
 
 pub struct OpReadObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   // Only useful if versioning is enabled.
   pub id: Option<u64>,
   pub start: u64,
@@ -31,7 +28,7 @@ pub struct OpReadObjectInput {
 }
 
 pub struct OpReadObjectOutput {
-  pub data_stream: Pin<Box<dyn Stream<Item = OpResult<TinyBuf>> + Send>>,
+  pub data_stream: Pin<Box<dyn Stream<Item = OpResult<Vec<u8>>> + Send>>,
   pub start: u64,
   pub end: u64,
   pub object_size: u64,
@@ -81,7 +78,7 @@ pub(crate) async fn op_read_object(
     "found object to read"
   );
 
-  let alloc_cfg = calc_object_layout(&ctx.pages, object_size);
+  let alloc_cfg = calc_object_layout(ctx.pages, object_size);
   let off = OBJECT_OFF
     .with_key_len(u16!(req.key.len()))
     .with_lpages(alloc_cfg.lpage_count)
@@ -109,8 +106,8 @@ pub(crate) async fn op_read_object(
       if now.duration_since(last_checked_valid).as_secs() >= 60 {
         // Check that object is still valid.
         let hdr = ctx
-          .pages
-          .read_page_header::<ObjectPageHeader>(object_dev_offset)
+          .headers
+          .read_header(object_dev_offset)
           .await;
         // We can't use `return Err(...)` in `try_stream!`.
         if hdr.state == ObjectState::Committed {

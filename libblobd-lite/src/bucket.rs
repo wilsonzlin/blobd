@@ -1,27 +1,17 @@
 use crate::ctx::State;
+use crate::device::IDevice;
+use crate::journal::IJournal;
 use crate::object::OBJECT_KEY_LEN_MAX;
 use crate::object::OBJECT_OFF;
-use crate::page::ObjectPageHeader;
-use crate::page::ObjectState;
-use crate::page::Pages;
+use crate::object_header::Headers;
+use crate::object_header::ObjectState;
 use crate::page::MIN_PAGE_SIZE_POW2;
-use crate::stream::CreatedStreamEvent;
-use crate::stream::StreamEvent;
-use crate::stream::StreamEventType;
-#[cfg(test)]
-use crate::test_util::device::TestSeekableAsyncFile as SeekableAsyncFile;
-#[cfg(test)]
-use crate::test_util::journal::TestTransaction as Transaction;
-#[cfg(test)]
-use crate::test_util::journal::TestWriteJournal as WriteJournal;
 use itertools::Itertools;
 use off64::int::create_u40_be;
 use off64::int::Off64ReadInt;
 use off64::u16;
 use off64::usz;
 use off64::Off64Read;
-#[cfg(not(test))]
-use seekable_async_file::SeekableAsyncFile;
 use std::ops::Deref;
 use std::sync::Arc;
 use tokio::join;
@@ -30,10 +20,7 @@ use tokio::sync::RwLockReadGuard;
 use tokio::sync::RwLockWriteGuard;
 use tracing::debug;
 use twox_hash::xxh3::hash64;
-#[cfg(not(test))]
 use write_journal::Transaction;
-#[cfg(not(test))]
-use write_journal::WriteJournal;
 
 /**
 
@@ -49,15 +36,12 @@ Because we allow deletion of objects and aim for immediate freeing of space, we 
 Structure
 ---------
 
-u8 count_log2_between_12_and_40_inclusive
 u40[] dev_offset_rshift8_or_zero
 
 **/
 
-pub(crate) const BUCKETS_OFFSETOF_COUNT_LOG2: u64 = 0;
-
 pub(crate) fn BUCKETS_OFFSETOF_BUCKET(bkt_id: u64) -> u64 {
-  BUCKETS_OFFSETOF_COUNT_LOG2 + (bkt_id * 5)
+  bkt_id * 5
 }
 
 pub(crate) fn BUCKETS_SIZE(bkt_cnt: u64) -> u64 {
@@ -81,17 +65,13 @@ pub(crate) struct ReadableLockedBucket<'b, 'k> {
 }
 
 impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
-  pub fn bucket_id(&self) -> u64 {
-    self.bucket_id
-  }
-
   pub async fn find_object(&self, expected_id: Option<u64>) -> Option<FoundObject> {
     let mut dev_offset = self.get_head().await;
     let mut prev_dev_offset = None;
     while dev_offset > 0 {
       let (hdr, raw) = join! {
         // SAFETY: We're holding a read lock, so the linked list cannot be in an invalid/intermediate state, and all elements should be committed objects.
-        self.buckets.pages.read_page_header::<ObjectPageHeader>(dev_offset),
+        self.buckets.headers.read_header(dev_offset),
         self.buckets.dev.read_at(dev_offset, OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages()),
       };
       debug_assert_eq!(hdr.state, ObjectState::Committed);
@@ -153,22 +133,22 @@ pub(crate) struct BucketWriteLocked<'b, 'k, 'l> {
 }
 
 impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
+  /// Returns true if the object was found and moved to the deleted list, false otherwise.
   pub async fn move_object_to_deleted_list_if_exists(
     &mut self,
     txn: &mut Transaction,
     // TODO This is a workaround for the borrow checker, as it won't let us borrow both `deleted_list` and `stream` in `State` mutably.
     state: &mut State,
     id: Option<u64>,
-  ) -> Option<CreatedStreamEvent> {
+  ) -> bool {
     let Some(FoundObject {
       prev_dev_offset: prev_obj,
       next_dev_offset: next_obj,
       dev_offset: obj_dev_offset,
-      id: object_id,
       ..
     }) = self.find_object(id).await
     else {
-      return None;
+      return false;
     };
 
     // Detach from bucket.
@@ -177,8 +157,8 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
         // Update next pointer of previous inode.
         self
           .buckets
-          .pages
-          .update_page_header::<ObjectPageHeader>(txn, prev_inode_dev_offset, |p| {
+          .headers
+          .update_header(txn, prev_inode_dev_offset, |p| {
             debug_assert_eq!(p.state, ObjectState::Committed);
             debug_assert_eq!(p.deleted_sec, None);
             p.next = next_obj.unwrap_or(0);
@@ -194,20 +174,13 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
     // Attach to deleted list.
     state.deleted_list.attach(txn, obj_dev_offset).await;
 
-    // Create event.
-    let e = state.stream.create_event_on_device(txn, StreamEvent {
-      typ: StreamEventType::ObjectDelete,
-      bucket_id: self.state.bucket_id,
-      object_id,
-    });
-
-    Some(e)
+    true
   }
 
   pub fn mutate_head(&mut self, txn: &mut Transaction, dev_offset: u64) {
     txn.write_with_overlay(
       self.buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id),
-      create_u40_be(dev_offset >> MIN_PAGE_SIZE_POW2),
+      create_u40_be(dev_offset >> MIN_PAGE_SIZE_POW2).to_vec(),
     );
   }
 }
@@ -225,20 +198,20 @@ pub(crate) struct Buckets {
   bucket_lock_count_pow2: u8,
   bucket_locks: Vec<RwLock<()>>,
   dev_offset: u64,
-  dev: SeekableAsyncFile,
-  journal: Arc<WriteJournal>,
-  pages: Arc<Pages>,
+  dev: Arc<dyn IDevice>,
+  journal: Arc<dyn IJournal>,
+  headers: Headers,
 }
 
 impl Buckets {
-  pub async fn load_from_device(
-    dev: SeekableAsyncFile,
-    journal: Arc<WriteJournal>,
-    pages: Arc<Pages>,
+  pub fn new(
+    dev: Arc<dyn IDevice>,
+    journal: Arc<dyn IJournal>,
+    headers: Headers,
     dev_offset: u64,
+    bucket_count_pow2: u8,
     bucket_lock_count_pow2: u8,
   ) -> Buckets {
-    let bucket_count_pow2 = dev.read_at(dev_offset, 1).await[0];
     let bucket_locks = (0..1 << bucket_lock_count_pow2)
       .map(|_| RwLock::new(()))
       .collect_vec();
@@ -253,15 +226,14 @@ impl Buckets {
       bucket_locks,
       dev_offset,
       dev,
+      headers,
       journal,
-      pages,
     }
   }
 
-  pub async fn format_device(dev: &SeekableAsyncFile, dev_offset: u64, bucket_count_pow2: u8) {
-    let mut raw = vec![0u8; usz!(BUCKETS_SIZE(1 << bucket_count_pow2))];
-    raw[usz!(BUCKETS_OFFSETOF_COUNT_LOG2)] = bucket_count_pow2;
-    dev.write_at(dev_offset, raw).await;
+  pub async fn format_device(dev: &Arc<dyn IDevice>, dev_offset: u64, bucket_count_pow2: u8) {
+    let raw = vec![0u8; usz!(BUCKETS_SIZE(1 << bucket_count_pow2))];
+    dev.write_at(dev_offset, &raw).await;
   }
 
   fn bucket_id_for_key(&self, key: &[u8]) -> u64 {
@@ -282,7 +254,7 @@ impl Buckets {
     }
   }
 
-  pub async fn get_bucket_for_key<'b, 'k>(&'b self, key: &'k [u8]) -> BucketReadLocked<'b, 'k, '_> {
+  pub async fn get_bucket_for_key<'b, 'k>(&'b self, key: &'k [u8]) -> BucketReadLocked<'b, 'k, 'b> {
     let state = self.build_readable_locked_bucket(key);
     let lock = self.bucket_locks[self.bucket_lock_id_for_bucket_id(state.bucket_id)]
       .read()
@@ -293,7 +265,7 @@ impl Buckets {
   pub async fn get_bucket_mut_for_key<'b, 'k>(
     &'b self,
     key: &'k [u8],
-  ) -> BucketWriteLocked<'b, 'k, '_> {
+  ) -> BucketWriteLocked<'b, 'k, 'b> {
     let state = self.build_readable_locked_bucket(key);
     let lock = self.bucket_locks[self.bucket_lock_id_for_bucket_id(state.bucket_id)]
       .write()
