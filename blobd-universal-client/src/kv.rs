@@ -9,7 +9,7 @@ use super::InspectObjectOutput;
 use super::ReadObjectInput;
 use super::ReadObjectOutput;
 use super::WriteObjectInput;
-use crate::BlobdProvider;
+use crate::Store;
 use async_trait::async_trait;
 use futures::stream::once;
 use futures::StreamExt;
@@ -25,11 +25,11 @@ use off64::usz;
 use std::sync::Arc;
 use tracing::info;
 
-pub struct Kv {
+pub struct BlobdKVStore {
   blobd: Blobd,
 }
 
-impl Kv {
+impl BlobdKVStore {
   pub async fn start(cfg: InitCfg) -> Self {
     assert_eq!(cfg.partitions.len(), 1);
     let device_cfg = &cfg.partitions[0];
@@ -68,7 +68,7 @@ impl Kv {
 }
 
 #[async_trait]
-impl BlobdProvider for Kv {
+impl Store for BlobdKVStore {
   #[rustfmt::skip]
   fn metrics(&self) -> Vec<(&'static str, u64)> {
     let metrics = self.blobd.metrics();

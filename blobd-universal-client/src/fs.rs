@@ -1,4 +1,4 @@
-use crate::BlobdProvider;
+use crate::Store;
 use crate::CommitObjectInput;
 use crate::CommitObjectOutput;
 use crate::CreateObjectInput;
@@ -49,9 +49,11 @@ impl FileSystemStore {
   }
 
   fn get_path(&self, key: &[u8]) -> PathBuf {
+    // Hash key otherwise all paths may have the same prefix because of the distribution of keys.
+    let hash_ascii = BASE64_URL_SAFE_NO_PAD.encode(blake3::hash(key).as_bytes());
     let key_ascii = BASE64_URL_SAFE_NO_PAD.encode(key);
     let mut path = self.prefix.clone();
-    for c in key_ascii.chars().take(self.tiering) {
+    for c in hash_ascii.chars().take(self.tiering) {
       path.push(c.to_string());
     }
     path.push(key_ascii);
@@ -60,7 +62,7 @@ impl FileSystemStore {
 }
 
 #[async_trait]
-impl BlobdProvider for FileSystemStore {
+impl Store for FileSystemStore {
   fn metrics(&self) -> Vec<(&'static str, u64)> {
     vec![]
   }

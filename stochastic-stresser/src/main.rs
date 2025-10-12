@@ -1,7 +1,7 @@
-use blobd_universal_client::direct::Direct;
-use blobd_universal_client::kv::Kv;
-use blobd_universal_client::lite::Lite;
-use blobd_universal_client::BlobdProvider;
+use blobd_universal_client::direct::BlobdDirectStore;
+use blobd_universal_client::kv::BlobdKVStore;
+use blobd_universal_client::lite::BlobdLiteStore;
+use blobd_universal_client::Store;
 use blobd_universal_client::CommitObjectInput;
 use blobd_universal_client::CreateObjectInput;
 use blobd_universal_client::DeleteObjectInput;
@@ -235,10 +235,10 @@ async fn main() {
       })
       .collect(),
   };
-  let blobd: Arc<dyn BlobdProvider> = match cli.target {
-    TargetType::Direct => Arc::new(Direct::start(cfg).await),
-    TargetType::Kv => Arc::new(Kv::start(cfg).await),
-    TargetType::Lite => Arc::new(Lite::start(cfg).await),
+  let blobd: Arc<dyn Store> = match cli.target {
+    TargetType::Direct => Arc::new(BlobdDirectStore::start(cfg).await),
+    TargetType::Kv => Arc::new(BlobdKVStore::start(cfg).await),
+    TargetType::Lite => Arc::new(BlobdLiteStore::start(cfg).await),
   };
 
   info!(

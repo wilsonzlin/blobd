@@ -1,4 +1,4 @@
-use crate::BlobdProvider;
+use crate::Store;
 use crate::CommitObjectInput;
 use crate::CommitObjectOutput;
 use crate::CreateObjectInput;
@@ -76,7 +76,7 @@ impl RocksDBStore {
 }
 
 #[async_trait]
-impl BlobdProvider for RocksDBStore {
+impl Store for RocksDBStore {
   fn metrics(&self) -> Vec<(&'static str, u64)> {
     vec![]
   }

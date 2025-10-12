@@ -9,6 +9,7 @@ aws-config = { version = "1.8.6", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1.2.6", features = ["hardcoded-credentials"] }
 aws-sdk-s3 = "1.106.0"
 base64 = "0.22.1"
+blake3 = "1.8.2"
 dashmap = "6.1.0"
 futures = "0.3.28"
 itertools = "0.14.0"

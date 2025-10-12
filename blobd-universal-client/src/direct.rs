@@ -9,7 +9,7 @@ use super::InspectObjectOutput;
 use super::ReadObjectInput;
 use super::ReadObjectOutput;
 use super::WriteObjectInput;
-use crate::BlobdProvider;
+use crate::Store;
 use async_trait::async_trait;
 use futures::stream::once;
 use futures::StreamExt;
@@ -30,16 +30,11 @@ use off64::u8;
 use std::sync::Arc;
 use tracing::info;
 
-pub struct Direct {
+pub struct BlobdDirectStore {
   blobd: Blobd,
 }
 
-fn div_ceil(v: u64, d: u64) -> u64 {
-  let (div, rem) = (v / d, v % d);
-  div + if rem > 0 { 1 } else { 0 }
-}
-
-impl Direct {
+impl BlobdDirectStore {
   pub async fn start(cfg: InitCfg) -> Self {
     let part_count = u64!(cfg.partitions.len());
     let blobd = BlobdLoader::new(
@@ -60,7 +55,7 @@ impl Direct {
         expire_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
         lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
         // Each tuple requires around 20 bytes.
-        object_tuples_area_reserved_space: div_ceil(cfg.object_count * 20, part_count),
+        object_tuples_area_reserved_space: (cfg.object_count * 20).div_ceil(part_count),
         spage_size_pow2: u8!(cfg.spage_size.ilog2()),
         #[cfg(target_os = "linux")]
         uring_coop_taskrun: false,
@@ -84,7 +79,7 @@ impl Direct {
 }
 
 #[async_trait]
-impl BlobdProvider for Direct {
+impl Store for BlobdDirectStore {
   #[rustfmt::skip]
   fn metrics(&self) -> Vec<(&'static str, u64)> {
     let metrics = self.blobd.metrics();

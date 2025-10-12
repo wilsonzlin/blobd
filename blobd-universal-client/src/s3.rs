@@ -1,4 +1,4 @@
-use crate::BlobdProvider;
+use crate::Store;
 use crate::CommitObjectInput;
 use crate::CommitObjectOutput;
 use crate::CreateObjectInput;
@@ -77,7 +77,7 @@ pub struct S3Store {
 }
 
 #[async_trait]
-impl BlobdProvider for S3Store {
+impl Store for S3Store {
   fn metrics(&self) -> Vec<(&'static str, u64)> {
     vec![]
   }

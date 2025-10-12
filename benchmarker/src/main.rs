@@ -1,11 +1,11 @@
 use ahash::HashMap;
 use ahash::HashMapExt;
-use blobd_universal_client::direct::Direct;
+use blobd_universal_client::direct::BlobdDirectStore;
 use blobd_universal_client::fs::FileSystemStore;
-use blobd_universal_client::kv::Kv;
-use blobd_universal_client::lite::Lite;
+use blobd_universal_client::kv::BlobdKVStore;
+use blobd_universal_client::lite::BlobdLiteStore;
 use blobd_universal_client::s3::S3StoreConfig;
-use blobd_universal_client::BlobdProvider;
+use blobd_universal_client::Store;
 use blobd_universal_client::CommitObjectInput;
 use blobd_universal_client::CreateObjectInput;
 use blobd_universal_client::DeleteObjectInput;
@@ -57,9 +57,9 @@ const EMPTY_POOL: [u8; 16_777_216] = [0u8; 16_777_216];
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, Serialize)]
 enum TargetType {
   Direct,
-  Kv,
+  KV,
   Lite,
-  Fs,
+  FS,
   S3,
 }
 
@@ -234,11 +234,11 @@ async fn main() {
       .collect(),
   };
 
-  let blobd: Arc<dyn BlobdProvider> = match cfg.target {
-    TargetType::Direct => Arc::new(Direct::start(init_cfg).await),
-    TargetType::Kv => Arc::new(Kv::start(init_cfg).await),
-    TargetType::Lite => Arc::new(Lite::start(init_cfg).await),
-    TargetType::Fs => Arc::new(FileSystemStore::new(
+  let store: Arc<dyn Store> = match cfg.target {
+    TargetType::Direct => Arc::new(BlobdDirectStore::start(init_cfg).await),
+    TargetType::KV => Arc::new(BlobdKVStore::start(init_cfg).await),
+    TargetType::Lite => Arc::new(BlobdLiteStore::start(init_cfg).await),
+    TargetType::FS => Arc::new(FileSystemStore::new(
       cfg.prefix.unwrap(),
       cfg.tiering.unwrap(),
     )),
@@ -252,10 +252,10 @@ async fn main() {
     let now = Instant::now();
     iter(0..object_count)
       .for_each_concurrent(concurrency, async |i| {
-        let blobd = blobd.clone();
+        let store = store.clone();
         let incomplete_tokens = incomplete_tokens.clone();
         spawn(async move {
-          let res = blobd
+          let res = store
             .create_object(CreateObjectInput {
               key: create_u64_be(i).into(),
               size: object_size,
@@ -282,11 +282,11 @@ async fn main() {
     let now = Instant::now();
     iter(incomplete_tokens.lock().to_vec())
       .for_each_concurrent(concurrency, async |(key, incomplete_token)| {
-        let blobd = blobd.clone();
+        let store = store.clone();
         spawn(async move {
           for offset in (0..object_size).step_by(usz!(lpage_size)) {
             let data_len = min(object_size - offset, lpage_size);
-            blobd
+            store
               .write_object(WriteObjectInput {
                 key: create_u64_be(key).into(),
                 offset,
@@ -317,9 +317,9 @@ async fn main() {
     let now = Instant::now();
     iter(incomplete_tokens.lock().to_vec())
       .for_each_concurrent(concurrency, async |(_, incomplete_token)| {
-        let blobd = blobd.clone();
+        let store = store.clone();
         spawn(async move {
-          blobd
+          store
             .commit_object(CommitObjectInput {
               incomplete_token: incomplete_token.clone(),
             })
@@ -345,9 +345,9 @@ async fn main() {
   let now = Instant::now();
   iter(0..object_count)
     .for_each_concurrent(concurrency, async |i| {
-      let blobd = blobd.clone();
+      let store = store.clone();
       spawn(async move {
-        blobd
+        store
           .inspect_object(InspectObjectInput {
             key: create_u64_be(i).into(),
             id: None,
@@ -373,10 +373,10 @@ async fn main() {
   let now = Instant::now();
   iter(0..object_count)
     .for_each_concurrent(concurrency, async |i| {
-      let blobd = blobd.clone();
+      let store = store.clone();
       spawn(async move {
         for start in (0..object_size).step_by(usz!(read_size)) {
-          let res = blobd
+          let res = store
             .read_object(ReadObjectInput {
               key: create_u64_be(i).into(),
               id: None,
@@ -411,9 +411,9 @@ async fn main() {
     let now = Instant::now();
     iter(0..object_count)
       .for_each_concurrent(concurrency, async |i| {
-        let blobd = blobd.clone();
+        let store = store.clone();
         spawn(async move {
-          blobd
+          store
             .delete_object(DeleteObjectInput {
               key: create_u64_be(i).into(),
               id: None,
@@ -436,10 +436,10 @@ async fn main() {
     );
   };
 
-  blobd.wait_for_end().await;
+  store.wait_for_end().await;
   info!("blobd ended");
 
-  let final_metrics = blobd.metrics();
+  let final_metrics = store.metrics();
   for (key, value) in &final_metrics {
     info!(key, value, "final metric");
   }

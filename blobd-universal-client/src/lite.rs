@@ -9,7 +9,7 @@ use super::InspectObjectOutput;
 use super::ReadObjectInput;
 use super::ReadObjectOutput;
 use super::WriteObjectInput;
-use crate::BlobdProvider;
+use crate::Store;
 use async_trait::async_trait;
 use futures::stream::once;
 use futures::StreamExt;
@@ -33,11 +33,11 @@ use tokio::join;
 use tokio::spawn;
 use tracing::info;
 
-pub struct Lite {
+pub struct BlobdLiteStore {
   blobd: Blobd,
 }
 
-impl Lite {
+impl BlobdLiteStore {
   pub async fn start(cfg: InitCfg) -> Self {
     assert!(cfg.bucket_count.is_power_of_two());
     let bucket_count_log2: u8 = cfg.bucket_count.ilog2().try_into().unwrap();
@@ -81,7 +81,7 @@ impl Lite {
 }
 
 #[async_trait]
-impl BlobdProvider for Lite {
+impl Store for BlobdLiteStore {
   #[rustfmt::skip]
   fn metrics(&self) -> Vec<(&'static str, u64)> {
     let metrics = self.blobd.metrics();
