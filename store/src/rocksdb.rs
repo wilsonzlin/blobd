@@ -1,4 +1,3 @@
-use crate::Store;
 use crate::CommitObjectInput;
 use crate::CommitObjectOutput;
 use crate::CreateObjectInput;
@@ -8,6 +7,7 @@ use crate::InspectObjectInput;
 use crate::InspectObjectOutput;
 use crate::ReadObjectInput;
 use crate::ReadObjectOutput;
+use crate::Store;
 use crate::WriteObjectInput;
 use async_trait::async_trait;
 use futures::StreamExt;

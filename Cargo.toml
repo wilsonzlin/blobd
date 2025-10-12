@@ -5,12 +5,12 @@ members = [
   "blobc",
   "blobd-client-rs",
   "blobd-token",
-  "blobd-universal-client",
   "blobd",
   "libblobd-direct",
   "libblobd-kv",
   "libblobd-lite",
   "stochastic-stresser",
+  "store",
 ]
 
 [profile.release]
