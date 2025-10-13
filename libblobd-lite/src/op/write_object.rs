@@ -26,7 +26,7 @@ pub struct OpWriteObjectInput<
   S: Unpin + Stream<Item = Result<D, Box<dyn Error + Send + Sync>>>,
 > {
   pub key: Vec<u8>,
-  pub object_id: u64,
+  pub object_id: u128,
   pub offset: u64,
   pub data_len: u64,
   pub data_stream: S,

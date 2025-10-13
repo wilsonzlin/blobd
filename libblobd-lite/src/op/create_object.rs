@@ -11,6 +11,8 @@ use off64::Off64WriteMut;
 use off64::int::Off64WriteMutInt;
 use off64::u16;
 use off64::usz;
+use rand::Rng;
+use rand::thread_rng;
 use std::cmp::max;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -23,7 +25,7 @@ pub struct OpCreateObjectInput {
 }
 
 pub struct OpCreateObjectOutput {
-  pub object_id: u64,
+  pub object_id: u128,
 }
 
 pub(crate) async fn op_create_object(
@@ -60,13 +62,13 @@ pub(crate) async fn op_create_object(
     "creating object"
   );
 
-  let object_id = ctx.object_id_serial.fetch_add(1, Relaxed);
+  let object_id: u128 = thread_rng().r#gen();
   let created_ms = get_now_ms();
 
   let mut raw = vec![0u8; usz!(meta_size)];
-  raw[usz!(off.state())] = ObjectState::Incomplete as u8;
-  raw[usz!(off.metadata_size_pow2())] = meta_size_pow2;
-  raw.write_u64_be_at(off.id(), object_id);
+  raw.write_u8_at(off.state(), ObjectState::Incomplete as u8);
+  raw.write_u8_at(off.metadata_size_pow2(), meta_size_pow2);
+  raw.write_u128_be_at(off.id(), object_id);
   raw.write_u48_be_at(off.created_ms(), created_ms);
   raw.write_u40_be_at(off.size(), req.size);
   raw.write_u16_be_at(off.key_len(), key_len);
@@ -87,7 +89,7 @@ pub(crate) async fn op_create_object(
     allocator.allocate(meta_size).unwrap()
   };
 
-  let txn = {
+  let (txn, overlay_entry) = {
     let mut bkt = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
     let mut txn = bkt.begin_transaction();
 
@@ -96,15 +98,16 @@ pub(crate) async fn op_create_object(
     let cur_bkt_head = bkt.get_head().await;
 
     // Update bucket head to point to this new inode.
-    bkt.update_head(&mut txn, dev_offset);
+    let overlay_entry = bkt.update_head(&mut txn, dev_offset);
 
     // Set inode next pointer.
     raw.write_u48_be_at(off.next_node_dev_offset(), cur_bkt_head);
 
-    txn
+    (txn, overlay_entry)
   };
   ctx.device.write_at(dev_offset, &raw).await;
   ctx.buckets.commit_transaction(txn).await;
+  ctx.overlay.evict(overlay_entry);
   trace!(key = key_debug_str(&req.key), object_id, "created object");
 
   ctx.metrics.object_count.fetch_add(1, Relaxed);

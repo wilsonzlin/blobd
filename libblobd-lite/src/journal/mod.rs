@@ -11,5 +11,4 @@ pub trait IJournal: Send + Sync {
   async fn start_commit_background_loop(&self);
   fn begin_transaction(&self) -> Transaction;
   async fn commit_transaction(&self, txn: Transaction);
-  async fn read_with_overlay(&self, offset: u64, len: u64) -> Vec<u8>;
 }

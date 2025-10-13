@@ -24,8 +24,4 @@ impl IJournal for WriteJournal {
   async fn commit_transaction(&self, txn: Transaction) {
     self.commit_transaction(txn).await;
   }
-
-  async fn read_with_overlay(&self, offset: u64, len: u64) -> Vec<u8> {
-    self.read_with_overlay(offset, len).await
-  }
 }

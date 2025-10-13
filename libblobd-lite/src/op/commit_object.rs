@@ -12,7 +12,7 @@ use tracing::trace;
 
 pub struct OpCommitObjectInput {
   pub key: Vec<u8>,
-  pub object_id: u64,
+  pub object_id: u128,
 }
 
 pub struct OpCommitObjectOutput {}
@@ -51,30 +51,34 @@ pub(crate) async fn op_commit_object(
   );
 
   let mut to_free = Allocations::new();
-  let txn = {
+  let (txn, deletion_overlay_entry, overlay_entry) = {
     let mut bkt = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
     let mut txn = bkt.begin_transaction();
 
-    if !ctx.versioning
-      && let Some(ex) = ex
-    {
-      bkt.delete_object(&mut txn, &mut to_free, ex).await;
+    let deletion_overlay_entry = match ex {
+      Some(ex) if !ctx.versioning => Some(bkt.delete_object(&mut txn, &mut to_free, ex).await),
+      _ => None,
     };
 
     // Detach from in-memory incomplete list.
     // TODO
 
     // Update inode state.
-    ctx
+    let overlay_entry = ctx
       .overlay
       .set_object_state(object_id, ObjectState::Committed);
     txn.write(object_dev_offset + OBJECT_OFF.state(), vec![
       ObjectState::Committed as u8,
     ]);
 
-    txn
+    (txn, deletion_overlay_entry, overlay_entry)
   };
   ctx.buckets.commit_transaction(txn).await;
+  ctx.allocator.lock().release_all(&to_free);
+  ctx.overlay.evict(overlay_entry);
+  if let Some(deletion_overlay_entry) = deletion_overlay_entry {
+    ctx.overlay.evict(deletion_overlay_entry);
+  }
 
   trace!(
     key = key_debug_str(&req.key),

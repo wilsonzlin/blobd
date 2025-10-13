@@ -27,7 +27,7 @@ u8 metadata_size_pow2
 u48 next_node_dev_offset
 u48 created_ms
 u40 size
-u64 obj_id
+u128 obj_id
 u16 key_len
 u8[] key
 u48[] lpage_page_dev_offset
@@ -44,7 +44,6 @@ pub(crate) enum ObjectState {
   // Avoid 0 to detect uninitialised/missing/corrupt state.
   Incomplete = 1,
   Committed,
-  Deleted,
 }
 
 #[derive(Clone, Copy)]
@@ -106,7 +105,7 @@ impl ObjectOffsets {
   }
 
   pub fn key_len(self) -> u64 {
-    self.id() + 8
+    self.id() + 16
   }
 
   pub fn key(self) -> u64 {
@@ -150,16 +149,6 @@ pub(crate) const OBJECT_OFF: ObjectOffsets = ObjectOffsets {
   tail_page_count: 0,
 };
 
-// This makes it so that a read of the object fields up to and including the key is at most exactly 512 bytes, which is a well-aligned well-sized no-waste read from most SSDs. In case you're worried that it's not long enough, this is 497 bytes:
-// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-// aaaaaaaaaaaaaaaaa
-pub const OBJECT_KEY_LEN_MAX: u16 = 497;
-
 /// Use this when you need to read fields from an object's metadata, as this will ensure the overlay is consistently used at all times.
 /// To use this, first read the raw bytes of the object metadata from disk, then provide to `ctx.obj(raw)`.
 /// You do not need to read all fields, if you don't need them all. But if you try to read a field that is not present, you will get a panic.
@@ -172,13 +161,17 @@ pub(crate) struct ObjectMeta {
   pub pages: Pages,
 }
 
+#[allow(unused)]
 impl ObjectMeta {
   pub fn state(&self) -> ObjectState {
-    ObjectState::from_u8(self.raw[usz!(OBJECT_OFF.state())]).unwrap()
+    self
+      .overlay
+      .get_object_state(self.id())
+      .unwrap_or_else(|| ObjectState::from_u8(self.raw.read_u8_at(OBJECT_OFF.state())).unwrap())
   }
 
   pub fn metadata_size_pow2(&self) -> u8 {
-    self.raw[usz!(OBJECT_OFF.metadata_size_pow2())]
+    self.raw.read_u8_at(OBJECT_OFF.metadata_size_pow2())
   }
 
   pub fn metadata_size(&self) -> u64 {
@@ -189,7 +182,7 @@ impl ObjectMeta {
     let raw = self
       .overlay
       .get_object_next(self.id())
-      .unwrap_or(self.raw.read_u48_be_at(OBJECT_OFF.next_node_dev_offset()));
+      .unwrap_or_else(|| self.raw.read_u48_be_at(OBJECT_OFF.next_node_dev_offset()));
     Some(raw).filter(|&o| o > 0)
   }
 
@@ -201,8 +194,8 @@ impl ObjectMeta {
     self.raw.read_u40_be_at(OBJECT_OFF.size())
   }
 
-  pub fn id(&self) -> u64 {
-    self.raw.read_u64_be_at(OBJECT_OFF.id())
+  pub fn id(&self) -> u128 {
+    self.raw.read_u128_be_at(OBJECT_OFF.id())
   }
 
   pub fn key_len(&self) -> u16 {

@@ -152,7 +152,7 @@ impl Store for BlobdDirectStore {
       .await
       .unwrap();
     CommitObjectOutput {
-      object_id: Some(res.object_id.unwrap()),
+      object_id: Some(res.object_id.unwrap().to_string()),
     }
   }
 
@@ -160,13 +160,13 @@ impl Store for BlobdDirectStore {
     let res = self
       .blobd
       .inspect_object(OpInspectObjectInput {
-        id: input.id,
+        id: input.id.map(|id| id.parse().unwrap()),
         key: input.key,
       })
       .await
       .unwrap();
     InspectObjectOutput {
-      id: Some(res.id),
+      id: Some(res.id.to_string()),
       size: res.size,
     }
   }
@@ -176,7 +176,7 @@ impl Store for BlobdDirectStore {
       .blobd
       .read_object(OpReadObjectInput {
         end: input.end,
-        id: input.id,
+        id: input.id.map(|id| id.parse().unwrap()),
         key: input.key,
         start: input.start,
         stream_buffer_size: input.stream_buffer_size,
@@ -192,7 +192,7 @@ impl Store for BlobdDirectStore {
     self
       .blobd
       .delete_object(OpDeleteObjectInput {
-        id: input.id,
+        id: input.id.map(|id| id.parse().unwrap()),
         key: input.key,
       })
       .await

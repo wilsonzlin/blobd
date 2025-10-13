@@ -3,19 +3,20 @@ use crate::allocator::pages::MIN_PAGE_SIZE_POW2;
 use crate::allocator::pages::Pages;
 use crate::device::IDevice;
 use crate::journal::IJournal;
-use crate::object::OBJECT_KEY_LEN_MAX;
+use crate::metrics::BlobdMetrics;
 use crate::object::OBJECT_OFF;
 use crate::object::ObjectMeta;
 use crate::object::ObjectState;
 use crate::overlay::Overlay;
+use crate::overlay::OverlayTicket;
 use futures::Stream;
 use futures::StreamExt;
 use itertools::Itertools;
 use off64::int::create_u40_be;
-use off64::u16;
 use off64::usz;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 use tokio::sync::RwLock;
 use tokio::sync::RwLockReadGuard;
 use tokio::sync::RwLockWriteGuard;
@@ -67,18 +68,18 @@ impl Deref for FoundObject {
 pub(crate) struct ReadableLockedBucket<'b, 'k> {
   bucket_id: u64,
   buckets: &'b Buckets,
-  key_len: u16,
   key: &'k [u8],
 }
 
 impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
-  pub fn iter_with_fields(&self, fields_to_fetch: u64) -> impl Stream<Item = FoundObject> + Unpin {
+  pub fn iter(&self) -> impl Stream<Item = FoundObject> + Unpin {
     Box::pin(async_stream::stream! {
       let mut dev_offset = self.get_head().await;
       let mut prev_dev_offset = None;
       while dev_offset > 0 {
         // SAFETY: We're holding a read lock, so the linked list cannot be in an invalid/intermediate state, and no objects in it can be deallocated while this lock is held.
-        let raw = self.buckets.dev.read_at(dev_offset, fields_to_fetch).await;
+        let key_len = self.buckets.dev.read_u16_be_at(dev_offset + OBJECT_OFF.key_len()).await;
+        let raw = self.buckets.dev.read_at(dev_offset, OBJECT_OFF.with_key_len(key_len).lpages()).await;
         let meta = self.buckets.obj(raw);
         let next = meta.next_node_dev_offset();
         if meta.key() == self.key {
@@ -94,14 +95,10 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
     })
   }
 
-  pub fn iter(&self) -> impl Stream<Item = FoundObject> {
-    self.iter_with_fields(OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages())
-  }
-
   pub async fn find_object(
     &self,
     expected_state: ObjectState,
-    expected_id: Option<u64>,
+    expected_id: Option<u128>,
   ) -> Option<FoundObject> {
     while let Some(o) = self.iter().next().await {
       if o.state() == expected_state && expected_id.is_none_or(|r| r == o.id()) {
@@ -153,8 +150,8 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
     self.buckets.journal.begin_transaction()
   }
 
-  pub fn update_head(&mut self, txn: &mut Transaction, dev_offset: u64) {
-    self
+  pub fn update_head(&mut self, txn: &mut Transaction, dev_offset: u64) -> OverlayTicket {
+    let overlay_entry = self
       .buckets
       .overlay
       .set_bucket_head(self.bucket_id, dev_offset);
@@ -162,6 +159,7 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
       self.buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id),
       create_u40_be(dev_offset >> MIN_PAGE_SIZE_POW2).to_vec(),
     );
+    overlay_entry
   }
 
   pub async fn delete_object(
@@ -169,27 +167,28 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
     txn: &mut Transaction,
     to_free: &mut Allocations,
     obj: FoundObject,
-  ) {
+  ) -> OverlayTicket {
     let dev = &self.buckets.dev;
     let overlay = &self.buckets.overlay;
     let pages = self.buckets.pages;
     let new_next = obj.next_node_dev_offset().unwrap_or(0);
 
     // Detach from bucket.
-    match obj.prev_dev_offset {
+    let overlay_entry = match obj.prev_dev_offset {
       Some(prev_inode_dev_offset) => {
         // Update next pointer of previous inode.
-        overlay.set_object_next(obj.id(), new_next);
+        let overlay_entry = overlay.set_object_next(obj.id(), new_next);
         dev
           .write_u48_be_at(
             prev_inode_dev_offset + OBJECT_OFF.next_node_dev_offset(),
             new_next,
           )
           .await;
+        overlay_entry
       }
       None => {
         // Update bucket head.
-        self.update_head(txn, new_next);
+        self.update_head(txn, new_next)
       }
     };
 
@@ -205,6 +204,15 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
       to_free.add(page_dev_offset, tail_page_size_pow2);
     }
     to_free.add(obj.dev_offset, obj.metadata_size_pow2());
+
+    let metrics = &self.buckets.metrics;
+    metrics.object_count.fetch_sub(1, Relaxed);
+    metrics.object_data_bytes.fetch_sub(obj.size(), Relaxed);
+    metrics
+      .object_metadata_bytes
+      .fetch_sub(obj.metadata_size(), Relaxed);
+
+    overlay_entry
   }
 }
 
@@ -223,14 +231,16 @@ pub(crate) struct Buckets {
   dev_offset: u64,
   dev: Arc<dyn IDevice>,
   journal: Arc<dyn IJournal>,
-  pages: Pages,
+  metrics: Arc<BlobdMetrics>,
   overlay: Arc<Overlay>,
+  pages: Pages,
 }
 
 impl Buckets {
   pub fn new(
     dev: Arc<dyn IDevice>,
     journal: Arc<dyn IJournal>,
+    metrics: Arc<BlobdMetrics>,
     pages: Pages,
     overlay: Arc<Overlay>,
     dev_offset: u64,
@@ -252,6 +262,7 @@ impl Buckets {
       dev_offset,
       dev,
       journal,
+      metrics,
       overlay,
       pages,
     }
@@ -289,7 +300,6 @@ impl Buckets {
       bucket_id,
       buckets: self,
       key,
-      key_len: u16!(key.len()),
     }
   }
 

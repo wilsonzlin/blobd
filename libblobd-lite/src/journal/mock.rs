@@ -29,6 +29,17 @@ impl MockWriteJournal {
   }
 }
 
+impl MockWriteJournal {
+  pub async fn read_with_overlay(&self, offset: u64, len: u64) -> Vec<u8> {
+    if let Some(e) = self.overlay.get(&offset) {
+      assert_eq!(e.value().data.len(), usz!(len));
+      e.value().data.clone()
+    } else {
+      self.device.read_at(offset, len).into()
+    }
+  }
+}
+
 #[async_trait]
 impl IJournal for MockWriteJournal {
   async fn format_device(&self) {}
@@ -50,14 +61,5 @@ impl IJournal for MockWriteJournal {
     let None = self.committed.insert(txn.serial_no(), txn) else {
       unreachable!();
     };
-  }
-
-  async fn read_with_overlay(&self, offset: u64, len: u64) -> Vec<u8> {
-    if let Some(e) = self.overlay.get(&offset) {
-      assert_eq!(e.value().data.len(), usz!(len));
-      e.value().data.clone()
-    } else {
-      self.device.read_at(offset, len).into()
-    }
   }
 }

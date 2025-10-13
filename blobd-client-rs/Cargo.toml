@@ -16,7 +16,7 @@ blobd-token = { version = "0.2.0", path = "../blobd-token" }
 bytes = "1.4"
 futures = "0.3"
 itertools = "0.10.5"
-off64 = "0.8"
+off64 = "0.9"
 percent-encoding = "2.2"
 reqwest = { version = "0.11", features = ["stream"] }
 serde = { version = "1.0", features = ["derive"] }

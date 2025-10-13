@@ -162,7 +162,7 @@ enum Task {
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
-    object_id: Option<u64>,
+    object_id: Option<String>,
   },
   Read {
     key_prefix: u64,
@@ -171,13 +171,13 @@ enum Task {
     data_len: u64,
     data_offset: u64,
     chunk_offset: u64,
-    object_id: Option<u64>,
+    object_id: Option<String>,
   },
   Delete {
     key_prefix: u64,
     key_len: u64,
     key_offset: u64,
-    object_id: Option<u64>,
+    object_id: Option<String>,
   },
 }
 
@@ -421,8 +421,12 @@ async fn main() {
             data_offset,
             incomplete_token,
           } => {
+            let key = pool.get_then_prefix(key_offset, key_len, key_prefix);
             let res = blobd
-              .commit_object(CommitObjectInput { incomplete_token })
+              .commit_object(CommitObjectInput {
+                incomplete_token,
+                key,
+              })
               .await;
             completed_by_type.commit.fetch_add(1, Ordering::Relaxed);
             tasks_sender
@@ -447,7 +451,7 @@ async fn main() {
             let res = blobd
               .inspect_object(InspectObjectInput {
                 key: pool.get_then_prefix(key_offset, key_len, key_prefix),
-                id: object_id,
+                id: object_id.clone(),
               })
               .await;
             completed_by_type.inspect.fetch_add(1, Ordering::Relaxed);
@@ -482,7 +486,7 @@ async fn main() {
                 start: chunk_offset,
                 key: pool.get_then_prefix(key_offset, key_len, key_prefix),
                 stream_buffer_size: 1024 * 16,
-                id: object_id,
+                id: object_id.clone(),
               })
               .await;
             while let Some(chunk) = res.data_stream.next().await {

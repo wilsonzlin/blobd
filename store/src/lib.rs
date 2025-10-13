@@ -47,26 +47,27 @@ pub struct WriteObjectInput<'a> {
 }
 
 pub struct CommitObjectInput {
+  pub key: Vec<u8>,
   pub incomplete_token: IncompleteToken,
 }
 
 pub struct CommitObjectOutput {
-  pub object_id: Option<u64>,
+  pub object_id: Option<String>,
 }
 
 pub struct InspectObjectInput {
   pub key: Vec<u8>,
-  pub id: Option<u64>,
+  pub id: Option<String>,
 }
 
 pub struct InspectObjectOutput {
-  pub id: Option<u64>,
+  pub id: Option<String>,
   pub size: u64,
 }
 
 pub struct ReadObjectInput {
   pub key: Vec<u8>,
-  pub id: Option<u64>,
+  pub id: Option<String>,
   pub start: u64,
   pub end: Option<u64>,
   pub stream_buffer_size: u64,
@@ -78,7 +79,7 @@ pub struct ReadObjectOutput {
 
 pub struct DeleteObjectInput {
   pub key: Vec<u8>,
-  pub id: Option<u64>,
+  pub id: Option<String>,
 }
 
 #[async_trait]

@@ -13,7 +13,6 @@ use crate::Store;
 use async_trait::async_trait;
 use futures::stream::once;
 use futures::StreamExt;
-use libblobd_lite::incomplete_token::IncompleteToken;
 use libblobd_lite::op::commit_object::OpCommitObjectInput;
 use libblobd_lite::op::create_object::OpCreateObjectInput;
 use libblobd_lite::op::delete_object::OpDeleteObjectInput;
@@ -32,6 +31,10 @@ use std::time::Duration;
 use tokio::join;
 use tokio::spawn;
 use tracing::info;
+
+pub struct BlobdLiteIncompleteToken {
+  pub object_id: u128,
+}
 
 pub struct BlobdLiteStore {
   blobd: Blobd,
@@ -53,7 +56,7 @@ impl BlobdLiteStore {
     let blobd = BlobdLoader::new(device.clone(), device_cfg.len, BlobdCfg {
       bucket_count_log2,
       bucket_lock_count_log2: bucket_count_log2,
-      reap_objects_after_secs: 60 * 60 * 24 * 7,
+      reap_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
       lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
       versioning: false,
@@ -87,7 +90,6 @@ impl Store for BlobdLiteStore {
     let metrics = self.blobd.metrics();
     vec![
       ("allocated_bytes", metrics.allocated_bytes()),
-      ("deleted_object_count", metrics.deleted_object_count()),
       ("incomplete_object_count", metrics.incomplete_object_count()),
       ("object_count", metrics.object_count()),
       ("object_data_bytes", metrics.object_data_bytes()),
@@ -110,7 +112,9 @@ impl Store for BlobdLiteStore {
       .await
       .unwrap();
     CreateObjectOutput {
-      token: Arc::new(res.token),
+      token: Arc::new(BlobdLiteIncompleteToken {
+        object_id: res.object_id,
+      }),
     }
   }
 
@@ -120,10 +124,12 @@ impl Store for BlobdLiteStore {
       .write_object(OpWriteObjectInput {
         data_len: u64!(input.data.len()),
         data_stream: once(async { Ok(input.data) }).boxed(),
-        incomplete_token: *input
+        key: input.key,
+        object_id: input
           .incomplete_token
-          .downcast::<IncompleteToken>()
-          .unwrap(),
+          .downcast::<BlobdLiteIncompleteToken>()
+          .unwrap()
+          .object_id,
         offset: input.offset,
       })
       .await
@@ -131,18 +137,21 @@ impl Store for BlobdLiteStore {
   }
 
   async fn commit_object(&self, input: CommitObjectInput) -> CommitObjectOutput {
-    let res = self
+    let object_id = input
+      .incomplete_token
+      .downcast::<BlobdLiteIncompleteToken>()
+      .unwrap()
+      .object_id;
+    self
       .blobd
       .commit_object(OpCommitObjectInput {
-        incomplete_token: *input
-          .incomplete_token
-          .downcast::<IncompleteToken>()
-          .unwrap(),
+        key: input.key,
+        object_id,
       })
       .await
       .unwrap();
     CommitObjectOutput {
-      object_id: Some(res.object_id),
+      object_id: Some(object_id.to_string()),
     }
   }
 
@@ -150,13 +159,13 @@ impl Store for BlobdLiteStore {
     let res = self
       .blobd
       .inspect_object(OpInspectObjectInput {
-        id: input.id,
+        id: input.id.map(|id| id.parse().unwrap()),
         key: input.key,
       })
       .await
       .unwrap();
     InspectObjectOutput {
-      id: Some(res.id),
+      id: Some(res.id.to_string()),
       size: res.size,
     }
   }
@@ -166,7 +175,7 @@ impl Store for BlobdLiteStore {
       .blobd
       .read_object(OpReadObjectInput {
         end: input.end,
-        id: input.id,
+        id: input.id.map(|id| id.parse().unwrap()),
         key: input.key,
         start: input.start,
         stream_buffer_size: input.stream_buffer_size,
@@ -182,7 +191,7 @@ impl Store for BlobdLiteStore {
     self
       .blobd
       .delete_object(OpDeleteObjectInput {
-        id: input.id,
+        id: input.id.map(|id| id.parse().unwrap()),
         key: input.key,
       })
       .await

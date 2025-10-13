@@ -316,12 +316,14 @@ async fn main() {
     let commit_started = Utc::now();
     let now = Instant::now();
     iter(incomplete_tokens.lock().to_vec())
-      .for_each_concurrent(concurrency, async |(_, incomplete_token)| {
+      .for_each_concurrent(concurrency, async |(i, incomplete_token)| {
         let store = store.clone();
         spawn(async move {
+          let key = create_u64_be(i).into();
           store
             .commit_object(CommitObjectInput {
               incomplete_token: incomplete_token.clone(),
+              key,
             })
             .await;
         })

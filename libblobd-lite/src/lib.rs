@@ -2,15 +2,15 @@
 
 use crate::allocator::AllocDir;
 use crate::allocator::Allocator;
+use crate::allocator::layout::ObjectLayout;
 use crate::allocator::layout::calc_object_layout;
 use crate::allocator::pages::MIN_PAGE_SIZE_POW2;
 use crate::allocator::pages::Pages;
 use crate::bucket::Buckets;
 use crate::device::IDevice;
 use crate::journal::IJournal;
-use crate::object::OBJECT_KEY_LEN_MAX;
 use crate::object::OBJECT_OFF;
-use crate::object::ObjectMeta;
+use crate::object::ObjectState;
 use crate::overlay::Overlay;
 use crate::util::ceil_pow2;
 use bucket::BUCKETS_SIZE;
@@ -19,9 +19,9 @@ use futures::StreamExt;
 use futures::join;
 use futures::stream::iter;
 use metrics::BlobdMetrics;
+use num_traits::FromPrimitive;
 use off64::int::Off64ReadInt;
 use off64::u64;
-use off64::usz;
 use op::OpResult;
 use op::commit_object::OpCommitObjectInput;
 use op::commit_object::OpCommitObjectOutput;
@@ -49,6 +49,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
@@ -84,7 +85,7 @@ heap
 pub struct BlobdCfg {
   pub bucket_count_log2: u8,
   pub bucket_lock_count_log2: u8,
-  pub reap_objects_after_secs: u64,
+  pub reap_incomplete_objects_after_secs: u64,
   pub lpage_size_pow2: u8,
   pub spage_size_pow2: u8,
   pub versioning: bool,
@@ -111,22 +112,39 @@ impl ObjectsLoader {
   async fn load_object_list(&self, head: u64) {
     let mut cur = head;
     while cur != 0 {
-      let raw = self
-        .device
-        .read_at(cur, OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages())
-        .await;
-      let size = raw.read_u40_be_at(OBJECT_OFF.size());
-      let alloc = calc_object_layout(self.pages, size);
+      let key_len = self.device.read_u16_be_at(cur + OBJECT_OFF.key_len()).await;
+      let size = self.device.read_u40_be_at(cur + OBJECT_OFF.size()).await;
+      let ObjectLayout {
+        lpage_count,
+        tail_page_sizes_pow2,
+      } = calc_object_layout(self.pages, size);
+      let off = OBJECT_OFF
+        .with_key_len(key_len)
+        .with_lpages(lpage_count)
+        .with_tail_pages(tail_page_sizes_pow2.len());
+      let raw = self.device.read_at(cur, off.assoc_data_len()).await;
+      let state = ObjectState::from_u8(raw.read_u8_at(off.state())).unwrap();
+      let meta_size = 1u64 << raw.read_u8_at(off.metadata_size_pow2());
       let mut allocator = self.allocator.lock();
-      for i in 0..alloc.lpage_count {
-        let lpage_dev_offset = raw.read_u48_be_at(OBJECT_OFF.lpage(i));
+      for i in 0..lpage_count {
+        let lpage_dev_offset = raw.read_u48_be_at(off.lpage(i));
         allocator.mark_as_allocated(lpage_dev_offset, self.pages.lpage_size_pow2);
       }
-      for (i, pow2) in alloc.tail_page_sizes_pow2.into_iter() {
-        let tail_page_dev_offset = raw.read_u48_be_at(OBJECT_OFF.tail_page(i));
+      for (i, pow2) in tail_page_sizes_pow2.into_iter() {
+        let tail_page_dev_offset = raw.read_u48_be_at(off.tail_page(i));
         allocator.mark_as_allocated(tail_page_dev_offset, pow2);
       }
-      cur = raw.read_u48_be_at(OBJECT_OFF.next_node_dev_offset());
+      cur = raw.read_u48_be_at(off.next_node_dev_offset());
+
+      self.metrics.object_count.fetch_add(1, Relaxed);
+      if state == ObjectState::Incomplete {
+        self.metrics.incomplete_object_count.fetch_add(1, Relaxed);
+      }
+      self.metrics.object_data_bytes.fetch_add(size, Relaxed);
+      self
+        .metrics
+        .object_metadata_bytes
+        .fetch_add(meta_size, Relaxed);
     }
   }
 }
@@ -169,7 +187,7 @@ impl BlobdLoader {
     assert!(cfg.bucket_count_log2 >= 12 && cfg.bucket_count_log2 <= 48);
     let bucket_count = 1u64 << cfg.bucket_count_log2;
 
-    assert!(cfg.reap_objects_after_secs > 0);
+    assert!(cfg.reap_incomplete_objects_after_secs > 0);
 
     const JOURNAL_SIZE_MIN: u64 = 1024 * 1024 * 32;
 
@@ -274,37 +292,40 @@ impl BlobdLoader {
     let buckets = Buckets::new(
       dev.clone(),
       journal.clone(),
+      metrics.clone(),
       pages,
       overlay.clone(),
       self.buckets_dev_offset,
       self.cfg.bucket_count_log2,
       self.cfg.bucket_lock_count_log2,
     );
-    let objects_loader = Arc::new(ObjectsLoader {
-      allocator: Arc::new(SyncMutex::new(Allocator::new(
+    let allocator = {
+      let allocator = Arc::new(SyncMutex::new(Allocator::new(
         self.heap_dev_offset,
         self.heap_size,
         pages,
         AllocDir::Left,
         metrics.clone(),
-      ))),
-      device: dev.clone(),
-      pages,
-      metrics: metrics.clone(),
-    });
-    self.load_buckets(&objects_loader).await;
-    let ObjectsLoader { allocator, .. } = Arc::try_unwrap(objects_loader).ok().unwrap();
-    let allocator = Arc::try_unwrap(allocator).ok().unwrap();
+      )));
+      let objects_loader = Arc::new(ObjectsLoader {
+        allocator: allocator.clone(),
+        device: dev.clone(),
+        pages,
+        metrics: metrics.clone(),
+      });
+      self.load_buckets(&objects_loader).await;
+      drop(objects_loader);
+      Arc::try_unwrap(allocator).ok().unwrap()
+    };
 
     let ctx = Arc::new(Ctx {
       allocator,
       buckets,
       device: dev,
-      object_id_serial: AtomicU64::new(0), // TODO
       overlay,
       metrics,
       pages,
-      reap_objects_after_secs: self.cfg.reap_objects_after_secs,
+      reap_incomplete_objects_after_secs: self.cfg.reap_incomplete_objects_after_secs,
       versioning: self.cfg.versioning,
     });
 

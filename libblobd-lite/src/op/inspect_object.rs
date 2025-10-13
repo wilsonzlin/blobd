@@ -8,11 +8,11 @@ use std::sync::Arc;
 pub struct OpInspectObjectInput {
   pub key: Vec<u8>,
   // Only useful if versioning is enabled.
-  pub id: Option<u64>,
+  pub id: Option<u128>,
 }
 
 pub struct OpInspectObjectOutput {
-  pub id: u64,
+  pub id: u128,
   pub size: u64,
 }
 
