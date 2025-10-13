@@ -55,7 +55,6 @@ impl BlobdLiteStore {
 
     let blobd = BlobdLoader::new(device.clone(), device_cfg.len, BlobdCfg {
       bucket_count_log2,
-      bucket_lock_count_log2: bucket_count_log2,
       reap_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
       lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
@@ -94,8 +93,10 @@ impl Store for BlobdLiteStore {
       ("object_count", metrics.object_count()),
       ("object_data_bytes", metrics.object_data_bytes()),
       ("object_metadata_bytes", metrics.object_metadata_bytes()),
-      ("state_lock_acq_ns", metrics.state_lock_acq_ns()),
-      ("state_lock_held_ns", metrics.state_lock_held_ns()),
+      ("bucket_lock_read_acq_ns", metrics.bucket_lock_read_acq_ns()),
+      ("bucket_lock_read_held_ns", metrics.bucket_lock_read_held_ns()),
+      ("bucket_lock_write_acq_ns", metrics.bucket_lock_write_acq_ns()),
+      ("bucket_lock_write_held_ns", metrics.bucket_lock_write_held_ns()),
     ]
   }
 

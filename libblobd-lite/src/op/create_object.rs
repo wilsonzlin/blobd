@@ -9,6 +9,7 @@ use crate::op::key_debug_str;
 use crate::util::get_now_ms;
 use off64::Off64WriteMut;
 use off64::int::Off64WriteMutInt;
+use off64::int::create_u48_be;
 use off64::u16;
 use off64::usz;
 use rand::Rng;
@@ -89,8 +90,12 @@ pub(crate) async fn op_create_object(
     allocator.allocate(meta_size).unwrap()
   };
 
-  let (txn, overlay_entry) = {
-    let mut bkt = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
+  // Write before updating bucket list, as as soon as overlay is updated, the object must be reachable.
+  ctx.device.write_at(dev_offset, &raw).await;
+
+  let (txn, bkt_overlay_entry, next_overlay_entry) = {
+    let locker = ctx.buckets.get_locker_for_key(&req.key);
+    let mut bkt = locker.write().await;
     let mut txn = bkt.begin_transaction();
 
     // Get the current bucket head.
@@ -98,16 +103,20 @@ pub(crate) async fn op_create_object(
     let cur_bkt_head = bkt.get_head().await;
 
     // Update bucket head to point to this new inode.
-    let overlay_entry = bkt.update_head(&mut txn, dev_offset);
+    let bkt_overlay_entry = bkt.update_head(&mut txn, dev_offset);
 
     // Set inode next pointer.
-    raw.write_u48_be_at(off.next_node_dev_offset(), cur_bkt_head);
+    let next_overlay_entry = ctx.overlay.set_object_next(object_id, cur_bkt_head);
+    txn.write(
+      dev_offset + off.next_node_dev_offset(),
+      create_u48_be(cur_bkt_head).to_vec(),
+    );
 
-    (txn, overlay_entry)
+    (txn, bkt_overlay_entry, next_overlay_entry)
   };
-  ctx.device.write_at(dev_offset, &raw).await;
   ctx.buckets.commit_transaction(txn).await;
-  ctx.overlay.evict(overlay_entry);
+  ctx.overlay.evict(bkt_overlay_entry);
+  ctx.overlay.evict(next_overlay_entry);
   trace!(key = key_debug_str(&req.key), object_id, "created object");
 
   ctx.metrics.object_count.fetch_add(1, Relaxed);

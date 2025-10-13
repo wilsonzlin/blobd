@@ -19,7 +19,8 @@ pub(crate) async fn op_delete_object(
   req: OpDeleteObjectInput,
 ) -> OpResult<OpDeleteObjectOutput> {
   let (txn, to_free, overlay_entry) = {
-    let mut bkt = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
+    let locker = ctx.buckets.get_locker_for_key(&req.key);
+    let mut bkt = locker.write().await;
     let mut txn = bkt.begin_transaction();
     let mut to_free = Allocations::new();
 

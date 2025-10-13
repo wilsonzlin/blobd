@@ -23,36 +23,36 @@ pub(crate) async fn op_commit_object(
 ) -> OpResult<OpCommitObjectOutput> {
   let object_id = req.object_id;
 
-  let bkt = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
-  let (
-    ex,
-    FoundObject {
-      dev_offset: object_dev_offset,
-      ..
-    },
-  ) = {
-    let mut incomplete_object = None;
-    let mut existing_object = None;
-    while let Some(o) = bkt.iter().next().await {
-      if o.state() == ObjectState::Incomplete && o.id() == object_id {
-        incomplete_object = Some(o);
-      } else if o.state() == ObjectState::Committed {
-        existing_object = Some(o);
-      }
-    }
-    let Some(incomplete_object) = incomplete_object else {
-      return Err(OpError::ObjectNotFound);
-    };
-    (existing_object, incomplete_object)
-  };
-  trace!(
-    key = key_debug_str(&req.key),
-    object_id, object_dev_offset, "committing object"
-  );
-
   let mut to_free = Allocations::new();
   let (txn, deletion_overlay_entry, overlay_entry) = {
-    let mut bkt = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
+    let locker = ctx.buckets.get_locker_for_key(&req.key);
+    let mut bkt = locker.write().await;
+    let (
+      ex,
+      FoundObject {
+        dev_offset: object_dev_offset,
+        ..
+      },
+    ) = {
+      let mut incomplete_object = None;
+      let mut existing_object = None;
+      while let Some(o) = bkt.iter().next().await {
+        if o.state() == ObjectState::Incomplete && o.id() == object_id {
+          incomplete_object = Some(o);
+        } else if o.state() == ObjectState::Committed {
+          existing_object = Some(o);
+        }
+      }
+      let Some(incomplete_object) = incomplete_object else {
+        return Err(OpError::ObjectNotFound);
+      };
+      (existing_object, incomplete_object)
+    };
+    trace!(
+      key = key_debug_str(&req.key),
+      object_id, object_dev_offset, "committing object"
+    );
+
     let mut txn = bkt.begin_transaction();
 
     let deletion_overlay_entry = match ex {
@@ -80,10 +80,7 @@ pub(crate) async fn op_commit_object(
     ctx.overlay.evict(deletion_overlay_entry);
   }
 
-  trace!(
-    key = key_debug_str(&req.key),
-    object_id, object_dev_offset, "committed object"
-  );
+  trace!(key = key_debug_str(&req.key), object_id, "committed object");
 
   Ok(OpCommitObjectOutput {})
 }

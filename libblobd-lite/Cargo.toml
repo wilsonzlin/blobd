@@ -10,6 +10,7 @@ edition = "2024"
 
 [dependencies]
 ahash = "0.8.12"
+arbitrary-lock = "0.1.1"
 async-recursion = "1.0.4"
 async-stream = "0.3.4"
 async-trait = "0.1"

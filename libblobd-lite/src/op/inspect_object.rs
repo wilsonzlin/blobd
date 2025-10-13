@@ -20,7 +20,8 @@ pub(crate) async fn op_inspect_object(
   ctx: Arc<Ctx>,
   req: OpInspectObjectInput,
 ) -> OpResult<OpInspectObjectOutput> {
-  let bkt = ctx.buckets.get_bucket_for_key(&req.key).await;
+  let locker = ctx.buckets.get_locker_for_key(&req.key);
+  let bkt = locker.read().await;
   let Some(FoundObject { meta, .. }) = bkt.find_object(ObjectState::Committed, req.id).await else {
     return Err(OpError::ObjectNotFound);
   };

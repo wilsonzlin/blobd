@@ -52,7 +52,9 @@ pub(crate) async fn op_write_object<
     "writing object"
   );
 
-  let bkt = ctx.buckets.get_bucket_for_key(&req.key).await;
+  let locker = ctx.buckets.get_locker_for_key(&req.key);
+  let bkt = locker.read().await;
+
   let Some(FoundObject {
     dev_offset: object_dev_offset,
     meta,

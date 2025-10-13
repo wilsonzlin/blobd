@@ -6,7 +6,6 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use off64::Off64Read;
 use off64::int::Off64ReadInt;
-use off64::usz;
 use std::sync::Arc;
 
 /**

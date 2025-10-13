@@ -12,8 +12,10 @@ pub struct BlobdMetrics {
   pub(crate) object_data_bytes: AtomicU64,
   pub(crate) object_metadata_bytes: AtomicU64,
 
-  pub(crate) state_lock_acq_ns: AtomicU64,
-  pub(crate) state_lock_held_ns: AtomicU64,
+  pub(crate) bucket_lock_read_acq_ns: AtomicU64,
+  pub(crate) bucket_lock_read_held_ns: AtomicU64,
+  pub(crate) bucket_lock_write_acq_ns: AtomicU64,
+  pub(crate) bucket_lock_write_held_ns: AtomicU64,
 }
 
 #[rustfmt::skip]
@@ -25,8 +27,10 @@ impl BlobdMetrics {
       object_count: AtomicU64::new(0),
       object_data_bytes: AtomicU64::new(0),
       object_metadata_bytes: AtomicU64::new(0),
-      state_lock_acq_ns: AtomicU64::new(0),
-      state_lock_held_ns: AtomicU64::new(0),
+      bucket_lock_read_acq_ns: AtomicU64::new(0),
+      bucket_lock_read_held_ns: AtomicU64::new(0),
+      bucket_lock_write_acq_ns: AtomicU64::new(0),
+      bucket_lock_write_held_ns: AtomicU64::new(0),
     }
   }
 
@@ -35,6 +39,8 @@ impl BlobdMetrics {
   pub fn object_count(&self) -> u64 { self.object_count.load(Relaxed) }
   pub fn object_data_bytes(&self) -> u64 { self.object_data_bytes.load(Relaxed) }
   pub fn object_metadata_bytes(&self) -> u64 { self.object_metadata_bytes.load(Relaxed) }
-  pub fn state_lock_acq_ns(&self) -> u64 { self.state_lock_acq_ns.load(Relaxed) }
-  pub fn state_lock_held_ns(&self) -> u64 { self.state_lock_held_ns.load(Relaxed) }
+  pub fn bucket_lock_read_acq_ns(&self) -> u64 { self.bucket_lock_read_acq_ns.load(Relaxed) }
+  pub fn bucket_lock_read_held_ns(&self) -> u64 { self.bucket_lock_read_held_ns.load(Relaxed) }
+  pub fn bucket_lock_write_acq_ns(&self) -> u64 { self.bucket_lock_write_acq_ns.load(Relaxed) }
+  pub fn bucket_lock_write_held_ns(&self) -> u64 { self.bucket_lock_write_held_ns.load(Relaxed) }
 }

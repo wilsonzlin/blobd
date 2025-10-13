@@ -9,10 +9,12 @@ use crate::object::ObjectMeta;
 use crate::object::ObjectState;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayTicket;
+use arbitrary_lock::ArbitraryLock;
+use arbitrary_lock::ArbitraryLockEntry;
 use futures::Stream;
 use futures::StreamExt;
-use itertools::Itertools;
 use off64::int::create_u40_be;
+use off64::u64;
 use off64::usz;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -20,7 +22,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use tokio::sync::RwLock;
 use tokio::sync::RwLockReadGuard;
 use tokio::sync::RwLockWriteGuard;
-use tracing::debug;
+use tokio::time::Instant;
 use twox_hash::xxh3::hash64;
 use write_journal::Transaction;
 
@@ -65,13 +67,14 @@ impl Deref for FoundObject {
 }
 
 // This type exists to make sure methods are called only when holding appropriate lock.
-pub(crate) struct ReadableLockedBucket<'b, 'k> {
+#[derive(Clone)]
+pub(crate) struct LockedBucket<'b, 'k> {
   bucket_id: u64,
   buckets: &'b Buckets,
   key: &'k [u8],
 }
 
-impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
+impl<'b, 'k> LockedBucket<'b, 'k> {
   pub fn iter(&self) -> impl Stream<Item = FoundObject> + Unpin {
     Box::pin(async_stream::stream! {
       let mut dev_offset = self.get_head().await;
@@ -121,30 +124,55 @@ impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
   }
 }
 
-pub(crate) struct BucketReadLocked<'b, 'k, 'l> {
-  state: ReadableLockedBucket<'b, 'k>,
-  // We just hold this value, we don't use it.
-  #[allow(unused)]
-  lock: RwLockReadGuard<'l, ()>,
+pub(crate) struct ReadLockedBucket<'b, 'k, 'l> {
+  bucket: LockedBucket<'b, 'k>,
+  acquired: Instant,
+  _lock: RwLockReadGuard<'l, ()>,
 }
 
-impl<'b, 'k, 'l> Deref for BucketReadLocked<'b, 'k, 'l> {
-  type Target = ReadableLockedBucket<'b, 'k>;
+impl<'b, 'k, 'l> Deref for ReadLockedBucket<'b, 'k, 'l> {
+  type Target = LockedBucket<'b, 'k>;
 
   fn deref(&self) -> &Self::Target {
-    &self.state
+    &self.bucket
   }
 }
 
-// This struct's methods take `&mut self` to ensure write lock, even though it's not necessary.
-pub(crate) struct BucketWriteLocked<'b, 'k, 'l> {
-  state: ReadableLockedBucket<'b, 'k>,
-  // We just hold this value, we don't use it.
-  #[allow(unused)]
-  lock: RwLockWriteGuard<'l, ()>,
+impl<'b, 'k, 'l> Drop for ReadLockedBucket<'b, 'k, 'l> {
+  fn drop(&mut self) {
+    self
+      .buckets
+      .metrics
+      .bucket_lock_read_held_ns
+      .fetch_add(u64!(self.acquired.elapsed().as_nanos()), Relaxed);
+  }
 }
 
-impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
+pub(crate) struct WriteLockedBucket<'b, 'k, 'l> {
+  bucket: LockedBucket<'b, 'k>,
+  acquired: Instant,
+  _lock: RwLockWriteGuard<'l, ()>,
+}
+
+impl<'b, 'k, 'l> Deref for WriteLockedBucket<'b, 'k, 'l> {
+  type Target = LockedBucket<'b, 'k>;
+
+  fn deref(&self) -> &Self::Target {
+    &self.bucket
+  }
+}
+
+impl<'b, 'k, 'l> Drop for WriteLockedBucket<'b, 'k, 'l> {
+  fn drop(&mut self) {
+    self
+      .buckets
+      .metrics
+      .bucket_lock_write_held_ns
+      .fetch_add(u64!(self.acquired.elapsed().as_nanos()), Relaxed);
+  }
+}
+
+impl<'b, 'k, 'l> WriteLockedBucket<'b, 'k, 'l> {
   // Use this (instead of directly `journal.begin_transaction()`) to ensure transactions are started after acquiring lock, to avoid race conditions where later transaction actually mutates state earlier than an earlier transaction, corrupting state.
   pub fn begin_transaction(&mut self) -> Transaction {
     self.buckets.journal.begin_transaction()
@@ -216,18 +244,50 @@ impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
   }
 }
 
-impl<'b, 'k, 'l> Deref for BucketWriteLocked<'b, 'k, 'l> {
-  type Target = ReadableLockedBucket<'b, 'k>;
+pub(crate) struct BucketLocker<'b, 'k> {
+  locker: ArbitraryLockEntry<u64, RwLock<()>>,
+  bucket: LockedBucket<'b, 'k>,
+}
 
-  fn deref(&self) -> &Self::Target {
-    &self.state
+impl<'b, 'k> BucketLocker<'b, 'k> {
+  pub async fn read<'l>(&'l self) -> ReadLockedBucket<'b, 'k, 'l> {
+    let started = Instant::now();
+    let lock = self.locker.read().await;
+    self
+      .bucket
+      .buckets
+      .metrics
+      .bucket_lock_read_acq_ns
+      .fetch_add(u64!(started.elapsed().as_nanos()), Relaxed);
+    let acquired = Instant::now();
+    ReadLockedBucket {
+      bucket: self.bucket.clone(),
+      acquired,
+      _lock: lock,
+    }
+  }
+
+  pub async fn write<'l>(&'l self) -> WriteLockedBucket<'b, 'k, 'l> {
+    let started = Instant::now();
+    let lock = self.locker.write().await;
+    self
+      .bucket
+      .buckets
+      .metrics
+      .bucket_lock_write_acq_ns
+      .fetch_add(u64!(started.elapsed().as_nanos()), Relaxed);
+    let acquired = Instant::now();
+    WriteLockedBucket {
+      bucket: self.bucket.clone(),
+      acquired,
+      _lock: lock,
+    }
   }
 }
 
 pub(crate) struct Buckets {
   bucket_count_pow2: u8,
-  bucket_lock_count_pow2: u8,
-  bucket_locks: Vec<RwLock<()>>,
+  bucket_locks: ArbitraryLock<u64, RwLock<()>>,
   dev_offset: u64,
   dev: Arc<dyn IDevice>,
   journal: Arc<dyn IJournal>,
@@ -245,20 +305,10 @@ impl Buckets {
     overlay: Arc<Overlay>,
     dev_offset: u64,
     bucket_count_pow2: u8,
-    bucket_lock_count_pow2: u8,
   ) -> Buckets {
-    let bucket_locks = (0..1usize << bucket_lock_count_pow2)
-      .map(|_| RwLock::new(()))
-      .collect_vec();
-    debug!(
-      bucket_count = 1 << bucket_count_pow2,
-      bucket_lock_count = 1 << bucket_lock_count_pow2,
-      "buckets loaded"
-    );
     Buckets {
       bucket_count_pow2,
-      bucket_lock_count_pow2,
-      bucket_locks,
+      bucket_locks: ArbitraryLock::new(),
       dev_offset,
       dev,
       journal,
@@ -290,35 +340,16 @@ impl Buckets {
     hash64(key) >> (64 - self.bucket_count_pow2)
   }
 
-  fn bucket_lock_id_for_bucket_id(&self, bkt_id: u64) -> usize {
-    usz!(bkt_id >> (self.bucket_count_pow2 - self.bucket_lock_count_pow2))
-  }
-
-  fn build_readable_locked_bucket<'b, 'k>(&'b self, key: &'k [u8]) -> ReadableLockedBucket<'b, 'k> {
+  pub fn get_locker_for_key<'b, 'k>(&'b self, key: &'k [u8]) -> BucketLocker<'b, 'k> {
     let bucket_id = self.bucket_id_for_key(key);
-    ReadableLockedBucket {
-      bucket_id,
-      buckets: self,
-      key,
+    let locker = self.bucket_locks.get(bucket_id);
+    BucketLocker {
+      locker,
+      bucket: LockedBucket {
+        bucket_id,
+        buckets: self,
+        key,
+      },
     }
-  }
-
-  pub async fn get_bucket_for_key<'b, 'k>(&'b self, key: &'k [u8]) -> BucketReadLocked<'b, 'k, 'b> {
-    let state = self.build_readable_locked_bucket(key);
-    let lock = self.bucket_locks[self.bucket_lock_id_for_bucket_id(state.bucket_id)]
-      .read()
-      .await;
-    BucketReadLocked { state, lock }
-  }
-
-  pub async fn get_bucket_mut_for_key<'b, 'k>(
-    &'b self,
-    key: &'k [u8],
-  ) -> BucketWriteLocked<'b, 'k, 'b> {
-    let state = self.build_readable_locked_bucket(key);
-    let lock = self.bucket_locks[self.bucket_lock_id_for_bucket_id(state.bucket_id)]
-      .write()
-      .await;
-    BucketWriteLocked { state, lock }
   }
 }

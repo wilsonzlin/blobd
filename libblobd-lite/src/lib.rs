@@ -84,7 +84,6 @@ heap
 #[derive(Clone, Debug)]
 pub struct BlobdCfg {
   pub bucket_count_log2: u8,
-  pub bucket_lock_count_log2: u8,
   pub reap_incomplete_objects_after_secs: u64,
   pub lpage_size_pow2: u8,
   pub spage_size_pow2: u8,
@@ -94,10 +93,6 @@ pub struct BlobdCfg {
 impl BlobdCfg {
   pub fn bucket_count(&self) -> u64 {
     1 << self.bucket_count_log2
-  }
-
-  pub fn bucket_lock_count(&self) -> u64 {
-    1 << self.bucket_lock_count_log2
   }
 }
 
@@ -297,7 +292,6 @@ impl BlobdLoader {
       overlay.clone(),
       self.buckets_dev_offset,
       self.cfg.bucket_count_log2,
-      self.cfg.bucket_lock_count_log2,
     );
     let allocator = {
       let allocator = Arc::new(SyncMutex::new(Allocator::new(
