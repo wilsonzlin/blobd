@@ -1,20 +1,21 @@
-use crate::ctx::State;
+use crate::allocator::Allocations;
+use crate::allocator::pages::MIN_PAGE_SIZE_POW2;
+use crate::allocator::pages::Pages;
 use crate::device::IDevice;
 use crate::journal::IJournal;
 use crate::object::OBJECT_KEY_LEN_MAX;
 use crate::object::OBJECT_OFF;
-use crate::object_header::Headers;
-use crate::object_header::ObjectState;
-use crate::page::MIN_PAGE_SIZE_POW2;
+use crate::object::ObjectMeta;
+use crate::object::ObjectState;
+use crate::overlay::Overlay;
+use futures::Stream;
+use futures::StreamExt;
 use itertools::Itertools;
 use off64::int::create_u40_be;
-use off64::int::Off64ReadInt;
 use off64::u16;
 use off64::usz;
-use off64::Off64Read;
 use std::ops::Deref;
 use std::sync::Arc;
-use tokio::join;
 use tokio::sync::RwLock;
 use tokio::sync::RwLockReadGuard;
 use tokio::sync::RwLockWriteGuard;
@@ -49,11 +50,17 @@ pub(crate) fn BUCKETS_SIZE(bkt_cnt: u64) -> u64 {
 }
 
 pub(crate) struct FoundObject {
-  pub prev_dev_offset: Option<u64>,
-  pub next_dev_offset: Option<u64>,
   pub dev_offset: u64,
-  pub id: u64,
-  pub size: u64,
+  pub prev_dev_offset: Option<u64>,
+  pub meta: ObjectMeta,
+}
+
+impl Deref for FoundObject {
+  type Target = ObjectMeta;
+
+  fn deref(&self) -> &Self::Target {
+    &self.meta
+  }
 }
 
 // This type exists to make sure methods are called only when holding appropriate lock.
@@ -65,46 +72,54 @@ pub(crate) struct ReadableLockedBucket<'b, 'k> {
 }
 
 impl<'b, 'k> ReadableLockedBucket<'b, 'k> {
-  pub async fn find_object(&self, expected_id: Option<u64>) -> Option<FoundObject> {
-    let mut dev_offset = self.get_head().await;
-    let mut prev_dev_offset = None;
-    while dev_offset > 0 {
-      let (hdr, raw) = join! {
-        // SAFETY: We're holding a read lock, so the linked list cannot be in an invalid/intermediate state, and all elements should be committed objects.
-        self.buckets.headers.read_header(dev_offset),
-        self.buckets.dev.read_at(dev_offset, OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages()),
+  pub fn iter_with_fields(&self, fields_to_fetch: u64) -> impl Stream<Item = FoundObject> + Unpin {
+    Box::pin(async_stream::stream! {
+      let mut dev_offset = self.get_head().await;
+      let mut prev_dev_offset = None;
+      while dev_offset > 0 {
+        // SAFETY: We're holding a read lock, so the linked list cannot be in an invalid/intermediate state, and no objects in it can be deallocated while this lock is held.
+        let raw = self.buckets.dev.read_at(dev_offset, fields_to_fetch).await;
+        let meta = self.buckets.obj(raw);
+        let next = meta.next_node_dev_offset();
+        if meta.key() == self.key {
+          yield FoundObject {
+            dev_offset,
+            prev_dev_offset,
+            meta,
+          };
+        };
+        prev_dev_offset = Some(dev_offset);
+        dev_offset = next.unwrap_or(0);
+      }
+    })
+  }
+
+  pub fn iter(&self) -> impl Stream<Item = FoundObject> {
+    self.iter_with_fields(OBJECT_OFF.with_key_len(OBJECT_KEY_LEN_MAX).lpages())
+  }
+
+  pub async fn find_object(
+    &self,
+    expected_state: ObjectState,
+    expected_id: Option<u64>,
+  ) -> Option<FoundObject> {
+    while let Some(o) = self.iter().next().await {
+      if o.state() == expected_state && expected_id.is_none_or(|r| r == o.id()) {
+        return Some(o);
       };
-      debug_assert_eq!(hdr.state, ObjectState::Committed);
-      debug_assert_eq!(hdr.deleted_sec, None);
-      let object_id = raw.read_u64_be_at(OBJECT_OFF.id());
-      if (expected_id.is_none() || expected_id.unwrap() == object_id)
-        && raw.read_u16_be_at(OBJECT_OFF.key_len()) == self.key_len
-        && raw.read_at(OBJECT_OFF.key(), self.key_len.into()) == self.key
-      {
-        return Some(FoundObject {
-          dev_offset,
-          next_dev_offset: Some(hdr.next).filter(|o| *o > 0),
-          id: object_id,
-          prev_dev_offset,
-          size: raw.read_u40_be_at(OBJECT_OFF.size()),
-        });
-      };
-      prev_dev_offset = Some(dev_offset);
-      dev_offset = hdr.next;
     }
     None
   }
 
   pub async fn get_head(&self) -> u64 {
+    if let Some(head) = self.buckets.overlay.get_bucket_head(self.bucket_id) {
+      return head;
+    }
     self
       .buckets
-      .journal
-      .read_with_overlay(
-        self.buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id),
-        5,
-      )
+      .dev
+      .read_u40_be_at(self.buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id))
       .await
-      .read_u40_be_at(0)
       << MIN_PAGE_SIZE_POW2
   }
 }
@@ -133,55 +148,63 @@ pub(crate) struct BucketWriteLocked<'b, 'k, 'l> {
 }
 
 impl<'b, 'k, 'l> BucketWriteLocked<'b, 'k, 'l> {
-  /// Returns true if the object was found and moved to the deleted list, false otherwise.
-  pub async fn move_object_to_deleted_list_if_exists(
+  // Use this (instead of directly `journal.begin_transaction()`) to ensure transactions are started after acquiring lock, to avoid race conditions where later transaction actually mutates state earlier than an earlier transaction, corrupting state.
+  pub fn begin_transaction(&mut self) -> Transaction {
+    self.buckets.journal.begin_transaction()
+  }
+
+  pub fn update_head(&mut self, txn: &mut Transaction, dev_offset: u64) {
+    self
+      .buckets
+      .overlay
+      .set_bucket_head(self.bucket_id, dev_offset);
+    txn.write(
+      self.buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id),
+      create_u40_be(dev_offset >> MIN_PAGE_SIZE_POW2).to_vec(),
+    );
+  }
+
+  pub async fn delete_object(
     &mut self,
     txn: &mut Transaction,
-    // TODO This is a workaround for the borrow checker, as it won't let us borrow both `deleted_list` and `stream` in `State` mutably.
-    state: &mut State,
-    id: Option<u64>,
-  ) -> bool {
-    let Some(FoundObject {
-      prev_dev_offset: prev_obj,
-      next_dev_offset: next_obj,
-      dev_offset: obj_dev_offset,
-      ..
-    }) = self.find_object(id).await
-    else {
-      return false;
-    };
+    to_free: &mut Allocations,
+    obj: FoundObject,
+  ) {
+    let dev = &self.buckets.dev;
+    let overlay = &self.buckets.overlay;
+    let pages = self.buckets.pages;
+    let new_next = obj.next_node_dev_offset().unwrap_or(0);
 
     // Detach from bucket.
-    match prev_obj {
+    match obj.prev_dev_offset {
       Some(prev_inode_dev_offset) => {
         // Update next pointer of previous inode.
-        self
-          .buckets
-          .headers
-          .update_header(txn, prev_inode_dev_offset, |p| {
-            debug_assert_eq!(p.state, ObjectState::Committed);
-            debug_assert_eq!(p.deleted_sec, None);
-            p.next = next_obj.unwrap_or(0);
-          })
+        overlay.set_object_next(obj.id(), new_next);
+        dev
+          .write_u48_be_at(
+            prev_inode_dev_offset + OBJECT_OFF.next_node_dev_offset(),
+            new_next,
+          )
           .await;
       }
       None => {
         // Update bucket head.
-        self.mutate_head(txn, next_obj.unwrap_or(0));
+        self.update_head(txn, new_next);
       }
     };
 
-    // Attach to deleted list.
-    state.deleted_list.attach(txn, obj_dev_offset).await;
-
-    true
-  }
-
-  pub fn mutate_head(&mut self, txn: &mut Transaction, dev_offset: u64) {
-    txn.write_with_overlay(
-      self.buckets.dev_offset + BUCKETS_OFFSETOF_BUCKET(self.bucket_id),
-      create_u40_be(dev_offset >> MIN_PAGE_SIZE_POW2).to_vec(),
-    );
+    // Read full inode to get lpages and tail pages.
+    let raw = dev.read_at(obj.dev_offset, obj.metadata_size()).await;
+    let meta = self.buckets.obj(raw);
+    for i in 0..meta.lpage_count() {
+      let page_dev_offset = meta.lpage(i);
+      to_free.add(page_dev_offset, pages.lpage_size_pow2);
+    }
+    for (i, tail_page_size_pow2) in meta.tail_page_sizes_pow2() {
+      let page_dev_offset = meta.tail_page(i);
+      to_free.add(page_dev_offset, tail_page_size_pow2);
+    }
+    to_free.add(obj.dev_offset, obj.metadata_size_pow2());
   }
 }
 
@@ -200,19 +223,21 @@ pub(crate) struct Buckets {
   dev_offset: u64,
   dev: Arc<dyn IDevice>,
   journal: Arc<dyn IJournal>,
-  headers: Headers,
+  pages: Pages,
+  overlay: Arc<Overlay>,
 }
 
 impl Buckets {
   pub fn new(
     dev: Arc<dyn IDevice>,
     journal: Arc<dyn IJournal>,
-    headers: Headers,
+    pages: Pages,
+    overlay: Arc<Overlay>,
     dev_offset: u64,
     bucket_count_pow2: u8,
     bucket_lock_count_pow2: u8,
   ) -> Buckets {
-    let bucket_locks = (0..1 << bucket_lock_count_pow2)
+    let bucket_locks = (0..1usize << bucket_lock_count_pow2)
       .map(|_| RwLock::new(()))
       .collect_vec();
     debug!(
@@ -226,14 +251,28 @@ impl Buckets {
       bucket_locks,
       dev_offset,
       dev,
-      headers,
       journal,
+      overlay,
+      pages,
     }
   }
 
   pub async fn format_device(dev: &Arc<dyn IDevice>, dev_offset: u64, bucket_count_pow2: u8) {
     let raw = vec![0u8; usz!(BUCKETS_SIZE(1 << bucket_count_pow2))];
     dev.write_at(dev_offset, &raw).await;
+  }
+
+  pub fn obj(&self, raw: Vec<u8>) -> ObjectMeta {
+    ObjectMeta {
+      raw,
+      overlay: self.overlay.clone(),
+      pages: self.pages,
+    }
+  }
+
+  /// See BucketWriteLocked.begin_transaction for why this is not on Ctx.
+  pub async fn commit_transaction(&self, txn: Transaction) {
+    self.journal.commit_transaction(txn).await;
   }
 
   fn bucket_id_for_key(&self, key: &[u8]) -> u64 {

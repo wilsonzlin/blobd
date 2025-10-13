@@ -13,7 +13,8 @@ members = [
   "store",
 ]
 
-[profile.release]
+[profile.release-max]
+inherits = "release"
 codegen-units = 1
 debug = true
 lto = true

@@ -1,19 +1,19 @@
 use super::OpResult;
+use crate::allocator::layout::ObjectLayout;
+use crate::allocator::layout::calc_object_layout;
 use crate::ctx::Ctx;
-use crate::incomplete_token::IncompleteToken;
-use crate::object::calc_object_layout;
-use crate::object::ObjectLayout;
 use crate::object::OBJECT_OFF;
-use crate::op::key_debug_str;
+use crate::object::ObjectState;
 use crate::op::OpError;
+use crate::op::key_debug_str;
 use crate::util::get_now_ms;
+use off64::Off64WriteMut;
 use off64::int::Off64WriteMutInt;
 use off64::u16;
 use off64::usz;
-use off64::Off64WriteMut;
 use std::cmp::max;
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 use tracing::trace;
 
 pub struct OpCreateObjectInput {
@@ -23,7 +23,7 @@ pub struct OpCreateObjectInput {
 }
 
 pub struct OpCreateObjectOutput {
-  pub token: IncompleteToken,
+  pub object_id: u64,
 }
 
 pub(crate) async fn op_create_object(
@@ -60,9 +60,13 @@ pub(crate) async fn op_create_object(
     "creating object"
   );
 
+  let object_id = ctx.object_id_serial.fetch_add(1, Relaxed);
   let created_ms = get_now_ms();
 
   let mut raw = vec![0u8; usz!(meta_size)];
+  raw[usz!(off.state())] = ObjectState::Incomplete as u8;
+  raw[usz!(off.metadata_size_pow2())] = meta_size_pow2;
+  raw.write_u64_be_at(off.id(), object_id);
   raw.write_u48_be_at(off.created_ms(), created_ms);
   raw.write_u40_be_at(off.size(), req.size);
   raw.write_u16_be_at(off.key_len(), key_len);
@@ -83,43 +87,32 @@ pub(crate) async fn op_create_object(
     allocator.allocate(meta_size).unwrap()
   };
 
-  let (txn, dev_offset, object_id) = {
-    let mut state = ctx.state.lock().await;
-    let mut txn = ctx.journal.begin_transaction();
+  let txn = {
+    let mut bkt = ctx.buckets.get_bucket_mut_for_key(&req.key).await;
+    let mut txn = bkt.begin_transaction();
 
-    let object_id = state.object_id_serial.next(&mut txn);
-    raw.write_u64_be_at(off.id(), object_id);
+    // Get the current bucket head.
+    // SAFETY: This must use the overlay (otherwise stale read), and only be done after acquiring lock (otherwise TOCTOU).
+    let cur_bkt_head = bkt.get_head().await;
 
-    // This is a one-time special direct write to prevent an edge case where the object is attached to the incomplete list, and the incomplete list tries to read the object's metadata (e.g. creation time), *before* the journal has actually written it out to the mmap. Normally this is dangerous because an unexpected page writeback could leave the device in a corrupted state, but in this specific case it's fine because we're writing to free space, so even if we crash right after this it's just junk. This specific issue can only occur here because object metadata is immutable and all other ops on the object can only occur after the journal has committed and the reseponse has been returned.
-    // TODO Revisit: is this still necessary? We don't use mmap. Can we not use overlay?
-    ctx
-      .device
-      .write_u48_be_at(dev_offset + off.created_ms(), created_ms)
-      .await;
+    // Update bucket head to point to this new inode.
+    bkt.update_head(&mut txn, dev_offset);
 
-    state
-      .incomplete_list
-      .attach(&mut txn, dev_offset, meta_size_pow2)
-      .await;
+    // Set inode next pointer.
+    raw.write_u48_be_at(off.next_node_dev_offset(), cur_bkt_head);
 
-    ctx.metrics.object_count.fetch_add(1, Relaxed);
-    ctx.metrics.object_data_bytes.fetch_add(req.size, Relaxed);
-    ctx
-      .metrics
-      .object_metadata_bytes
-      .fetch_add(meta_size, Relaxed);
-
-    (txn, dev_offset, object_id)
+    txn
   };
-
   ctx.device.write_at(dev_offset, &raw).await;
-  ctx.journal.commit_transaction(txn).await;
+  ctx.buckets.commit_transaction(txn).await;
   trace!(key = key_debug_str(&req.key), object_id, "created object");
 
-  Ok(OpCreateObjectOutput {
-    token: IncompleteToken {
-      created_sec: created_ms / 1000,
-      object_dev_offset: dev_offset,
-    },
-  })
+  ctx.metrics.object_count.fetch_add(1, Relaxed);
+  ctx.metrics.object_data_bytes.fetch_add(req.size, Relaxed);
+  ctx
+    .metrics
+    .object_metadata_bytes
+    .fetch_add(meta_size, Relaxed);
+
+  Ok(OpCreateObjectOutput { object_id })
 }

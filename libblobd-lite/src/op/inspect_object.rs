@@ -2,6 +2,7 @@ use super::OpError;
 use super::OpResult;
 use crate::bucket::FoundObject;
 use crate::ctx::Ctx;
+use crate::object::ObjectState;
 use std::sync::Arc;
 
 pub struct OpInspectObjectInput {
@@ -20,9 +21,11 @@ pub(crate) async fn op_inspect_object(
   req: OpInspectObjectInput,
 ) -> OpResult<OpInspectObjectOutput> {
   let bkt = ctx.buckets.get_bucket_for_key(&req.key).await;
-  let Some(FoundObject { id, size, .. }) = bkt.find_object(req.id).await else {
+  let Some(FoundObject { meta, .. }) = bkt.find_object(ObjectState::Committed, req.id).await else {
     return Err(OpError::ObjectNotFound);
   };
+  let id = meta.id();
+  let size = meta.size();
 
   Ok(OpInspectObjectOutput { id, size })
 }

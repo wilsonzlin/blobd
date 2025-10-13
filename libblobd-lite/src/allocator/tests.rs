@@ -1,16 +1,15 @@
 use super::AllocDir;
 use super::Allocator;
 use crate::allocator::OutOfSpaceError;
+use crate::allocator::pages::Pages;
 use crate::metrics::BlobdMetrics;
-use crate::page::Pages;
 use ahash::HashMap;
 use ahash::HashMapExt;
 use itertools::Itertools;
-use off64::u32;
 use off64::u8;
+use rand::Rng;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use rand::Rng;
 use std::cmp::min;
 use std::sync::Arc;
 
@@ -35,7 +34,7 @@ fn test_allocator_from_left() {
   assert!(alloc.bitmap(11).is_empty());
   assert!(alloc.bitmap(12).is_empty());
   assert!(alloc.bitmap(13).is_empty());
-  assert!(alloc.bitmap(14).contains_range(0..7));
+  assert!(alloc.bitmap(14).iter().all(|p| p < 7));
 
   // Allocate all space.
   let mut seen = HashMap::new();
@@ -70,9 +69,11 @@ fn test_allocator_from_left() {
   let mut to_release = seen.iter().map(|(k, v)| (*k, *v)).collect_vec();
   to_release.shuffle(&mut thread_rng());
   for (page_dev_offset, page_size_pow2) in to_release {
-    assert!(!alloc
-      .bitmap(page_size_pow2)
-      .contains(u32!(page_dev_offset / (1 << page_size_pow2))));
+    assert!(
+      !alloc
+        .bitmap(page_size_pow2)
+        .contains(page_dev_offset / (1 << page_size_pow2))
+    );
     alloc.release(page_dev_offset, page_size_pow2);
   }
   assert!(alloc.bitmap(9).is_empty());
@@ -80,7 +81,7 @@ fn test_allocator_from_left() {
   assert!(alloc.bitmap(11).is_empty());
   assert!(alloc.bitmap(12).is_empty());
   assert!(alloc.bitmap(13).is_empty());
-  assert!(alloc.bitmap(14).contains_range(0..7));
+  assert!(alloc.bitmap(14).iter().all(|p| p < 7));
 }
 
 #[test]
@@ -143,9 +144,11 @@ fn test_allocator_from_right() {
   let mut to_release = seen.iter().map(|(k, v)| (*k, *v)).collect_vec();
   to_release.shuffle(&mut thread_rng());
   for (page_dev_offset, page_size_pow2) in to_release {
-    assert!(!alloc
-      .bitmap(page_size_pow2)
-      .contains(u32!(page_dev_offset / (1 << page_size_pow2))));
+    assert!(
+      !alloc
+        .bitmap(page_size_pow2)
+        .contains(page_dev_offset / (1 << page_size_pow2))
+    );
     alloc.release(page_dev_offset, page_size_pow2);
   }
   assert!(alloc.bitmap(9).is_empty());
@@ -153,5 +156,5 @@ fn test_allocator_from_right() {
   assert!(alloc.bitmap(11).is_empty());
   assert!(alloc.bitmap(12).is_empty());
   assert!(alloc.bitmap(13).is_empty());
-  assert!(alloc.bitmap(14).contains_range(0..7));
+  assert!(alloc.bitmap(14).iter().all(|p| p < 7));
 }

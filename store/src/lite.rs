@@ -92,6 +92,8 @@ impl Store for BlobdLiteStore {
       ("object_count", metrics.object_count()),
       ("object_data_bytes", metrics.object_data_bytes()),
       ("object_metadata_bytes", metrics.object_metadata_bytes()),
+      ("state_lock_acq_ns", metrics.state_lock_acq_ns()),
+      ("state_lock_held_ns", metrics.state_lock_held_ns()),
     ]
   }
 

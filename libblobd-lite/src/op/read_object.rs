@@ -1,20 +1,19 @@
 use super::OpError;
 use super::OpResult;
+use crate::allocator::layout::calc_object_layout;
 use crate::bucket::FoundObject;
 use crate::ctx::Ctx;
-use crate::object::calc_object_layout;
 use crate::object::OBJECT_OFF;
-use crate::object_header::ObjectState;
+use crate::object::ObjectState;
 use crate::op::key_debug_str;
 use crate::util::div_pow2;
 use crate::util::mod_pow2;
 use futures::Stream;
-use off64::u16;
 use off64::u8;
+use off64::u16;
 use std::cmp::min;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::time::Instant;
 use tracing::trace;
 
 pub struct OpReadObjectInput {
@@ -46,21 +45,18 @@ pub(crate) async fn op_read_object(
     "reading object"
   );
 
-  // WARNING: Drop bucket lock immediately.
+  let bkt = ctx.buckets.get_bucket_for_key(&req.key).await;
+
   let Some(FoundObject {
     dev_offset: object_dev_offset,
-    id: object_id,
-    size: object_size,
+    meta: obj,
     ..
-  }) = ctx
-    .buckets
-    .get_bucket_for_key(&req.key)
-    .await
-    .find_object(req.id)
-    .await
+  }) = bkt.find_object(ObjectState::Committed, req.id).await
   else {
     return Err(OpError::ObjectNotFound);
   };
+  let object_id = obj.id();
+  let object_size = obj.size();
   let start = req.start;
   // Exclusive.
   let end = req.end.unwrap_or(object_size);
@@ -70,12 +66,7 @@ pub(crate) async fn op_read_object(
   };
   trace!(
     key = key_debug_str(&req.key),
-    object_dev_offset,
-    object_id,
-    object_size,
-    start,
-    end,
-    "found object to read"
+    object_dev_offset, object_id, object_size, start, end, "found object to read"
   );
 
   let alloc_cfg = calc_object_layout(ctx.pages, object_size);
@@ -84,9 +75,13 @@ pub(crate) async fn op_read_object(
     .with_lpages(alloc_cfg.lpage_count)
     .with_tail_pages(alloc_cfg.tail_page_sizes_pow2.len());
 
+  // `ctx` cannot be moved into the stream, so we clone what we need from it here.
+  let dev = ctx.device.clone();
+  let pages = ctx.pages;
+
   let data_stream = async_stream::try_stream! {
     // This is the lpage index (incremented every lpage) or tail page index (incremented every tail page **which differ in size**).
-    let mut idx = div_pow2(start, ctx.pages.lpage_size_pow2);
+    let mut idx = div_pow2(start, pages.lpage_size_pow2);
     if idx >= alloc_cfg.lpage_count {
       // We're starting inside the tail data, but that doesn't mean we're starting from the first tail page.
       let mut accum = idx * alloc_cfg.lpage_count;
@@ -100,31 +95,15 @@ pub(crate) async fn op_read_object(
       };
     };
     let mut next = start;
-    let mut last_checked_valid = Instant::now();
     while next < end {
-      let now = Instant::now();
-      if now.duration_since(last_checked_valid).as_secs() >= 60 {
-        // Check that object is still valid.
-        let hdr = ctx
-          .headers
-          .read_header(object_dev_offset)
-          .await;
-        // We can't use `return Err(...)` in `try_stream!`.
-        if hdr.state == ObjectState::Committed {
-          Ok(())
-        } else {
-          Err(OpError::ObjectNotFound)
-        }?;
-        last_checked_valid = now;
-      }
       let (page_dev_offset, page_size_pow2) = if idx < alloc_cfg.lpage_count {
-        let dev_offset = ctx.device.read_u48_be_at(object_dev_offset + off.lpage(idx)).await;
-        let page_size_pow2 = ctx.pages.lpage_size_pow2;
+        let dev_offset = dev.read_u48_be_at(object_dev_offset + off.lpage(idx)).await;
+        let page_size_pow2 = pages.lpage_size_pow2;
         (dev_offset, page_size_pow2)
       } else {
         let tail_idx = u8!(idx - alloc_cfg.lpage_count);
         debug_assert!(tail_idx < alloc_cfg.tail_page_sizes_pow2.len());
-        let dev_offset = ctx.device.read_u48_be_at(object_dev_offset + off.tail_page(tail_idx)).await;
+        let dev_offset = dev.read_u48_be_at(object_dev_offset + off.tail_page(tail_idx)).await;
         let page_size_pow2 = alloc_cfg.tail_page_sizes_pow2.get(tail_idx).unwrap();
         (dev_offset, page_size_pow2)
       };
@@ -138,7 +117,7 @@ pub(crate) async fn op_read_object(
         (1 << page_size_pow2) - offset_within_page,
       );
       trace!(idx, page_size_pow2, page_dev_offset, offset_within_page, chunk_len, start, next, end, "reading chunk");
-      let data = ctx.device.read_at(page_dev_offset + offset_within_page, chunk_len).await;
+      let data = dev.read_at(page_dev_offset + offset_within_page, chunk_len).await;
       idx += 1;
       next += chunk_len;
       yield data;

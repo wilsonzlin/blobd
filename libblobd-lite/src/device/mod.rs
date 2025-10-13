@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use off64::int::Off64AsyncReadInt;
-use off64::int::Off64AsyncWriteInt;
 use off64::Off64AsyncRead;
 use off64::Off64AsyncWrite;
+use off64::int::Off64AsyncReadInt;
+use off64::int::Off64AsyncWriteInt;
 use seekable_async_file::WriteRequest;
 
 pub mod mock;

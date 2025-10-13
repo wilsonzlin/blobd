@@ -1,11 +1,10 @@
 use super::OpError;
 use super::OpResult;
+use crate::bucket::FoundObject;
 use crate::ctx::Ctx;
-use crate::incomplete_token::IncompleteToken;
-use crate::object::calc_object_layout;
-use crate::object::ObjectLayout;
 use crate::object::OBJECT_OFF;
-use crate::object_header::ObjectState;
+use crate::object::ObjectState;
+use crate::op::key_debug_str;
 use crate::util::div_pow2;
 use crate::util::is_multiple_of_pow2;
 use futures::Stream;
@@ -13,13 +12,12 @@ use futures::StreamExt;
 use itertools::Itertools;
 use off64::int::Off64AsyncReadInt;
 use off64::int::Off64ReadInt;
+use off64::u16;
 use off64::u64;
 use off64::usz;
 use std::cmp::min;
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::timeout;
 use tracing::trace;
 use tracing::warn;
 
@@ -27,8 +25,9 @@ pub struct OpWriteObjectInput<
   D: AsRef<[u8]>,
   S: Unpin + Stream<Item = Result<D, Box<dyn Error + Send + Sync>>>,
 > {
+  pub key: Vec<u8>,
+  pub object_id: u64,
   pub offset: u64,
-  pub incomplete_token: IncompleteToken,
   pub data_len: u64,
   pub data_stream: S,
 }
@@ -43,31 +42,30 @@ pub(crate) async fn op_write_object<
   mut req: OpWriteObjectInput<D, S>,
 ) -> OpResult<OpWriteObjectOutput> {
   let len = req.data_len;
-  let object_dev_offset = req.incomplete_token.object_dev_offset;
+  let object_id = req.object_id;
+  let key_len = u16!(req.key.len());
   trace!(
-    dev_offset = object_dev_offset,
+    key = key_debug_str(&req.key),
+    object_id,
     offset = req.offset,
     length = req.data_len,
     "writing object"
   );
 
-  // See IncompleteToken for why if the token has not expired, the object definitely still exists (i.e. safe to read any metadata).
-  if req
-    .incomplete_token
-    .has_expired(ctx.reap_objects_after_secs)
-  {
+  let bkt = ctx.buckets.get_bucket_for_key(&req.key).await;
+  let Some(FoundObject {
+    dev_offset: object_dev_offset,
+    meta,
+    ..
+  }) = bkt
+    .find_object(ObjectState::Committed, Some(object_id))
+    .await
+  else {
     return Err(OpError::ObjectNotFound);
   };
-
-  let incomplete_object_is_still_valid = || async {
-    // Our incomplete reaper simply deletes incomplete objects instead of reaping directly, which avoids some clock drift issues, so we only need to check the type, and should not check if it's expired based on its creation time. This is always correct, as if the page still exists, it's definitely still the same object, as we check well before any deleted object would be reaped.
-    let hdr = ctx.headers.read_header(object_dev_offset).await;
-    hdr.state == ObjectState::Incomplete
-  };
-
-  if !incomplete_object_is_still_valid().await {
-    return Err(OpError::ObjectNotFound);
-  };
+  let size = meta.size();
+  let lpage_count = meta.lpage_count();
+  let tail_page_sizes_pow2 = meta.tail_page_sizes_pow2();
 
   if !is_multiple_of_pow2(req.offset, ctx.pages.lpage_size_pow2) {
     // Invalid offset.
@@ -77,20 +75,9 @@ pub(crate) async fn op_write_object<
     // Cannot write greater than one tile size in one request.
     return Err(OpError::InexactWriteLength);
   };
-
-  // Read fields before `key` i.e. `size`, `obj_id`, `key_len`.
-  let raw = ctx
-    .device
-    .read_at(object_dev_offset, OBJECT_OFF.key())
-    .await;
-  let object_id = raw.read_u64_be_at(OBJECT_OFF.id());
-  let size = raw.read_u40_be_at(OBJECT_OFF.size());
-  let key_len = raw.read_u16_be_at(OBJECT_OFF.key_len());
   trace!(
     object_id,
-    object_dev_offset,
-    size,
-    "found object to write to"
+    object_dev_offset, size, "found object to write to"
   );
 
   if req.offset + len > size {
@@ -103,10 +90,6 @@ pub(crate) async fn op_write_object<
     return Err(OpError::InexactWriteLength);
   };
 
-  let ObjectLayout {
-    lpage_count,
-    tail_page_sizes_pow2,
-  } = calc_object_layout(ctx.pages, size);
   let off = OBJECT_OFF
     .with_key_len(key_len)
     .with_lpages(lpage_count)
@@ -147,15 +130,7 @@ pub(crate) async fn op_write_object<
   let mut write_page_idx = 0;
   let mut buf = Vec::new();
   loop {
-    // See comment for code below.
-    if !incomplete_object_is_still_valid().await {
-      return Err(OpError::ObjectNotFound);
-    };
-    let Ok(maybe_chunk) = timeout(Duration::from_secs(60), req.data_stream.next()).await else {
-      // We timed out, and need to check if the object is still valid.
-      continue;
-    };
-    if let Some(chunk) = maybe_chunk {
+    if let Some(chunk) = req.data_stream.next().await {
       buf.extend_from_slice(
         chunk
           .map_err(|err| OpError::DataStreamError(Box::from(err)))?
@@ -173,13 +148,6 @@ pub(crate) async fn op_write_object<
         "stream provided more data than declared"
       );
       return Err(OpError::DataStreamLengthMismatch);
-    };
-
-    // We have two reasons to check the object state again:
-    // - Prevent use-after-free: incomplete object may have expired while we were writing. This is important to check regularly as we must not write after an object has been released, which would otherwise cause corruption. We need to do this well before actual reap time, to account for possible clock drift and slow execution delaying checks, but no need to do every iteration, e.g. around every 60 seconds.
-    // - Prevent writing after committing: unlike use-after-free, this doesn't actually lead to any corruption, but it's to assist the user to ensure that what they get after they commit is always the same, very useful when creator is different from reader (e.g. content is uploaded by customer, and then hashed and processed by service straight away). AFAICT, doing this every iteration just before writing should be good enough, only possibly microseconds delay due to CPU cache coherence as we're not using locks, atomics, or memory barriers to read the object state. This should be reasonably fast given the object metadata should be in the page cache.
-    if !incomplete_object_is_still_valid().await {
-      return Err(OpError::ObjectNotFound);
     };
 
     // TODO We could write more frequently instead of buffering an entire page if the page is larger than one SSD page/block write. However, if it's smaller, the I/O system (e.g. mmap) would be doing buffering and repeated writes anyway.

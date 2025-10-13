@@ -6,7 +6,7 @@ license = "Apache-2.0"
 homepage = "https://github.com/wilsonzlin/blobd"
 repository = "https://github.com/wilsonzlin/blobd.git"
 authors = ["Wilson Lin <code@wilsonl.in>"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 ahash = "0.8.12"
@@ -21,6 +21,7 @@ num-derive = "0.4"
 num-traits = "0.2"
 off64 = "0.8"
 parking_lot = "0.12.1"
+rayon = "1.11.0"
 roaring = "0.11.2"
 seekable-async-file = { version = "0.14", features = ["tokio_file"] }
 serde = { version = "1.0.160", features = ["derive"] }
