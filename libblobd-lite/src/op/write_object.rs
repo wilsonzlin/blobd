@@ -60,7 +60,7 @@ pub(crate) async fn op_write_object<
     meta,
     ..
   }) = bkt
-    .find_object(ObjectState::Committed, Some(object_id))
+    .find_object(ObjectState::Incomplete, Some(object_id))
     .await
   else {
     return Err(OpError::ObjectNotFound);
@@ -182,7 +182,9 @@ pub(crate) async fn op_write_object<
     );
     return Err(OpError::DataStreamLengthMismatch);
   };
-
+  
+  // Do not wait for fsync before dropping lock.
+  drop(bkt);
   // Optimisation: perform fdatasync in batches.
   #[cfg(not(test))]
   ctx.device.write_at_with_delayed_sync(vec![]).await;

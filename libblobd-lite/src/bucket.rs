@@ -11,6 +11,7 @@ use crate::overlay::Overlay;
 use crate::overlay::OverlayTicket;
 use arbitrary_lock::ArbitraryLock;
 use arbitrary_lock::ArbitraryLockEntry;
+use futures::pin_mut;
 use futures::Stream;
 use futures::StreamExt;
 use off64::int::create_u40_be;
@@ -75,11 +76,11 @@ pub(crate) struct LockedBucket<'b, 'k> {
 }
 
 impl<'b, 'k> LockedBucket<'b, 'k> {
-  pub fn iter(&self) -> impl Stream<Item = FoundObject> + Unpin {
-    Box::pin(async_stream::stream! {
+  pub fn iter(&self) -> impl Stream<Item = FoundObject> {
+    async_stream::stream! {
       let mut dev_offset = self.get_head().await;
       let mut prev_dev_offset = None;
-      while dev_offset > 0 {
+      while dev_offset != 0 {
         // SAFETY: We're holding a read lock, so the linked list cannot be in an invalid/intermediate state, and no objects in it can be deallocated while this lock is held.
         let key_len = self.buckets.dev.read_u16_be_at(dev_offset + OBJECT_OFF.key_len()).await;
         let raw = self.buckets.dev.read_at(dev_offset, OBJECT_OFF.with_key_len(key_len).lpages()).await;
@@ -95,7 +96,7 @@ impl<'b, 'k> LockedBucket<'b, 'k> {
         prev_dev_offset = Some(dev_offset);
         dev_offset = next.unwrap_or(0);
       }
-    })
+    }
   }
 
   pub async fn find_object(
@@ -103,7 +104,9 @@ impl<'b, 'k> LockedBucket<'b, 'k> {
     expected_state: ObjectState,
     expected_id: Option<u128>,
   ) -> Option<FoundObject> {
-    while let Some(o) = self.iter().next().await {
+    let iter = self.iter();
+    pin_mut!(iter);
+    while let Some(o) = iter.next().await {
       if o.state() == expected_state && expected_id.is_none_or(|r| r == o.id()) {
         return Some(o);
       };
