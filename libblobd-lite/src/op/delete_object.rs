@@ -1,3 +1,5 @@
+use tracing::instrument;
+
 use super::OpError;
 use super::OpResult;
 use crate::allocator::Allocations;
@@ -14,6 +16,7 @@ pub struct OpDeleteObjectInput {
 pub struct OpDeleteObjectOutput {}
 
 // We hold write lock on bucket RwLock for entire request (including writes and data sync) for simplicity and avoidance of subtle race conditions. Performance should still be great as one bucket equals one object given desired bucket count and load. If we release lock before we (or journal) finishes writes, we need to prevent/handle any possible intermediate read and write of the state of inode elements on the device, linked list pointers, garbage collectors, premature use of data or reuse of freed space, etc.
+#[instrument(skip_all)]
 pub(crate) async fn op_delete_object(
   ctx: Arc<Ctx>,
   req: OpDeleteObjectInput,

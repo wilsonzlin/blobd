@@ -1,3 +1,5 @@
+use tracing::instrument;
+
 use super::OpError;
 use super::OpResult;
 use crate::bucket::FoundObject;
@@ -16,6 +18,7 @@ pub struct OpInspectObjectOutput {
   pub size: u64,
 }
 
+#[instrument(skip_all)]
 pub(crate) async fn op_inspect_object(
   ctx: Arc<Ctx>,
   req: OpInspectObjectInput,

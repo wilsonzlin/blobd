@@ -17,6 +17,7 @@ use futures::StreamExt;
 use off64::int::create_u40_be;
 use off64::u64;
 use off64::usz;
+use tracing::instrument;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -99,6 +100,7 @@ impl<'b, 'k> LockedBucket<'b, 'k> {
     }
   }
 
+  #[instrument(skip_all)]
   pub async fn find_object(
     &self,
     expected_state: ObjectState,
@@ -114,6 +116,7 @@ impl<'b, 'k> LockedBucket<'b, 'k> {
     None
   }
 
+  #[instrument(skip_all)]
   pub async fn get_head(&self) -> u64 {
     if let Some(head) = self.buckets.overlay.get_bucket_head(self.bucket_id) {
       return head;

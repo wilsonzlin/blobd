@@ -15,6 +15,7 @@ use off64::int::Off64ReadInt;
 use off64::u16;
 use off64::u64;
 use off64::usz;
+use tracing::instrument;
 use std::cmp::min;
 use std::error::Error;
 use std::sync::Arc;
@@ -34,6 +35,7 @@ pub struct OpWriteObjectInput<
 
 pub struct OpWriteObjectOutput {}
 
+#[instrument(skip_all)]
 pub(crate) async fn op_write_object<
   D: AsRef<[u8]>,
   S: Unpin + Stream<Item = Result<D, Box<dyn Error + Send + Sync>>>,

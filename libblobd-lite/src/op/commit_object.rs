@@ -8,6 +8,7 @@ use crate::object::ObjectState;
 use crate::op::key_debug_str;
 use futures::pin_mut;
 use futures::StreamExt;
+use tracing::instrument;
 use std::sync::Arc;
 use tracing::trace;
 
@@ -18,6 +19,7 @@ pub struct OpCommitObjectInput {
 
 pub struct OpCommitObjectOutput {}
 
+#[instrument(skip_all)]
 pub(crate) async fn op_commit_object(
   ctx: Arc<Ctx>,
   req: OpCommitObjectInput,

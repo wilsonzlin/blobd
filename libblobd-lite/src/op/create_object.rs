@@ -14,6 +14,7 @@ use off64::u16;
 use off64::usz;
 use rand::Rng;
 use rand::thread_rng;
+use tracing::instrument;
 use std::cmp::max;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -29,6 +30,7 @@ pub struct OpCreateObjectOutput {
   pub object_id: u128,
 }
 
+#[instrument(skip_all)]
 pub(crate) async fn op_create_object(
   ctx: Arc<Ctx>,
   req: OpCreateObjectInput,

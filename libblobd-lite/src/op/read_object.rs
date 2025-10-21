@@ -11,6 +11,7 @@ use crate::util::mod_pow2;
 use futures::Stream;
 use off64::u8;
 use off64::u16;
+use tracing::instrument;
 use std::cmp::min;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -34,6 +35,7 @@ pub struct OpReadObjectOutput {
   pub object_id: u128,
 }
 
+#[instrument(skip_all)]
 pub(crate) async fn op_read_object(
   ctx: Arc<Ctx>,
   req: OpReadObjectInput,
