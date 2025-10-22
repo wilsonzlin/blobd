@@ -14,9 +14,11 @@ use arbitrary_lock::ArbitraryLockEntry;
 use futures::Stream;
 use futures::StreamExt;
 use futures::pin_mut;
+use futures::stream::iter;
 use off64::int::create_u40_be;
 use off64::u64;
 use off64::usz;
+use std::cmp::min;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -324,9 +326,18 @@ impl Buckets {
     }
   }
 
+  #[instrument(skip_all)]
   pub async fn format_device(dev: &Arc<dyn IDevice>, dev_offset: u64, bucket_count_pow2: u8) {
-    let raw = vec![0u8; usz!(BUCKETS_SIZE(1 << bucket_count_pow2))];
-    dev.write_at(dev_offset, &raw).await;
+    const BLKSZ: usize = 1024 * 1024 * 16;
+    let block = vec![0u8; BLKSZ];
+    let len = BUCKETS_SIZE(1 << bucket_count_pow2);
+    iter((0..len).step_by(BLKSZ))
+      .for_each_concurrent(None, async |offset| {
+        let end = min(offset + u64!(BLKSZ), len);
+        let raw = &block[..usz!(end - offset)];
+        dev.write_at(dev_offset + offset, raw).await;
+      })
+      .await;
   }
 
   pub fn obj(&self, raw: Vec<u8>) -> ObjectMeta {
