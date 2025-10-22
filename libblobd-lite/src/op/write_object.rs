@@ -15,10 +15,10 @@ use off64::int::Off64ReadInt;
 use off64::u16;
 use off64::u64;
 use off64::usz;
-use tracing::instrument;
 use std::cmp::min;
 use std::error::Error;
 use std::sync::Arc;
+use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 
@@ -184,7 +184,7 @@ pub(crate) async fn op_write_object<
     );
     return Err(OpError::DataStreamLengthMismatch);
   };
-  
+
   // Do not wait for fsync before dropping lock.
   drop(bkt);
   // Optimisation: perform fdatasync in batches.

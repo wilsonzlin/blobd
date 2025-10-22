@@ -24,6 +24,8 @@ use libblobd_lite::BlobdCfg;
 use libblobd_lite::BlobdLoader;
 use off64::u64;
 use off64::u8;
+use seekable_async_file::common::SyncIOAsyncAdapter;
+use seekable_async_file::file::FileIO;
 use seekable_async_file::SeekableAsyncFile;
 use seekable_async_file::SeekableAsyncFileMetrics;
 use std::sync::Arc;
@@ -50,8 +52,10 @@ impl BlobdLiteStore {
     assert_eq!(device_cfg.offset, 0);
 
     let io_metrics = Arc::new(SeekableAsyncFileMetrics::default());
+    let io = FileIO::open(&device_cfg.path, 0).await;
+    let io = SyncIOAsyncAdapter::new(Arc::new(io));
     let device =
-      SeekableAsyncFile::open(&device_cfg.path, io_metrics, Duration::from_micros(200), 0).await;
+      SeekableAsyncFile::open(Arc::new(io), io_metrics, Duration::from_micros(200)).await;
 
     let blobd = BlobdLoader::new(device.clone(), device_cfg.len, BlobdCfg {
       bucket_count_log2,

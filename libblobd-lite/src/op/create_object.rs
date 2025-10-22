@@ -14,10 +14,10 @@ use off64::u16;
 use off64::usz;
 use rand::Rng;
 use rand::thread_rng;
-use tracing::instrument;
 use std::cmp::max;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
+use tracing::instrument;
 use tracing::trace;
 
 pub struct OpCreateObjectInput {

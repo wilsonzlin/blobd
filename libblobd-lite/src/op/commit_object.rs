@@ -6,10 +6,10 @@ use crate::ctx::Ctx;
 use crate::object::OBJECT_OFF;
 use crate::object::ObjectState;
 use crate::op::key_debug_str;
-use futures::pin_mut;
 use futures::StreamExt;
-use tracing::instrument;
+use futures::pin_mut;
 use std::sync::Arc;
+use tracing::instrument;
 use tracing::trace;
 
 pub struct OpCommitObjectInput {

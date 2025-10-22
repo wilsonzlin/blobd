@@ -20,7 +20,7 @@ libblobd-lite = { version = "0.2.0", path = "../libblobd-lite" }
 num_cpus = "1.15.0"
 off64 = "0.9"
 rocksdb = "0.24.0"
-seekable-async-file = { version = "0.14.1", features = ["tokio_file"] }
+seekable-async-file = "0.15"
 serde = "1.0.160"
 tokio = { version = "1.28.0", features = ["macros", "time", "rt"] }
 tokio-stream = "0.1.17"

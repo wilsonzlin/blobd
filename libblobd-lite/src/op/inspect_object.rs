@@ -1,11 +1,10 @@
-use tracing::instrument;
-
 use super::OpError;
 use super::OpResult;
 use crate::bucket::FoundObject;
 use crate::ctx::Ctx;
 use crate::object::ObjectState;
 use std::sync::Arc;
+use tracing::instrument;
 
 pub struct OpInspectObjectInput {
   pub key: Vec<u8>,

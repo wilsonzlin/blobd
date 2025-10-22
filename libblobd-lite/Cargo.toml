@@ -25,7 +25,7 @@ parking_lot = "0.12.1"
 rand = "0.8.5"
 rayon = "1.11.0"
 roaring = "0.11.2"
-seekable-async-file = { version = "0.14.1", features = ["tokio_file"] }
+seekable-async-file = "0.15"
 serde = { version = "1.0.160", features = ["derive"] }
 signal-future = "0.1.1"
 struct-name = "0.0.1"
@@ -34,7 +34,7 @@ strum = { version = "0.24", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "sync"] }
 tracing = "0.1.37"
 twox-hash = "=1.6.3" # Pin the version as the docs mention that outputs could change in future versions, which would be fatal: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
-write-journal = { version = "0.14.1", features = ["io_file"] }
+write-journal = "0.14.2"
 
 [dev-dependencies]
 rand = "0.8.5"

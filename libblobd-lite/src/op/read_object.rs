@@ -11,10 +11,10 @@ use crate::util::mod_pow2;
 use futures::Stream;
 use off64::u8;
 use off64::u16;
-use tracing::instrument;
 use std::cmp::min;
 use std::pin::Pin;
 use std::sync::Arc;
+use tracing::instrument;
 use tracing::trace;
 
 pub struct OpReadObjectInput {
