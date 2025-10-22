@@ -20,4 +20,4 @@ store = { path = "../store" }
 tokio = { version = "1.27.0", features = ["full"] }
 tracing = "0.1.37"
 tracing-flame = "0.2.0"
-tracing-subscriber = "0.3.16"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }

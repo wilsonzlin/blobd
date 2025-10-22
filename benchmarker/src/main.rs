@@ -461,6 +461,7 @@ fn main() {
 
   let subscriber = Registry::default()
     .with(tracing_subscriber::fmt::Layer::default())
+    .with(tracing_subscriber::EnvFilter::from_default_env())
     .with(flame_layer);
   tracing::subscriber::set_global_default(subscriber).unwrap();
 
