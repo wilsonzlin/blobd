@@ -31,9 +31,6 @@ use store::WriteObjectInput;
 use tokio::spawn;
 use tokio::time::Instant;
 use tracing::info;
-use tracing_flame::FlameLayer;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::Registry;
 
 /*
 
@@ -194,7 +191,10 @@ struct BenchmarkResults {
   final_metrics: HashMap<String, u64>,
 }
 
-async fn bench() {
+#[tokio::main]
+async fn main() {
+  tracing_subscriber::fmt::init();
+
   let cli = Cli::parse();
   let concurrency = cli.concurrency;
 
@@ -454,22 +454,4 @@ async fn bench() {
   fs::write("benchmarker-results.json", json_output).unwrap();
 
   info!("all done");
-}
-
-fn main() {
-  let (flame_layer, _guard) = FlameLayer::with_file("./tracing.folded").unwrap();
-
-  let subscriber = Registry::default()
-    .with(tracing_subscriber::fmt::Layer::default())
-    .with(tracing_subscriber::EnvFilter::from_default_env())
-    .with(flame_layer);
-  tracing::subscriber::set_global_default(subscriber).unwrap();
-
-  tokio::runtime::Builder::new_multi_thread()
-    .enable_all()
-    .build()
-    .unwrap()
-    .block_on(async {
-      bench().await;
-    });
 }
