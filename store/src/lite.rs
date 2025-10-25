@@ -24,14 +24,7 @@ use libblobd_lite::BlobdCfg;
 use libblobd_lite::BlobdLoader;
 use off64::u64;
 use off64::u8;
-use seekable_async_file::common::SyncIOAsyncAdapter;
-use seekable_async_file::file::FileIO;
-use seekable_async_file::SeekableAsyncFile;
-use seekable_async_file::SeekableAsyncFileMetrics;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::join;
-use tokio::spawn;
 use tracing::info;
 
 pub struct BlobdLiteIncompleteToken {
@@ -51,36 +44,20 @@ impl BlobdLiteStore {
     let device_cfg = &cfg.partitions[0];
     assert_eq!(device_cfg.offset, 0);
 
-    let io_metrics = Arc::new(SeekableAsyncFileMetrics::default());
-    let io = FileIO::open(&device_cfg.path, 0).await;
-    let io = SyncIOAsyncAdapter::new(Arc::new(io));
-    let device =
-      SeekableAsyncFile::open(Arc::new(io), io_metrics, Duration::from_micros(200)).await;
-
-    let blobd = BlobdLoader::new(device.clone(), device_cfg.len, BlobdCfg {
+    let blobd = BlobdLoader::open(&device_cfg.path, device_cfg.len, BlobdCfg {
       bucket_count_log2,
       reap_incomplete_objects_after_secs: 60 * 60 * 24 * 7,
       lpage_size_pow2: u8!(cfg.lpage_size.ilog2()),
       spage_size_pow2: u8!(cfg.spage_size.ilog2()),
       versioning: false,
-    });
+    })
+    .await;
     if !cfg.do_not_format_device {
       blobd.format().await;
       info!("formatted device");
     };
     let blobd = blobd.load().await;
     info!("loaded device");
-
-    spawn({
-      let blobd = blobd.clone();
-      let device = device.clone();
-      async move {
-        join! {
-          blobd.start(),
-          device.start_delayed_data_sync_background_loop(),
-        };
-      }
-    });
 
     Self { blobd }
   }

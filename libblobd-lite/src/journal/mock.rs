@@ -1,4 +1,4 @@
-use crate::device::mock::MockSeekableAsyncFile;
+use crate::device::mock::MockDevice;
 use crate::journal::IJournal;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -12,14 +12,14 @@ use write_journal::OverlayEntry;
 use write_journal::Transaction;
 
 pub struct MockWriteJournal {
-  pub device: MockSeekableAsyncFile,
+  pub device: MockDevice,
   pub next_txn_serial_no: AtomicU64,
   pub committed: DashMap<u64, Transaction>,
   pub overlay: Arc<DashMap<u64, OverlayEntry>>,
 }
 
 impl MockWriteJournal {
-  pub fn new(device: MockSeekableAsyncFile) -> Self {
+  pub fn new(device: MockDevice) -> Self {
     Self {
       device,
       next_txn_serial_no: AtomicU64::new(0),
@@ -45,12 +45,6 @@ impl IJournal for MockWriteJournal {
   async fn format_device(&self) {}
 
   async fn recover(&self) {}
-
-  async fn start_commit_background_loop(&self) {
-    loop {
-      sleep(Duration::from_secs(1234567890)).await;
-    }
-  }
 
   fn begin_transaction(&self) -> Transaction {
     let serial_no = self.next_txn_serial_no.fetch_add(1, Ordering::Relaxed);

@@ -8,6 +8,7 @@ use crate::allocator::pages::MIN_PAGE_SIZE_POW2;
 use crate::allocator::pages::Pages;
 use crate::bucket::Buckets;
 use crate::device::IDevice;
+use crate::device::real::DsyncFile;
 use crate::journal::IJournal;
 use crate::object::OBJECT_OFF;
 use crate::object::ObjectState;
@@ -44,13 +45,12 @@ use op::write_object::op_write_object;
 use parking_lot::Mutex as SyncMutex;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSlice;
-use seekable_async_file::SeekableAsyncFile;
 use std::error::Error;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::Ordering::Relaxed;
-use std::time::Duration;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
 use tracing::info;
@@ -157,25 +157,24 @@ pub struct BlobdLoader {
 }
 
 impl BlobdLoader {
-  pub fn new(device: SeekableAsyncFile, device_size: u64, cfg: BlobdCfg) -> Self {
+  pub async fn open(device_path: &Path, device_size: u64, cfg: BlobdCfg) -> Self {
+    let device = DsyncFile::open(device_path).await;
     Self::new_with_device_and_journal(
       Arc::new(device.clone()),
-      |journal_dev_offset, journal_size| {
-        Arc::new(WriteJournal::new(
-          device.clone(),
-          journal_dev_offset,
-          journal_size,
-          Duration::from_micros(200),
-        ))
+      async |journal_dev_offset, journal_size| {
+        let journal: Arc<dyn IJournal> =
+          WriteJournal::open(device_path, journal_dev_offset, journal_size).await;
+        journal
       },
       device_size,
       cfg,
     )
+    .await
   }
 
-  pub(crate) fn new_with_device_and_journal(
+  pub(crate) async fn new_with_device_and_journal<JPF: Future<Output = Arc<dyn IJournal>>>(
     device: Arc<dyn IDevice>,
-    journal: impl FnOnce(u64, u64) -> Arc<dyn IJournal>,
+    journal: impl FnOnce(u64, u64) -> JPF,
     device_size: u64,
     cfg: BlobdCfg,
   ) -> Self {
@@ -209,7 +208,7 @@ impl BlobdLoader {
       "init",
     );
 
-    let journal = journal(journal_dev_offset, journal_size);
+    let journal = journal(journal_dev_offset, journal_size).await;
 
     Self {
       buckets_dev_offset,
@@ -228,7 +227,6 @@ impl BlobdLoader {
       Buckets::format_device(dev, self.buckets_dev_offset, self.cfg.bucket_count_log2),
       self.journal.format_device(),
     };
-    dev.sync_data().await;
   }
 
   async fn load_buckets(&self, l: &Arc<ObjectsLoader>) {
@@ -346,14 +344,6 @@ impl Blobd {
 
   pub fn metrics(&self) -> &Arc<BlobdMetrics> {
     &self.ctx.metrics
-  }
-
-  // WARNING: `device.start_delayed_data_sync_background_loop()` must also be running. Since `device` was provided, it's left up to the provider to run it.
-  pub async fn start(&self) {
-    // TODO Start background incomplete reaper.
-    join! {
-      self.journal.start_commit_background_loop(),
-    };
   }
 
   pub async fn commit_object(&self, input: OpCommitObjectInput) -> OpResult<OpCommitObjectOutput> {

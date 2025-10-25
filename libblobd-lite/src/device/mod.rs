@@ -3,7 +3,6 @@ use off64::Off64AsyncRead;
 use off64::Off64AsyncWrite;
 use off64::int::Off64AsyncReadInt;
 use off64::int::Off64AsyncWriteInt;
-use seekable_async_file::WriteRequest;
 
 pub mod mock;
 pub mod real;
@@ -17,7 +16,4 @@ pub trait IDevice:
   + Send
   + Sync
 {
-  async fn sync_data(&self);
-
-  async fn write_at_with_delayed_sync(&self, writes: Vec<WriteRequest<Vec<u8>>>);
 }

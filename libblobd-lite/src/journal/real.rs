@@ -13,10 +13,6 @@ impl IJournal for WriteJournal {
     self.recover().await;
   }
 
-  async fn start_commit_background_loop(&self) {
-    self.start_commit_background_loop().await;
-  }
-
   fn begin_transaction(&self) -> Transaction {
     self.begin_transaction()
   }

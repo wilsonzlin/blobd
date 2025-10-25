@@ -8,7 +8,6 @@ use write_journal::Transaction;
 pub trait IJournal: Send + Sync {
   async fn format_device(&self);
   async fn recover(&self);
-  async fn start_commit_background_loop(&self);
   fn begin_transaction(&self) -> Transaction;
   async fn commit_transaction(&self, txn: Transaction);
 }

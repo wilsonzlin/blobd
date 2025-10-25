@@ -32,7 +32,6 @@ off64 = "0.9"
 percent-encoding = "2.2"
 rand = "0.8.5"
 rmp-serde = "1.1.1"
-seekable-async-file = "0.15"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 toml = "0.7"

@@ -12,7 +12,6 @@ use off64::int::Off64AsyncReadInt;
 use off64::int::Off64AsyncWriteInt;
 use off64::u64;
 use off64::usz;
-use seekable_async_file::WriteRequest;
 use std::cmp::min;
 
 const PAGE_SIZE_POW2: u8 = 12;
@@ -20,11 +19,11 @@ const PAGE_SIZE: u64 = 1 << PAGE_SIZE_POW2;
 
 /// NOTE: When testing, prefer to build expected version and test for equality, instead of performing/testing individual reads, to ensure entire device is correct (e.g. no writes to invalid locations).
 #[derive(Clone)]
-pub struct MockSeekableAsyncFile {
+pub struct MockDevice {
   pub pages: DashMap<u64, Box<[u8; PAGE_SIZE as usize]>>,
 }
 
-impl MockSeekableAsyncFile {
+impl MockDevice {
   pub fn new() -> Self {
     Self {
       pages: Default::default(),
@@ -32,7 +31,7 @@ impl MockSeekableAsyncFile {
   }
 }
 
-impl MockSeekableAsyncFile {
+impl MockDevice {
   pub fn read_at(&self, start: u64, len: u64) -> Vec<u8> {
     let mut data = Vec::with_capacity(usz!(len));
 
@@ -73,15 +72,9 @@ impl MockSeekableAsyncFile {
 }
 
 #[async_trait]
-impl IDevice for MockSeekableAsyncFile {
-  async fn sync_data(&self) {}
+impl IDevice for MockDevice {}
 
-  async fn write_at_with_delayed_sync(&self, _writes: Vec<WriteRequest<Vec<u8>>>) {
-    unimplemented!()
-  }
-}
-
-impl PartialEq for MockSeekableAsyncFile {
+impl PartialEq for MockDevice {
   fn eq(&self, other: &Self) -> bool {
     let mut missing_self: HashSet<u64> = self.pages.iter().map(|e| *e.key()).collect();
     for e in other.pages.iter() {
@@ -97,22 +90,22 @@ impl PartialEq for MockSeekableAsyncFile {
   }
 }
 
-impl Eq for MockSeekableAsyncFile {}
+impl Eq for MockDevice {}
 
 #[async_trait]
-impl<'a> Off64AsyncRead<'a, Vec<u8>> for MockSeekableAsyncFile {
+impl<'a> Off64AsyncRead<'a, Vec<u8>> for MockDevice {
   async fn read_at(&self, offset: u64, len: u64) -> Vec<u8> {
     self.read_at(offset, len)
   }
 }
-impl<'a> Off64AsyncReadChrono<'a, Vec<u8>> for MockSeekableAsyncFile {}
-impl<'a> Off64AsyncReadInt<'a, Vec<u8>> for MockSeekableAsyncFile {}
+impl<'a> Off64AsyncReadChrono<'a, Vec<u8>> for MockDevice {}
+impl<'a> Off64AsyncReadInt<'a, Vec<u8>> for MockDevice {}
 
 #[async_trait]
-impl Off64AsyncWrite for MockSeekableAsyncFile {
+impl Off64AsyncWrite for MockDevice {
   async fn write_at(&self, offset: u64, value: &[u8]) {
     self.write_at(offset, value)
   }
 }
-impl Off64AsyncWriteChrono for MockSeekableAsyncFile {}
-impl Off64AsyncWriteInt for MockSeekableAsyncFile {}
+impl Off64AsyncWriteChrono for MockDevice {}
+impl Off64AsyncWriteInt for MockDevice {}
