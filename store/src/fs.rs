@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use futures::StreamExt;
-use tokio::fs::OpenOptions;
 use std::io::SeekFrom;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
@@ -22,6 +21,7 @@ use tokio::fs::create_dir_all;
 use tokio::fs::metadata;
 use tokio::fs::remove_file;
 use tokio::fs::File;
+use tokio::fs::OpenOptions;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tokio::spawn;
@@ -35,10 +35,7 @@ pub struct FileSystemStore {
 
 impl FileSystemStore {
   pub fn new(prefix: PathBuf, tiering: usize) -> Self {
-    Self {
-      prefix,
-      tiering,
-    }
+    Self { prefix, tiering }
   }
 
   fn get_path(&self, key: &[u8]) -> PathBuf {
@@ -72,7 +69,15 @@ impl Store for FileSystemStore {
     let parent = path.parent().unwrap();
     create_dir_all(parent).await.unwrap();
     // Also fsync the parent directory.
-    OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY).open(parent).await.unwrap().sync_all().await.unwrap();
+    OpenOptions::new()
+      .read(true)
+      .custom_flags(libc::O_DIRECTORY)
+      .open(parent)
+      .await
+      .unwrap()
+      .sync_all()
+      .await
+      .unwrap();
     File::create(&path).await.unwrap();
     CreateObjectOutput {
       token: Arc::new(()),
@@ -81,7 +86,14 @@ impl Store for FileSystemStore {
 
   async fn write_object<'a>(&'a self, input: WriteObjectInput<'a>) {
     let path = self.get_path(&input.key);
-    let f = OpenOptions::new().write(true).custom_flags(libc::O_DSYNC).open(&path).await.unwrap().into_std().await;
+    let f = OpenOptions::new()
+      .write(true)
+      .custom_flags(libc::O_DSYNC)
+      .open(&path)
+      .await
+      .unwrap()
+      .into_std()
+      .await;
     let data = input.data.to_vec();
     spawn_blocking(move || {
       f.write_all_at(&data, input.offset).unwrap();

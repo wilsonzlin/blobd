@@ -1,32 +1,30 @@
-use std::mem::take;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
-use std::sync::Arc;
-use std::time::Duration;
-
+use crate::device::IDevice;
+use crate::journal::IJournal;
+use crate::journal::merge::WriteMerger;
 use async_trait::async_trait;
-use futures::stream::iter;
-use futures::StreamExt;
-use off64::int::Off64WriteMutInt;
-use off64::u32;
 use bitcode::Decode;
 use bitcode::Encode;
+use futures::StreamExt;
+use futures::stream::iter;
 use off64::Off64WriteMut;
+use off64::int::Off64WriteMutInt;
+use off64::u32;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
+use std::mem::take;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
+use std::time::Duration;
 use tokio::spawn;
-use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::time::sleep;
+use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::Instant;
-
-use crate::device::IDevice;
-use crate::journal::merge::WriteMerger;
-use crate::journal::IJournal;
+use tokio::time::sleep;
 
 static BLANK_STATE: Lazy<Vec<u8>> = Lazy::new(|| {
   let mut raw = vec![0u8; 32 + 4];
@@ -70,9 +68,11 @@ impl Flusher {
       self.dev.write_at(self.dev_offset, &pending.buf).await;
 
       // Keep semantic order without slowing down to serial writes.
-      iter(pending.entries.into_merged()).for_each_concurrent(None, async |(offset, data)| {
-        self.dev.write_at(offset, &data).await;
-      }).await;
+      iter(pending.entries.into_merged())
+        .for_each_concurrent(None, async |(offset, data)| {
+          self.dev.write_at(offset, &data).await;
+        })
+        .await;
 
       // We actually cannot ACK immediately after writing to journal, even though they are safely persisted to disk (even if only in journal), because when we ACK, overlays will be cleared, but they actually haven't been written to disk yet (and so cannot be read from yet).
       for signal in pending.signals {
@@ -80,7 +80,7 @@ impl Flusher {
       }
 
       self.dev.write_at(self.dev_offset, &BLANK_STATE).await;
-      
+
       self.in_flush_queue.fetch_sub(1, Relaxed);
     }
   }
@@ -148,7 +148,9 @@ impl Journal {
           dev_offset,
           receiver: rx,
           in_flush_queue,
-        }.start_loop().await;
+        }
+        .start_loop()
+        .await;
       }
     });
     let state = Arc::new(JournalState {
@@ -228,7 +230,8 @@ impl IJournal for Journal {
       // We should be continuously flushing because there's only one serial flusher and I/Os are faster than sleeping.
       // But if it's already flushing, there's no point in sending an unnecessarily small flush in backlog.
       // So we only enqueue when smaller than cap if flusher is idle and journal has at least minimum block device write size.
-      let flusher_is_idle_and_journal_meets_min_write = self.state.in_flush_queue.load(Relaxed) == 0 && pending.buf.len() >= 512;
+      let flusher_is_idle_and_journal_meets_min_write =
+        self.state.in_flush_queue.load(Relaxed) == 0 && pending.buf.len() >= 512;
       if would_overflow || flusher_is_idle_and_journal_meets_min_write {
         self.state.send_pending(take(&mut *pending));
       }

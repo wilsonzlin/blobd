@@ -1,11 +1,10 @@
+pub mod merge;
 pub mod mock;
 pub mod real;
-pub mod merge;
-
-use async_trait::async_trait;
-use signal_future::SignalFuture;
 
 use crate::journal::real::Transaction;
+use async_trait::async_trait;
+use signal_future::SignalFuture;
 
 #[async_trait]
 pub(crate) trait IJournal: Send + Sync {

@@ -1,6 +1,6 @@
 use crate::device::mock::MockDevice;
-use crate::journal::real::Transaction;
 use crate::journal::IJournal;
+use crate::journal::real::Transaction;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use signal_future::SignalFuture;

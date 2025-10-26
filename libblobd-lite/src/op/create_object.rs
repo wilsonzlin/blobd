@@ -114,7 +114,11 @@ pub(crate) async fn op_create_object(
       create_u48_be(cur_bkt_head).to_vec(),
     );
 
-    (ctx.buckets.commit_transaction(txn), bkt_overlay_entry, next_overlay_entry)
+    (
+      ctx.buckets.commit_transaction(txn),
+      bkt_overlay_entry,
+      next_overlay_entry,
+    )
   };
   if let Some(signal) = txn {
     signal.await;

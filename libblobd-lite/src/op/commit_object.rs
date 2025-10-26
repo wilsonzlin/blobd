@@ -76,7 +76,11 @@ pub(crate) async fn op_commit_object(
       ObjectState::Committed as u8,
     ]);
 
-    (ctx.buckets.commit_transaction(txn), deletion_overlay_entry, overlay_entry)
+    (
+      ctx.buckets.commit_transaction(txn),
+      deletion_overlay_entry,
+      overlay_entry,
+    )
   };
   if let Some(signal) = txn {
     signal.await;

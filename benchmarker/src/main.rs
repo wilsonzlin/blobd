@@ -18,8 +18,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 use store::direct::BlobdDirectStore;
 use store::fs::FileSystemStore;
 use store::kv::BlobdKVStore;
@@ -35,7 +38,6 @@ use store::InspectObjectInput;
 use store::ReadObjectInput;
 use store::Store;
 use store::WriteObjectInput;
-use std::time::Instant;
 use systemstat::Platform;
 use systemstat::System as SysstatSystem;
 use tokio::spawn;
@@ -260,8 +262,13 @@ fn run_script(script_path: &Path) {
     .stderr(Stdio::inherit())
     .status()
     .expect("failed to execute script");
-  
-  assert!(status.success(), "script {} failed with status: {}", script_path.display(), status);
+
+  assert!(
+    status.success(),
+    "script {} failed with status: {}",
+    script_path.display(),
+    status
+  );
 }
 
 struct MetricsCollector {
@@ -300,7 +307,8 @@ impl MetricsCollector {
           let loop_start = std::time::Instant::now();
 
           // Get CPU load aggregate with proper user/system breakdown
-          let (cpu_user, cpu_system) = sys.cpu_load_aggregate()
+          let (cpu_user, cpu_system) = sys
+            .cpu_load_aggregate()
             .and_then(|cpu| {
               std::thread::sleep(std::time::Duration::from_millis(100));
               cpu.done()
@@ -309,7 +317,8 @@ impl MetricsCollector {
             .unwrap_or((0.0, 0.0));
 
           // Get memory info
-          let (memory_used_bytes, memory_total_bytes) = sys.memory()
+          let (memory_used_bytes, memory_total_bytes) = sys
+            .memory()
             .map(|mem| (mem.total.as_u64() - mem.free.as_u64(), mem.total.as_u64()))
             .unwrap_or((0, 0));
 
@@ -451,31 +460,35 @@ impl OpMetricsTracker {
   }
 }
 
-async fn run_benchmark(
-  benchmark_name: String,
-  benchmark_dir: PathBuf,
-  cli: &Cli,
-) {
+async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli) {
   info!(benchmark = %benchmark_name, "running benchmark");
-  
+
   let cfg_file = benchmark_dir.join("cfg.yaml");
   let start_script = benchmark_dir.join("start.sh");
   let stop_script = benchmark_dir.join("stop.sh");
-  
+
   // Parse config first to resolve values
-  let cfg: Config =
-    serde_yaml::from_str(&fs::read_to_string(&cfg_file).expect("read config file"))
-      .expect("parse config file");
+  let cfg: Config = serde_yaml::from_str(&fs::read_to_string(&cfg_file).expect("read config file"))
+    .expect("parse config file");
 
   // Resolve effective values (CLI overrides config)
   let buckets = cli.buckets.or(cfg.buckets).unwrap_or(0);
-  let objects = cli.objects.or(cfg.objects).expect("objects must be specified in config or CLI");
-  let object_size = cli.object_size.or(cfg.object_size).expect("object_size must be specified in config or CLI");
-  let concurrency = cli.concurrency.or(cfg.concurrency).expect("concurrency must be specified in config or CLI");
+  let objects = cli
+    .objects
+    .or(cfg.objects)
+    .expect("objects must be specified in config or CLI");
+  let object_size = cli
+    .object_size
+    .or(cfg.object_size)
+    .expect("object_size must be specified in config or CLI");
+  let concurrency = cli
+    .concurrency
+    .or(cfg.concurrency)
+    .expect("concurrency must be specified in config or CLI");
 
   // Construct results file path using resolved values
   let results_file = benchmark_dir.join(format!("results.{}o.{}b.json", objects, object_size));
-  
+
   // Run start.sh if it exists
   let ran_start_script = if start_script.exists() {
     run_script(&start_script);
@@ -484,7 +497,7 @@ async fn run_benchmark(
     info!("no start.sh found, skipping");
     false
   };
-  
+
   // Start metrics collection (sample every 1 second)
   let metrics_collector = MetricsCollector::new();
 
@@ -541,9 +554,7 @@ async fn run_benchmark(
       cfg.tiering.unwrap(),
     )),
     TargetType::S3 => Arc::new(cfg.s3.unwrap().build_store().await),
-    TargetType::RocksDB => Arc::new(RocksDBStore::new(
-      cfg.prefix.unwrap().to_str().unwrap(),
-    )),
+    TargetType::RocksDB => Arc::new(RocksDBStore::new(cfg.prefix.unwrap().to_str().unwrap())),
   };
 
   if !cli.skip_creation {
@@ -826,7 +837,10 @@ async fn main() {
   // Determine which benchmarks to run
   let cfg_dir = PathBuf::from("cfg");
   let benchmark_names: Vec<String> = if let Some(ref benchmarks) = cli.benchmarks {
-    benchmarks.split(',').map(|s| s.trim().to_string()).collect()
+    benchmarks
+      .split(',')
+      .map(|s| s.trim().to_string())
+      .collect()
   } else {
     // Run all benchmarks in cfg/ directory
     fs::read_dir(&cfg_dir)
@@ -846,7 +860,11 @@ async fn main() {
 
   for benchmark_name in benchmark_names {
     let benchmark_dir = cfg_dir.join(&benchmark_name);
-    assert!(benchmark_dir.exists(), "benchmark directory not found: {}", benchmark_dir.display());
+    assert!(
+      benchmark_dir.exists(),
+      "benchmark directory not found: {}",
+      benchmark_dir.display()
+    );
     run_benchmark(benchmark_name.clone(), benchmark_dir, &cli).await;
   }
 

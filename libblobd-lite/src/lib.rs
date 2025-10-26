@@ -9,8 +9,8 @@ use crate::allocator::pages::Pages;
 use crate::bucket::Buckets;
 use crate::device::IDevice;
 use crate::device::real::DsyncFile;
-use crate::journal::real::Journal;
 use crate::journal::IJournal;
+use crate::journal::real::Journal;
 use crate::object::OBJECT_OFF;
 use crate::object::ObjectState;
 use crate::overlay::Overlay;
@@ -164,7 +164,11 @@ impl BlobdLoader {
     Self::new_with_device_and_journal(
       device.clone(),
       async |journal_dev_offset, journal_size| {
-        let journal: Arc<dyn IJournal> = Arc::new(Journal::new(device.clone(), journal_dev_offset, usz!(journal_size)));
+        let journal: Arc<dyn IJournal> = Arc::new(Journal::new(
+          device.clone(),
+          journal_dev_offset,
+          usz!(journal_size),
+        ));
         journal
       },
       device_size,
@@ -322,10 +326,7 @@ impl BlobdLoader {
       versioning: self.cfg.versioning,
     });
 
-    Blobd {
-      cfg: self.cfg,
-      ctx,
-    }
+    Blobd { cfg: self.cfg, ctx }
   }
 }
 
