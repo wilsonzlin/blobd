@@ -9,6 +9,7 @@ use crate::allocator::pages::Pages;
 use crate::bucket::Buckets;
 use crate::device::IDevice;
 use crate::device::real::DsyncFile;
+use crate::journal::real::Journal;
 use crate::journal::IJournal;
 use crate::object::OBJECT_OFF;
 use crate::object::ObjectState;
@@ -23,6 +24,7 @@ use metrics::BlobdMetrics;
 use num_traits::FromPrimitive;
 use off64::int::Off64ReadInt;
 use off64::u64;
+use off64::usz;
 use op::OpResult;
 use op::commit_object::OpCommitObjectInput;
 use op::commit_object::OpCommitObjectOutput;
@@ -54,7 +56,6 @@ use std::sync::atomic::Ordering::Relaxed;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
 use tracing::info;
-use write_journal::WriteJournal;
 
 pub mod allocator;
 pub mod bucket;
@@ -159,11 +160,11 @@ pub struct BlobdLoader {
 impl BlobdLoader {
   pub async fn open(device_path: &Path, device_size: u64, cfg: BlobdCfg) -> Self {
     let device = DsyncFile::open(device_path).await;
+    let device: Arc<dyn IDevice> = Arc::new(device);
     Self::new_with_device_and_journal(
-      Arc::new(device.clone()),
+      device.clone(),
       async |journal_dev_offset, journal_size| {
-        let journal: Arc<dyn IJournal> =
-          WriteJournal::open(device_path, journal_dev_offset, journal_size).await;
+        let journal: Arc<dyn IJournal> = Journal::new(device.clone(), journal_dev_offset, usz!(journal_size));
         journal
       },
       device_size,
@@ -284,7 +285,7 @@ impl BlobdLoader {
     let overlay = Arc::new(Overlay::new());
     let buckets = Buckets::new(
       dev.clone(),
-      journal.clone(),
+      journal,
       metrics.clone(),
       pages,
       overlay.clone(),
@@ -324,7 +325,6 @@ impl BlobdLoader {
     Blobd {
       cfg: self.cfg,
       ctx,
-      journal,
     }
   }
 }
@@ -333,7 +333,6 @@ impl BlobdLoader {
 pub struct Blobd {
   cfg: BlobdCfg,
   ctx: Arc<Ctx>,
-  journal: Arc<dyn IJournal>,
 }
 
 impl Blobd {

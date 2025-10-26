@@ -114,9 +114,11 @@ pub(crate) async fn op_create_object(
       create_u48_be(cur_bkt_head).to_vec(),
     );
 
-    (txn, bkt_overlay_entry, next_overlay_entry)
+    (ctx.buckets.commit_transaction(txn), bkt_overlay_entry, next_overlay_entry)
   };
-  ctx.buckets.commit_transaction(txn).await;
+  if let Some(signal) = txn {
+    signal.await;
+  }
   ctx.overlay.evict(bkt_overlay_entry);
   ctx.overlay.evict(next_overlay_entry);
   trace!(key = key_debug_str(&req.key), object_id, "created object");

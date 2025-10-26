@@ -1,41 +1,20 @@
 use crate::device::mock::MockDevice;
+use crate::journal::real::Transaction;
 use crate::journal::IJournal;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use off64::usz;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-use tokio::time::sleep;
-use write_journal::OverlayEntry;
-use write_journal::Transaction;
+use signal_future::SignalFuture;
 
 pub struct MockWriteJournal {
   pub device: MockDevice,
-  pub next_txn_serial_no: AtomicU64,
-  pub committed: DashMap<u64, Transaction>,
-  pub overlay: Arc<DashMap<u64, OverlayEntry>>,
+  pub committed: DashMap<u64, Vec<u8>>,
 }
 
 impl MockWriteJournal {
   pub fn new(device: MockDevice) -> Self {
     Self {
       device,
-      next_txn_serial_no: AtomicU64::new(0),
       committed: Default::default(),
-      overlay: Default::default(),
-    }
-  }
-}
-
-impl MockWriteJournal {
-  pub async fn read_with_overlay(&self, offset: u64, len: u64) -> Vec<u8> {
-    if let Some(e) = self.overlay.get(&offset) {
-      assert_eq!(e.value().data.len(), usz!(len));
-      e.value().data.clone()
-    } else {
-      self.device.read_at(offset, len).into()
     }
   }
 }
@@ -47,13 +26,13 @@ impl IJournal for MockWriteJournal {
   async fn recover(&self) {}
 
   fn begin_transaction(&self) -> Transaction {
-    let serial_no = self.next_txn_serial_no.fetch_add(1, Ordering::Relaxed);
-    Transaction::new(serial_no, self.overlay.clone())
+    Transaction::new()
   }
 
-  async fn commit_transaction(&self, txn: Transaction) {
-    let None = self.committed.insert(txn.serial_no(), txn) else {
-      unreachable!();
-    };
+  fn commit_transaction(&self, txn: Transaction) -> Option<SignalFuture<()>> {
+    for write in txn.into_writes() {
+      self.committed.insert(write.offset, write.data);
+    }
+    None
   }
 }

@@ -32,11 +32,11 @@ pub(crate) async fn op_delete_object(
       None => None,
     };
 
-    (txn, to_free, overlay_entry)
+    (ctx.buckets.commit_transaction(txn), to_free, overlay_entry)
   };
-
-  // We must always commit the transaction (otherwise our journal will wait forever), so we cannot return before this if the object does not exist.
-  ctx.buckets.commit_transaction(txn).await;
+  if let Some(signal) = txn {
+    signal.await;
+  }
 
   let Some(overlay_entry) = overlay_entry else {
     return Err(OpError::ObjectNotFound);

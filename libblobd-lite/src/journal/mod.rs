@@ -1,13 +1,18 @@
 pub mod mock;
 pub mod real;
+pub mod merge;
 
 use async_trait::async_trait;
-use write_journal::Transaction;
+use signal_future::SignalFuture;
+
+use crate::journal::real::Transaction;
 
 #[async_trait]
-pub trait IJournal: Send + Sync {
+pub(crate) trait IJournal: Send + Sync {
   async fn format_device(&self);
   async fn recover(&self);
   fn begin_transaction(&self) -> Transaction;
-  async fn commit_transaction(&self, txn: Transaction);
+  // This doesn't await the signal future itself because subtle ordering correctness semantics: the transaction must be applied to the journal while holding lock, but then lock can be released before actual async I/O completes.
+  // This can return None if no write needs to be done.
+  fn commit_transaction(&self, txn: Transaction) -> Option<SignalFuture<()>>;
 }

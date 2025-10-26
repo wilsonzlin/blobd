@@ -2,6 +2,7 @@ use crate::allocator::Allocations;
 use crate::allocator::pages::MIN_PAGE_SIZE_POW2;
 use crate::allocator::pages::Pages;
 use crate::device::IDevice;
+use crate::journal::real::Transaction;
 use crate::journal::IJournal;
 use crate::metrics::BlobdMetrics;
 use crate::object::OBJECT_OFF;
@@ -18,6 +19,7 @@ use futures::stream::iter;
 use off64::int::create_u40_be;
 use off64::u64;
 use off64::usz;
+use signal_future::SignalFuture;
 use std::cmp::min;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -28,7 +30,6 @@ use tokio::sync::RwLockWriteGuard;
 use tokio::time::Instant;
 use tracing::instrument;
 use twox_hash::xxh3::hash64;
-use write_journal::Transaction;
 
 /**
 
@@ -349,8 +350,9 @@ impl Buckets {
   }
 
   /// See BucketWriteLocked.begin_transaction for why this is not on Ctx.
-  pub async fn commit_transaction(&self, txn: Transaction) {
-    self.journal.commit_transaction(txn).await;
+  /// WARNING: Don't await whtin this function. This must be called while holding lock (correctness), but awaited outside (performance). See Journal for more details.
+  pub fn commit_transaction(&self, txn: Transaction) -> Option<SignalFuture<()>> {
+    self.journal.commit_transaction(txn)
   }
 
   fn bucket_id_for_key(&self, key: &[u8]) -> u64 {

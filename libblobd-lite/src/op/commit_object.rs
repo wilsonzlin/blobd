@@ -76,9 +76,11 @@ pub(crate) async fn op_commit_object(
       ObjectState::Committed as u8,
     ]);
 
-    (txn, deletion_overlay_entry, overlay_entry)
+    (ctx.buckets.commit_transaction(txn), deletion_overlay_entry, overlay_entry)
   };
-  ctx.buckets.commit_transaction(txn).await;
+  if let Some(signal) = txn {
+    signal.await;
+  }
   ctx.allocator.lock().release_all(&to_free);
   ctx.overlay.evict(overlay_entry);
   if let Some(deletion_overlay_entry) = deletion_overlay_entry {
