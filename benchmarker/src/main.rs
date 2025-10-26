@@ -24,6 +24,7 @@ use store::direct::BlobdDirectStore;
 use store::fs::FileSystemStore;
 use store::kv::BlobdKVStore;
 use store::lite::BlobdLiteStore;
+use store::rocksdb::RocksDBStore;
 use store::s3::S3StoreConfig;
 use store::CommitObjectInput;
 use store::CreateObjectInput;
@@ -67,6 +68,7 @@ enum TargetType {
   Lite,
   FS,
   S3,
+  RocksDB,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -133,6 +135,18 @@ struct Config {
   /// Only applies to Kv target. Defaults to 1 GiB.
   #[serde(default = "default_log_buffer_size")]
   log_buffer_size: ByteSize,
+
+  /// Number of buckets to allocate. Can be overridden via CLI.
+  buckets: Option<u64>,
+
+  /// Number of objects to create. Can be overridden via CLI.
+  objects: Option<u64>,
+
+  /// Size of each object in bytes. Can be overridden via CLI.
+  object_size: Option<u64>,
+
+  /// Concurrency level. Can be overridden via CLI.
+  concurrency: Option<usize>,
 }
 
 #[derive(Parser)]
@@ -140,17 +154,21 @@ struct Cli {
   /// Benchmark folders to run (comma-separated). If not specified, runs all benchmarks in cfg/.
   benchmarks: Option<String>,
 
-  /// Number of buckets to allocate
+  /// Number of buckets to allocate (overrides config)
   #[arg(long)]
-  buckets: u64,
+  buckets: Option<u64>,
 
-  /// Number of objects to create
+  /// Number of objects to create (overrides config)
   #[arg(long)]
-  objects: u64,
+  objects: Option<u64>,
 
-  /// Size of each object in bytes
+  /// Size of each object in bytes (overrides config)
   #[arg(long)]
-  object_size: u64,
+  object_size: Option<u64>,
+
+  /// Concurrency level (overrides config)
+  #[arg(long)]
+  concurrency: Option<usize>,
 
   /// Skips formatting the device.
   #[arg(long)]
@@ -163,10 +181,6 @@ struct Cli {
   /// Skips deleting objects.
   #[arg(long)]
   skip_deletion: bool,
-
-  /// Concurrency level. Defaults to 64.
-  #[arg(long, default_value_t = 64)]
-  concurrency: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -233,6 +247,7 @@ struct BenchmarkResults {
   object_size: u64,
   concurrency: usize,
   op: OpResults,
+  wait_for_end_secs: f64,
   store_metrics: HashMap<String, u64>,
   system_metrics: Vec<SystemMetricsSample>,
 }
@@ -440,14 +455,26 @@ async fn run_benchmark(
   benchmark_name: String,
   benchmark_dir: PathBuf,
   cli: &Cli,
-  rand_pool: &Arc<Vec<u8>>,
 ) {
   info!(benchmark = %benchmark_name, "running benchmark");
   
   let cfg_file = benchmark_dir.join("cfg.yaml");
   let start_script = benchmark_dir.join("start.sh");
   let stop_script = benchmark_dir.join("stop.sh");
-  let results_file = benchmark_dir.join(format!("results.{}o.{}b.json", cli.objects, cli.object_size));
+  
+  // Parse config first to resolve values
+  let cfg: Config =
+    serde_yaml::from_str(&fs::read_to_string(&cfg_file).expect("read config file"))
+      .expect("parse config file");
+
+  // Resolve effective values (CLI overrides config)
+  let buckets = cli.buckets.or(cfg.buckets).unwrap_or(0);
+  let objects = cli.objects.or(cfg.objects).expect("objects must be specified in config or CLI");
+  let object_size = cli.object_size.or(cfg.object_size).expect("object_size must be specified in config or CLI");
+  let concurrency = cli.concurrency.or(cfg.concurrency).expect("concurrency must be specified in config or CLI");
+
+  // Construct results file path using resolved values
+  let results_file = benchmark_dir.join(format!("results.{}o.{}b.json", objects, object_size));
   
   // Run start.sh if it exists
   let ran_start_script = if start_script.exists() {
@@ -461,27 +488,28 @@ async fn run_benchmark(
   // Start metrics collection (sample every 1 second)
   let metrics_collector = MetricsCollector::new();
 
-  let cfg: Config =
-    serde_yaml::from_str(&fs::read_to_string(&cfg_file).expect("read config file"))
-      .expect("parse config file");
+  // Initialize random pool based on object size
+  info!(object_size, "initializing random pool");
+  let mut rand_pool = vec![0u8; usz!(object_size)];
+  thread_rng().fill_bytes(&mut rand_pool);
+  let rand_pool = Arc::new(rand_pool);
 
   let mut results = BenchmarkResults {
     benchmark_name: benchmark_name.clone(),
     cfg: cfg.clone(),
-    buckets: cli.buckets,
-    objects: cli.objects,
-    object_size: cli.object_size,
-    concurrency: cli.concurrency,
+    buckets,
+    objects,
+    object_size,
+    concurrency,
     op: OpResults::default(),
+    wait_for_end_secs: 0.0,
     store_metrics: HashMap::new(),
     system_metrics: Vec::new(),
   };
 
-  let concurrency = cli.concurrency;
-  let object_count = cli.objects;
-  let bucket_count = cli.buckets;
+  let object_count = objects;
+  let bucket_count = buckets;
   let lpage_size = cfg.lpage_size.as_u64();
-  let object_size = cli.object_size;
   let read_size = cfg.read_size.as_u64();
   let read_stream_buffer_size = cfg.read_stream_buffer_size.as_u64();
   let spage_size = cfg.spage_size.as_u64();
@@ -509,10 +537,13 @@ async fn run_benchmark(
     TargetType::KV => Arc::new(BlobdKVStore::start(init_cfg).await),
     TargetType::Lite => Arc::new(BlobdLiteStore::start(init_cfg).await),
     TargetType::FS => Arc::new(FileSystemStore::new(
-      cfg.prefix.unwrap(),
+      cfg.prefix.clone().unwrap(),
       cfg.tiering.unwrap(),
     )),
     TargetType::S3 => Arc::new(cfg.s3.unwrap().build_store().await),
+    TargetType::RocksDB => Arc::new(RocksDBStore::new(
+      cfg.prefix.unwrap().to_str().unwrap(),
+    )),
   };
 
   if !cli.skip_creation {
@@ -749,8 +780,12 @@ async fn run_benchmark(
     );
   };
 
+  info!("waiting for store to end (flush/compact/etc)");
+  let wait_start = Instant::now();
   store.wait_for_end().await;
-  info!("blobd ended");
+  let wait_for_end_secs = wait_start.elapsed().as_secs_f64();
+  info!(wait_for_end_secs, "store ended");
+  results.wait_for_end_secs = wait_for_end_secs;
 
   let store_metrics = store.metrics();
   for (key, value) in &store_metrics {
@@ -760,6 +795,10 @@ async fn run_benchmark(
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
     .collect();
+
+  // Drop store to release all file handles before cleanup
+  info!("dropping store to release file handles");
+  drop(store);
 
   // Stop metrics collection
   info!("stopping metrics collection");
@@ -783,11 +822,6 @@ async fn main() {
   tracing_subscriber::fmt::init();
 
   let cli = Cli::parse();
-
-  info!(object_size = cli.object_size, "initializing random pool");
-  let mut rand_pool = vec![0u8; usz!(cli.object_size)];
-  thread_rng().fill_bytes(&mut rand_pool);
-  let rand_pool = Arc::new(rand_pool);
 
   // Determine which benchmarks to run
   let cfg_dir = PathBuf::from("cfg");
@@ -813,7 +847,7 @@ async fn main() {
   for benchmark_name in benchmark_names {
     let benchmark_dir = cfg_dir.join(&benchmark_name);
     assert!(benchmark_dir.exists(), "benchmark directory not found: {}", benchmark_dir.display());
-    run_benchmark(benchmark_name.clone(), benchmark_dir, &cli, &rand_pool).await;
+    run_benchmark(benchmark_name.clone(), benchmark_dir, &cli).await;
   }
 
   info!("all benchmarks complete");

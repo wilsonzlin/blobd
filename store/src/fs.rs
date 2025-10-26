@@ -12,14 +12,11 @@ use crate::WriteObjectInput;
 use async_trait::async_trait;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
-use dashmap::DashMap;
 use futures::StreamExt;
-use std::fs::File as StdFile;
+use tokio::fs::OpenOptions;
 use std::io::SeekFrom;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::fs::create_dir_all;
 use tokio::fs::metadata;
@@ -33,8 +30,6 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 pub struct FileSystemStore {
   prefix: PathBuf,
-  files: DashMap<u64, Arc<StdFile>>,
-  next_id: AtomicU64,
   tiering: usize,
 }
 
@@ -42,8 +37,6 @@ impl FileSystemStore {
   pub fn new(prefix: PathBuf, tiering: usize) -> Self {
     Self {
       prefix,
-      files: DashMap::new(),
-      next_id: AtomicU64::new(0),
       tiering,
     }
   }
@@ -73,20 +66,22 @@ impl Store for FileSystemStore {
 
   async fn wait_for_end(&self) {}
 
+  // It would not be realistic to cache file handles; a real system would not do this. Also, we'd run out of file handles.
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput {
     let path = self.get_path(&input.key);
-    create_dir_all(path.parent().unwrap()).await.unwrap();
-    let f = File::create(&path).await.unwrap().into_std().await;
-    let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-    self.files.insert(id, Arc::new(f));
+    let parent = path.parent().unwrap();
+    create_dir_all(parent).await.unwrap();
+    // Also fsync the parent directory.
+    OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY).open(parent).await.unwrap().sync_all().await.unwrap();
+    File::create(&path).await.unwrap();
     CreateObjectOutput {
-      token: Arc::new(id),
+      token: Arc::new(()),
     }
   }
 
   async fn write_object<'a>(&'a self, input: WriteObjectInput<'a>) {
-    let id = input.incomplete_token.downcast::<u64>().unwrap();
-    let f = self.files.get(&id).unwrap().clone();
+    let path = self.get_path(&input.key);
+    let f = OpenOptions::new().write(true).custom_flags(libc::O_DSYNC).open(&path).await.unwrap().into_std().await;
     let data = input.data.to_vec();
     spawn_blocking(move || {
       f.write_all_at(&data, input.offset).unwrap();
@@ -95,15 +90,7 @@ impl Store for FileSystemStore {
     .unwrap();
   }
 
-  async fn commit_object(&self, input: CommitObjectInput) -> CommitObjectOutput {
-    let id = input.incomplete_token.downcast::<u64>().unwrap();
-    let f = self.files.remove(&id).unwrap().1;
-    let f = Arc::try_unwrap(f).unwrap();
-    spawn_blocking(move || {
-      f.sync_all().unwrap();
-    })
-    .await
-    .unwrap();
+  async fn commit_object(&self, _input: CommitObjectInput) -> CommitObjectOutput {
     CommitObjectOutput { object_id: None }
   }
 

@@ -17,6 +17,7 @@ itertools = "0.14.0"
 libblobd-direct = { version = "0.5.4", path = "../libblobd-direct" }
 libblobd-kv = { version = "0.7.2", path = "../libblobd-kv" }
 libblobd-lite = { version = "0.2.0", path = "../libblobd-lite" }
+libc = "0.2.177"
 num_cpus = "1.15.0"
 off64 = "0.9"
 rocksdb = "0.24.0"

@@ -32,7 +32,7 @@ impl RocksDBStore {
     opt.create_if_missing(true);
 
     // Maximize disk I/O utilization.
-    opt.set_max_background_jobs(num_cpus::get() as i32 * 2);
+    opt.set_max_background_jobs(num_cpus::get() as i32 * 4);
     opt.set_bytes_per_sync(1024 * 1024 * 4);
 
     // Enable BlobDB.
@@ -86,13 +86,24 @@ impl Store for RocksDBStore {
     u64::MAX
   }
 
-  async fn wait_for_end(&self) {}
+  async fn wait_for_end(&self) {
+    let db = self.db.clone();
+    spawn_blocking(move || {
+      // Flush all memtables to SSTables
+      db.flush().unwrap();
+      // Compact to ensure data is properly organized on disk
+      db.compact_range::<&[u8], &[u8]>(None, None);
+    })
+    .await
+    .unwrap();
+  }
 
   async fn create_object(&self, _input: CreateObjectInput) -> CreateObjectOutput {
     CreateObjectOutput { token: Arc::new(0) }
   }
 
   async fn write_object<'a>(&'a self, input: WriteObjectInput<'a>) {
+    assert_eq!(input.offset, 0);
     let db = self.db.clone();
     let data = input.data.to_vec();
     spawn_blocking(move || {
@@ -141,7 +152,9 @@ impl Store for RocksDBStore {
   async fn delete_object(&self, input: DeleteObjectInput) {
     let db = self.db.clone();
     spawn_blocking(move || {
-      db.delete(input.key).unwrap();
+      let mut opts = WriteOptions::default();
+      opts.set_sync(true);
+      db.delete_opt(input.key, &opts).unwrap();
     })
     .await
     .unwrap();
