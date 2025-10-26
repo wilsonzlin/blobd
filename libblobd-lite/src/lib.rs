@@ -164,7 +164,7 @@ impl BlobdLoader {
     Self::new_with_device_and_journal(
       device.clone(),
       async |journal_dev_offset, journal_size| {
-        let journal: Arc<dyn IJournal> = Journal::new(device.clone(), journal_dev_offset, usz!(journal_size));
+        let journal: Arc<dyn IJournal> = Arc::new(Journal::new(device.clone(), journal_dev_offset, usz!(journal_size)));
         journal
       },
       device_size,
