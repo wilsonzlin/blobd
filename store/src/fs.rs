@@ -67,6 +67,10 @@ impl Store for FileSystemStore {
     vec![]
   }
 
+  fn write_chunk_size(&self) -> u64 {
+    u64::MAX
+  }
+
   async fn wait_for_end(&self) {}
 
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput {

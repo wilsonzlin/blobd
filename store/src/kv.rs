@@ -129,6 +129,10 @@ impl Store for BlobdKVStore {
     ]
   }
 
+  fn write_chunk_size(&self) -> u64 {
+    u64::MAX
+  }
+
   async fn wait_for_end(&self) {
     self.blobd.wait_for_any_current_log_buffer_commit().await;
   }

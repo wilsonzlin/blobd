@@ -16,6 +16,7 @@ use rocksdb::BlockBasedOptions;
 use rocksdb::Cache;
 use rocksdb::DataBlockIndexType;
 use rocksdb::Options;
+use rocksdb::WriteOptions;
 use rocksdb::DB;
 use std::sync::Arc;
 use tokio::task::spawn_blocking;
@@ -81,6 +82,10 @@ impl Store for RocksDBStore {
     vec![]
   }
 
+  fn write_chunk_size(&self) -> u64 {
+    u64::MAX
+  }
+
   async fn wait_for_end(&self) {}
 
   async fn create_object(&self, _input: CreateObjectInput) -> CreateObjectOutput {
@@ -91,7 +96,9 @@ impl Store for RocksDBStore {
     let db = self.db.clone();
     let data = input.data.to_vec();
     spawn_blocking(move || {
-      db.put(input.key, data).unwrap();
+      let mut opts = WriteOptions::default();
+      opts.set_sync(true);
+      db.put_opt(input.key, data, &opts).unwrap();
     })
     .await
     .unwrap();

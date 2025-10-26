@@ -8,11 +8,17 @@ use futures::stream::iter;
 use futures::StreamExt;
 use off64::int::create_u64_be;
 use off64::usz;
+use rand::thread_rng;
+use rand::RngCore;
 use serde::Deserialize;
 use serde::Serialize;
 use std::cmp::min;
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use store::direct::BlobdDirectStore;
 use store::fs::FileSystemStore;
@@ -28,8 +34,10 @@ use store::InspectObjectInput;
 use store::ReadObjectInput;
 use store::Store;
 use store::WriteObjectInput;
+use std::time::Instant;
+use systemstat::Platform;
+use systemstat::System as SysstatSystem;
 use tokio::spawn;
-use tokio::time::Instant;
 use tracing::info;
 
 /*
@@ -51,8 +59,6 @@ This is both similar and almost the opposite of the stochastic stress tester: th
 Despite these limitations, the benchmarker can be useful to find hotspots and slow code (when profiling), high-level op performance, and upper limit of possible performance.
 
 */
-
-const EMPTY_POOL: [u8; 16_777_216] = [0u8; 16_777_216];
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, Serialize)]
 enum TargetType {
@@ -76,10 +82,6 @@ fn default_read_size() -> ByteSize {
 
 fn default_read_stream_buffer_size() -> ByteSize {
   ByteSize::kib(16)
-}
-
-fn default_concurrency() -> usize {
-  64
 }
 
 fn default_lpage_size() -> ByteSize {
@@ -112,15 +114,6 @@ struct Config {
   #[serde(default)]
   partitions: Vec<ConfigPartition>,
 
-  // How many buckets to allocate. Only applicable for the "lite" target.
-  buckets: Option<u64>,
-
-  /// Objects to create.
-  objects: u64,
-
-  /// Object size.
-  object_size: ByteSize,
-
   /// Read size. Defaults to 4 MiB.
   #[serde(default = "default_read_size")]
   read_size: ByteSize,
@@ -144,8 +137,20 @@ struct Config {
 
 #[derive(Parser)]
 struct Cli {
-  /// Path to the config file
-  config: PathBuf,
+  /// Benchmark folders to run (comma-separated). If not specified, runs all benchmarks in cfg/.
+  benchmarks: Option<String>,
+
+  /// Number of buckets to allocate
+  #[arg(long)]
+  buckets: u64,
+
+  /// Number of objects to create
+  #[arg(long)]
+  objects: u64,
+
+  /// Size of each object in bytes
+  #[arg(long)]
+  object_size: u64,
 
   /// Skips formatting the device.
   #[arg(long)]
@@ -160,14 +165,22 @@ struct Cli {
   skip_deletion: bool,
 
   /// Concurrency level. Defaults to 64.
-  #[arg(long, default_value_t = default_concurrency())]
+  #[arg(long, default_value_t = 64)]
   concurrency: usize,
+}
+
+#[derive(Serialize, Clone)]
+struct OpMetricsSample {
+  timestamp: DateTime<Utc>,
+  ops_completed: u64,
+  bytes_transferred: u64,
 }
 
 #[derive(Serialize)]
 struct OpResult {
   started: DateTime<Utc>,
   exec_secs: f64,
+  samples: Vec<OpMetricsSample>,
 }
 
 #[derive(Default, Serialize)]
@@ -184,34 +197,291 @@ struct OpResults {
   delete: Option<OpResult>,
 }
 
-#[derive(Serialize)]
-struct BenchmarkResults {
-  cfg: Config,
-  op: OpResults,
-  final_metrics: HashMap<String, u64>,
+#[derive(Serialize, Clone, Default)]
+struct SystemMetricsSample {
+  timestamp: DateTime<Utc>,
+  cpu_user_percent: f32,
+  cpu_system_percent: f32,
+  memory_used_bytes: u64,
+  memory_total_bytes: u64,
+  /// Bytes read since last sample
+  disk_read_bytes: u64,
+  /// Bytes written since last sample
+  disk_write_bytes: u64,
+  /// Read operations since last sample
+  disk_read_ops: u64,
+  /// Write operations since last sample
+  disk_write_ops: u64,
+  /// Read merges since last sample
+  disk_read_merges: u64,
+  /// Write merges since last sample
+  disk_write_merges: u64,
+  /// Current in-flight requests (queue depth at this moment)
+  disk_in_flight: u64,
+  /// I/O ticks since last sample (ms)
+  disk_io_ticks: u64,
+  /// Time in queue since last sample (ms)
+  disk_time_in_queue: u64,
 }
 
-#[tokio::main]
-async fn main() {
-  tracing_subscriber::fmt::init();
+#[derive(Serialize)]
+struct BenchmarkResults {
+  benchmark_name: String,
+  cfg: Config,
+  buckets: u64,
+  objects: u64,
+  object_size: u64,
+  concurrency: usize,
+  op: OpResults,
+  store_metrics: HashMap<String, u64>,
+  system_metrics: Vec<SystemMetricsSample>,
+}
 
-  let cli = Cli::parse();
-  let concurrency = cli.concurrency;
+fn run_script(script_path: &Path) {
+  info!(script = %script_path.display(), "running script");
+  let status = Command::new("bash")
+    .arg(script_path)
+    .stdout(Stdio::inherit())
+    .stderr(Stdio::inherit())
+    .status()
+    .expect("failed to execute script");
+  
+  assert!(status.success(), "script {} failed with status: {}", script_path.display(), status);
+}
+
+struct MetricsCollector {
+  samples: Arc<parking_lot::Mutex<Vec<SystemMetricsSample>>>,
+  stop_signal: Arc<AtomicBool>,
+  handle: std::thread::JoinHandle<()>,
+}
+
+impl MetricsCollector {
+  fn new() -> Self {
+    let samples = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let stop_signal = Arc::new(AtomicBool::new(false));
+
+    let handle = std::thread::spawn({
+      let samples = samples.clone();
+      let stop_signal = stop_signal.clone();
+      move || {
+        let sys = SysstatSystem::new();
+        let interval = std::time::Duration::from_secs(1);
+
+        #[derive(Default)]
+        struct DiskCounters {
+          read_bytes: u64,
+          write_bytes: u64,
+          read_ops: u64,
+          write_ops: u64,
+          read_merges: u64,
+          write_merges: u64,
+          io_ticks: u64,
+          time_in_queue: u64,
+        }
+
+        let mut prev = DiskCounters::default();
+
+        while !stop_signal.load(Ordering::Relaxed) {
+          let loop_start = std::time::Instant::now();
+
+          // Get CPU load aggregate with proper user/system breakdown
+          let (cpu_user, cpu_system) = sys.cpu_load_aggregate()
+            .and_then(|cpu| {
+              std::thread::sleep(std::time::Duration::from_millis(100));
+              cpu.done()
+            })
+            .map(|cpu| (cpu.user * 100.0, cpu.system * 100.0))
+            .unwrap_or((0.0, 0.0));
+
+          // Get memory info
+          let (memory_used_bytes, memory_total_bytes) = sys.memory()
+            .map(|mem| (mem.total.as_u64() - mem.free.as_u64(), mem.total.as_u64()))
+            .unwrap_or((0, 0));
+
+          // Get disk I/O stats from systemstat (cumulative)
+          let mut curr = DiskCounters::default();
+          let mut disk_in_flight = 0u64;
+
+          if let Ok(stats) = sys.block_device_statistics() {
+            for (_name, stat) in stats {
+              curr.read_bytes += (stat.read_sectors as u64) * 512;
+              curr.write_bytes += (stat.write_sectors as u64) * 512;
+              curr.read_ops += stat.read_ios as u64;
+              curr.write_ops += stat.write_ios as u64;
+              curr.read_merges += stat.read_merges as u64;
+              curr.write_merges += stat.write_merges as u64;
+              disk_in_flight += stat.in_flight as u64;
+              curr.io_ticks += stat.io_ticks as u64;
+              curr.time_in_queue += stat.time_in_queue as u64;
+            }
+          }
+
+          // Calculate deltas (rates since last sample)
+          let sample = SystemMetricsSample {
+            timestamp: Utc::now(),
+            cpu_user_percent: cpu_user as f32,
+            cpu_system_percent: cpu_system as f32,
+            memory_used_bytes,
+            memory_total_bytes,
+            disk_read_bytes: curr.read_bytes.saturating_sub(prev.read_bytes),
+            disk_write_bytes: curr.write_bytes.saturating_sub(prev.write_bytes),
+            disk_read_ops: curr.read_ops.saturating_sub(prev.read_ops),
+            disk_write_ops: curr.write_ops.saturating_sub(prev.write_ops),
+            disk_read_merges: curr.read_merges.saturating_sub(prev.read_merges),
+            disk_write_merges: curr.write_merges.saturating_sub(prev.write_merges),
+            disk_in_flight,
+            disk_io_ticks: curr.io_ticks.saturating_sub(prev.io_ticks),
+            disk_time_in_queue: curr.time_in_queue.saturating_sub(prev.time_in_queue),
+          };
+
+          prev = curr;
+          samples.lock().push(sample);
+
+          // Sleep for the remaining interval time
+          let elapsed = loop_start.elapsed();
+          if elapsed < interval {
+            std::thread::sleep(interval - elapsed);
+          }
+        }
+      }
+    });
+
+    Self {
+      samples,
+      stop_signal,
+      handle,
+    }
+  }
+
+  fn stop(self) -> Vec<SystemMetricsSample> {
+    self.stop_signal.store(true, Ordering::Relaxed);
+    self.handle.join().unwrap();
+    Arc::try_unwrap(self.samples).ok().unwrap().into_inner()
+  }
+}
+
+struct OpMetricsTracker {
+  ops_completed: Arc<AtomicU64>,
+  bytes_transferred: Arc<AtomicU64>,
+  samples: Arc<parking_lot::Mutex<Vec<OpMetricsSample>>>,
+  stop_signal: Arc<AtomicBool>,
+  handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Clone for OpMetricsTracker {
+  fn clone(&self) -> Self {
+    Self {
+      ops_completed: self.ops_completed.clone(),
+      bytes_transferred: self.bytes_transferred.clone(),
+      samples: self.samples.clone(),
+      stop_signal: self.stop_signal.clone(),
+      handle: None,
+    }
+  }
+}
+
+impl OpMetricsTracker {
+  fn new() -> Self {
+    let ops_completed = Arc::new(AtomicU64::new(0));
+    let bytes_transferred = Arc::new(AtomicU64::new(0));
+    let samples = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let stop_signal = Arc::new(AtomicBool::new(false));
+
+    let handle = std::thread::spawn({
+      let ops_completed = ops_completed.clone();
+      let bytes_transferred = bytes_transferred.clone();
+      let samples = samples.clone();
+      let stop_signal = stop_signal.clone();
+      move || {
+        let mut prev_ops = 0u64;
+        let mut prev_bytes = 0u64;
+        while !stop_signal.load(Ordering::Relaxed) {
+          std::thread::sleep(std::time::Duration::from_secs(1));
+          let curr_ops = ops_completed.load(Ordering::Relaxed);
+          let curr_bytes = bytes_transferred.load(Ordering::Relaxed);
+          samples.lock().push(OpMetricsSample {
+            timestamp: Utc::now(),
+            ops_completed: curr_ops - prev_ops,
+            bytes_transferred: curr_bytes - prev_bytes,
+          });
+          prev_ops = curr_ops;
+          prev_bytes = curr_bytes;
+        }
+      }
+    });
+
+    Self {
+      ops_completed,
+      bytes_transferred,
+      samples,
+      stop_signal,
+      handle: Some(handle),
+    }
+  }
+
+  fn inc_ops(&self) {
+    self.ops_completed.fetch_add(1, Ordering::Relaxed);
+  }
+
+  fn add_bytes(&self, bytes: u64) {
+    self.bytes_transferred.fetch_add(bytes, Ordering::Relaxed);
+  }
+
+  fn finish(mut self) -> Vec<OpMetricsSample> {
+    self.stop_signal.store(true, Ordering::Relaxed);
+    if let Some(handle) = self.handle.take() {
+      handle.join().ok();
+    }
+    self.samples.lock().clone()
+  }
+}
+
+async fn run_benchmark(
+  benchmark_name: String,
+  benchmark_dir: PathBuf,
+  cli: &Cli,
+  rand_pool: &Arc<Vec<u8>>,
+) {
+  info!(benchmark = %benchmark_name, "running benchmark");
+  
+  let cfg_file = benchmark_dir.join("cfg.yaml");
+  let start_script = benchmark_dir.join("start.sh");
+  let stop_script = benchmark_dir.join("stop.sh");
+  let results_file = benchmark_dir.join(format!("results.{}o.{}b.json", cli.objects, cli.object_size));
+  
+  // Run start.sh if it exists
+  let ran_start_script = if start_script.exists() {
+    run_script(&start_script);
+    true
+  } else {
+    info!("no start.sh found, skipping");
+    false
+  };
+  
+  // Start metrics collection (sample every 1 second)
+  let metrics_collector = MetricsCollector::new();
 
   let cfg: Config =
-    serde_yaml::from_str(&fs::read_to_string(&cli.config).expect("read config file"))
+    serde_yaml::from_str(&fs::read_to_string(&cfg_file).expect("read config file"))
       .expect("parse config file");
 
   let mut results = BenchmarkResults {
+    benchmark_name: benchmark_name.clone(),
     cfg: cfg.clone(),
+    buckets: cli.buckets,
+    objects: cli.objects,
+    object_size: cli.object_size,
+    concurrency: cli.concurrency,
     op: OpResults::default(),
-    final_metrics: HashMap::new(),
+    store_metrics: HashMap::new(),
+    system_metrics: Vec::new(),
   };
 
-  let object_count = cfg.objects;
-  let bucket_count = cfg.buckets.unwrap();
+  let concurrency = cli.concurrency;
+  let object_count = cli.objects;
+  let bucket_count = cli.buckets;
   let lpage_size = cfg.lpage_size.as_u64();
-  let object_size = cfg.object_size.as_u64();
+  let object_size = cli.object_size;
   let read_size = cfg.read_size.as_u64();
   let read_stream_buffer_size = cfg.read_stream_buffer_size.as_u64();
   let spage_size = cfg.spage_size.as_u64();
@@ -250,10 +520,13 @@ async fn main() {
 
     let create_started = Utc::now();
     let now = Instant::now();
+    let tracker = OpMetricsTracker::new();
+
     iter(0..object_count)
       .for_each_concurrent(concurrency, async |i| {
         let store = store.clone();
         let incomplete_tokens = incomplete_tokens.clone();
+        let tracker = tracker.clone();
         spawn(async move {
           let res = store
             .create_object(CreateObjectInput {
@@ -262,15 +535,18 @@ async fn main() {
             })
             .await;
           incomplete_tokens.lock().push((i, res.token));
+          tracker.inc_ops();
         })
         .await
         .unwrap();
       })
       .await;
+
     let create_exec_secs = now.elapsed().as_secs_f64();
     results.op.create = Some(OpResult {
       started: create_started,
       exec_secs: create_exec_secs,
+      samples: tracker.finish(),
     });
     info!(
       create_exec_secs,
@@ -280,30 +556,39 @@ async fn main() {
 
     let write_started = Utc::now();
     let now = Instant::now();
+    let tracker = OpMetricsTracker::new();
+
     iter(incomplete_tokens.lock().to_vec())
       .for_each_concurrent(concurrency, async |(key, incomplete_token)| {
         let store = store.clone();
+        let tracker = tracker.clone();
+        let rand_pool = rand_pool.clone();
         spawn(async move {
-          for offset in (0..object_size).step_by(usz!(lpage_size)) {
-            let data_len = min(object_size - offset, lpage_size);
+          let write_chunk_size = store.write_chunk_size();
+          for offset in (0..object_size).step_by(usz!(write_chunk_size)) {
+            let data_len = min(object_size - offset, write_chunk_size);
             store
               .write_object(WriteObjectInput {
                 key: create_u64_be(key).into(),
                 offset,
                 incomplete_token: incomplete_token.clone(),
-                data: &EMPTY_POOL[..usz!(data_len)],
+                data: &rand_pool[usz!(offset)..usz!(offset + data_len)],
               })
               .await;
+            tracker.add_bytes(data_len);
           }
+          tracker.inc_ops();
         })
         .await
         .unwrap();
       })
       .await;
+
     let write_exec_secs = now.elapsed().as_secs_f64();
     results.op.write = Some(OpResult {
       started: write_started,
       exec_secs: write_exec_secs,
+      samples: tracker.finish(),
     });
     info!(
       write_exec_secs,
@@ -315,9 +600,12 @@ async fn main() {
 
     let commit_started = Utc::now();
     let now = Instant::now();
+    let tracker = OpMetricsTracker::new();
+
     iter(incomplete_tokens.lock().to_vec())
       .for_each_concurrent(concurrency, async |(i, incomplete_token)| {
         let store = store.clone();
+        let tracker = tracker.clone();
         spawn(async move {
           let key = create_u64_be(i).into();
           store
@@ -326,15 +614,18 @@ async fn main() {
               key,
             })
             .await;
+          tracker.inc_ops();
         })
         .await
         .unwrap();
       })
       .await;
+
     let commit_exec_secs = now.elapsed().as_secs_f64();
     results.op.commit = Some(OpResult {
       started: commit_started,
       exec_secs: commit_exec_secs,
+      samples: tracker.finish(),
     });
     info!(
       commit_exec_secs,
@@ -345,9 +636,12 @@ async fn main() {
 
   let inspect_started = Utc::now();
   let now = Instant::now();
+  let tracker = OpMetricsTracker::new();
+
   iter(0..object_count)
     .for_each_concurrent(concurrency, async |i| {
       let store = store.clone();
+      let tracker = tracker.clone();
       spawn(async move {
         store
           .inspect_object(InspectObjectInput {
@@ -355,15 +649,18 @@ async fn main() {
             id: None,
           })
           .await;
+        tracker.inc_ops();
       })
       .await
       .unwrap();
     })
     .await;
+
   let inspect_exec_secs = now.elapsed().as_secs_f64();
   results.op.inspect = Some(OpResult {
     started: inspect_started,
     exec_secs: inspect_exec_secs,
+    samples: tracker.finish(),
   });
   info!(
     inspect_exec_secs,
@@ -373,33 +670,41 @@ async fn main() {
 
   let read_started = Utc::now();
   let now = Instant::now();
+  let tracker = OpMetricsTracker::new();
+
   iter(0..object_count)
     .for_each_concurrent(concurrency, async |i| {
       let store = store.clone();
+      let tracker = tracker.clone();
       spawn(async move {
         for start in (0..object_size).step_by(usz!(read_size)) {
+          let read_len = min(object_size, start + read_size) - start;
           let res = store
             .read_object(ReadObjectInput {
               key: create_u64_be(i).into(),
               id: None,
               start,
-              end: Some(min(object_size, start + read_size)),
+              end: Some(start + read_len),
               stream_buffer_size: read_stream_buffer_size,
             })
             .await;
           let page_count = res.data_stream.count().await;
           // Do something with `page_count` so that the compiler doesn't just drop it, and then possibly drop the stream too.
           assert!(page_count > 0);
+          tracker.add_bytes(read_len);
         }
+        tracker.inc_ops();
       })
       .await
       .unwrap();
     })
     .await;
+
   let read_exec_secs = now.elapsed().as_secs_f64();
   results.op.read = Some(OpResult {
     started: read_started,
     exec_secs: read_exec_secs,
+    samples: tracker.finish(),
   });
   info!(
     read_exec_secs,
@@ -411,9 +716,12 @@ async fn main() {
   if !cli.skip_deletion {
     let delete_started = Utc::now();
     let now = Instant::now();
+    let tracker = OpMetricsTracker::new();
+
     iter(0..object_count)
       .for_each_concurrent(concurrency, async |i| {
         let store = store.clone();
+        let tracker = tracker.clone();
         spawn(async move {
           store
             .delete_object(DeleteObjectInput {
@@ -421,15 +729,18 @@ async fn main() {
               id: None,
             })
             .await;
+          tracker.inc_ops();
         })
         .await
         .unwrap();
       })
       .await;
+
     let delete_exec_secs = now.elapsed().as_secs_f64();
     results.op.delete = Some(OpResult {
       started: delete_started,
       exec_secs: delete_exec_secs,
+      samples: tracker.finish(),
     });
     info!(
       delete_exec_secs,
@@ -441,17 +752,69 @@ async fn main() {
   store.wait_for_end().await;
   info!("blobd ended");
 
-  let final_metrics = store.metrics();
-  for (key, value) in &final_metrics {
-    info!(key, value, "final metric");
+  let store_metrics = store.metrics();
+  for (key, value) in &store_metrics {
+    info!(key, value, "store metric");
   }
-  results.final_metrics = final_metrics
+  results.store_metrics = store_metrics
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
     .collect();
 
-  let json_output = serde_json::to_string_pretty(&results).unwrap();
-  fs::write("benchmarker-results.json", json_output).unwrap();
+  // Stop metrics collection
+  info!("stopping metrics collection");
+  results.system_metrics = metrics_collector.stop();
 
-  info!("all done");
+  // Run stop.sh if start.sh was run
+  if ran_start_script && stop_script.exists() {
+    run_script(&stop_script);
+  }
+
+  // Write results to benchmark folder
+  let json_output = serde_json::to_string_pretty(&results).expect("failed to serialize results");
+  fs::write(&results_file, json_output).expect("failed to write results file");
+  info!(results_file = %results_file.display(), "results written");
+
+  info!(benchmark = %benchmark_name, "benchmark complete");
+}
+
+#[tokio::main]
+async fn main() {
+  tracing_subscriber::fmt::init();
+
+  let cli = Cli::parse();
+
+  info!(object_size = cli.object_size, "initializing random pool");
+  let mut rand_pool = vec![0u8; usz!(cli.object_size)];
+  thread_rng().fill_bytes(&mut rand_pool);
+  let rand_pool = Arc::new(rand_pool);
+
+  // Determine which benchmarks to run
+  let cfg_dir = PathBuf::from("cfg");
+  let benchmark_names: Vec<String> = if let Some(ref benchmarks) = cli.benchmarks {
+    benchmarks.split(',').map(|s| s.trim().to_string()).collect()
+  } else {
+    // Run all benchmarks in cfg/ directory
+    fs::read_dir(&cfg_dir)
+      .expect("failed to read cfg directory")
+      .filter_map(|entry| {
+        let entry = entry.ok()?;
+        if entry.file_type().ok()?.is_dir() {
+          entry.file_name().to_str().map(|s| s.to_string())
+        } else {
+          None
+        }
+      })
+      .collect()
+  };
+
+  info!(benchmarks = ?benchmark_names, "running benchmarks");
+
+  for benchmark_name in benchmark_names {
+    let benchmark_dir = cfg_dir.join(&benchmark_name);
+    assert!(benchmark_dir.exists(), "benchmark directory not found: {}", benchmark_dir.display());
+    run_benchmark(benchmark_name.clone(), benchmark_dir, &cli, &rand_pool).await;
+  }
+
+  info!("all benchmarks complete");
 }

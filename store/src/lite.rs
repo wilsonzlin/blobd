@@ -81,6 +81,10 @@ impl Store for BlobdLiteStore {
     ]
   }
 
+  fn write_chunk_size(&self) -> u64 {
+    1u64 << self.blobd.cfg().lpage_size_pow2
+  }
+
   async fn wait_for_end(&self) {}
 
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput {

@@ -107,6 +107,10 @@ impl Store for BlobdDirectStore {
     ]
   }
 
+  fn write_chunk_size(&self) -> u64 {
+    self.blobd.cfg().lpage_size()
+  }
+
   async fn wait_for_end(&self) {}
 
   async fn create_object(&self, input: CreateObjectInput) -> CreateObjectOutput {
