@@ -11,6 +11,7 @@ use crate::Store;
 use crate::WriteObjectInput;
 use async_trait::async_trait;
 use futures::StreamExt;
+use off64::usz;
 use rocksdb::BlockBasedIndexType;
 use rocksdb::BlockBasedOptions;
 use rocksdb::Cache;
@@ -27,7 +28,7 @@ pub struct RocksDBStore {
 }
 
 impl RocksDBStore {
-  pub fn new(path: &str) -> Self {
+  pub fn new(path: &str, use_block_cache: bool) -> Self {
     let mut opt = Options::default();
     opt.create_if_missing(true);
 
@@ -40,9 +41,6 @@ impl RocksDBStore {
     opt.set_min_blob_size(0);
     opt.set_enable_blob_gc(true);
 
-    // Use more RAM for better performance.
-    // https://github.com/facebook/rocksdb/wiki/Block-Cache.
-    let block_cache = Cache::new_lru_cache(1024 * 1024 * 1024 * 32);
     let mut bbt_opt = BlockBasedOptions::default();
     opt.set_write_buffer_size(1024 * 1024 * 256);
 
@@ -52,16 +50,25 @@ impl RocksDBStore {
     bbt_opt.set_bloom_filter(10.0, false);
     bbt_opt.set_partition_filters(true);
     bbt_opt.set_metadata_block_size(4096);
-    bbt_opt.set_cache_index_and_filter_blocks(true);
-    bbt_opt.set_pin_top_level_index_and_filter(true);
-    bbt_opt.set_pin_l0_filter_and_index_blocks_in_cache(true);
+
+    if use_block_cache {
+      // Use block cache for better performance.
+      // https://github.com/facebook/rocksdb/wiki/Block-Cache.
+      let block_cache = Cache::new_lru_cache(1024 * 1024 * 1024 * 32);
+      bbt_opt.set_cache_index_and_filter_blocks(true);
+      bbt_opt.set_pin_top_level_index_and_filter(true);
+      bbt_opt.set_pin_l0_filter_and_index_blocks_in_cache(true);
+      bbt_opt.set_block_cache(&block_cache);
+    } else {
+      // Disable block cache to measure actual disk I/O.
+      bbt_opt.disable_cache();
+    }
 
     // Optimize for point lookups.
     // Don't use `optimize_for_point_lookup()`, which just sets a custom BlockBasedOptions; we'll use our own custom options instead.
     // NOTE: We don't enable memtable_whole_key_filtering as that uses a lot more memory for an unknown performance benefit (key lookups in memory should already be fast, and memtables should not be that large).
     // https://github.com/facebook/rocksdb/wiki/BlobDB#performance-tuning
     bbt_opt.set_block_size(1024 * 64);
-    bbt_opt.set_block_cache(&block_cache);
     bbt_opt.set_format_version(5);
     // https://github.com/facebook/rocksdb/blob/25b08eb4386768b05a0748bfdb505ab58921281a/options/options.cc#L615.
     bbt_opt.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
@@ -136,7 +143,7 @@ impl Store for RocksDBStore {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     spawn_blocking(move || {
       let mmap = db.get_pinned(input.key).unwrap().unwrap();
-      let slice = &mmap[input.start as usize..input.end.map(|e| e as usize).unwrap_or(mmap.len())];
+      let slice = &mmap[usz!(input.start)..input.end.map(|e| usz!(e)).unwrap_or(mmap.len())];
       // TODO Allow configuring chunk size. We have no idea what the correct value is, as it is likely dynamic.
       for chunk in slice.chunks(512) {
         tx.send(chunk.to_vec()).unwrap();

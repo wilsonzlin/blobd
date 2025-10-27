@@ -1,17 +1,22 @@
 use ahash::HashMap;
 use ahash::HashMapExt;
-use bytesize::ByteSize;
-use chrono::DateTime;
+use blobd_benchmarker::BenchmarkResults;
+use blobd_benchmarker::Config;
+use blobd_benchmarker::OpMetricsSample;
+use blobd_benchmarker::OpResult;
+use blobd_benchmarker::OpResults;
+use blobd_benchmarker::SystemMetricsSample;
+use blobd_benchmarker::TargetType;
 use chrono::Utc;
 use clap::Parser;
 use futures::stream::iter;
 use futures::StreamExt;
 use off64::int::create_u64_be;
 use off64::usz;
+use procfs::Current;
+use procfs::CurrentSI;
 use rand::thread_rng;
 use rand::RngCore;
-use serde::Deserialize;
-use serde::Serialize;
 use std::cmp::min;
 use std::fs;
 use std::path::Path;
@@ -28,7 +33,6 @@ use store::fs::FileSystemStore;
 use store::kv::BlobdKVStore;
 use store::lite::BlobdLiteStore;
 use store::rocksdb::RocksDBStore;
-use store::s3::S3StoreConfig;
 use store::CommitObjectInput;
 use store::CreateObjectInput;
 use store::DeleteObjectInput;
@@ -38,8 +42,6 @@ use store::InspectObjectInput;
 use store::ReadObjectInput;
 use store::Store;
 use store::WriteObjectInput;
-use systemstat::Platform;
-use systemstat::System as SysstatSystem;
 use tokio::spawn;
 use tracing::info;
 
@@ -62,94 +64,6 @@ This is both similar and almost the opposite of the stochastic stress tester: th
 Despite these limitations, the benchmarker can be useful to find hotspots and slow code (when profiling), high-level op performance, and upper limit of possible performance.
 
 */
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, Serialize)]
-enum TargetType {
-  Direct,
-  KV,
-  Lite,
-  FS,
-  S3,
-  RocksDB,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct ConfigPartition {
-  path: PathBuf,
-  offset: u64,
-  len: u64,
-}
-
-fn default_read_size() -> ByteSize {
-  ByteSize::mib(4)
-}
-
-fn default_read_stream_buffer_size() -> ByteSize {
-  ByteSize::kib(16)
-}
-
-fn default_lpage_size() -> ByteSize {
-  ByteSize::mib(16)
-}
-
-fn default_spage_size() -> ByteSize {
-  ByteSize::b(512)
-}
-
-fn default_log_buffer_size() -> ByteSize {
-  ByteSize::gib(1)
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Config {
-  target: TargetType,
-
-  /// Only applicable for the "fs" target.
-  prefix: Option<PathBuf>,
-
-  /// Only applicable for the "fs" target.
-  tiering: Option<usize>,
-
-  /// Only applicable for the "s3" target.
-  s3: Option<S3StoreConfig>,
-
-  /// For the "lite" target, there must only be one partition and its offset must be zero.
-  #[serde(default)]
-  partitions: Vec<ConfigPartition>,
-
-  /// Read size. Defaults to 4 MiB.
-  #[serde(default = "default_read_size")]
-  read_size: ByteSize,
-
-  /// Read stream buffer size. Defaults to 16 KiB.
-  #[serde(default = "default_read_stream_buffer_size")]
-  read_stream_buffer_size: ByteSize,
-
-  /// Lpage size. Defaults to 16 MiB.
-  #[serde(default = "default_lpage_size")]
-  lpage_size: ByteSize,
-
-  /// Spage size. Defaults to 512 bytes.
-  #[serde(default = "default_spage_size")]
-  spage_size: ByteSize,
-
-  /// Only applies to Kv target. Defaults to 1 GiB.
-  #[serde(default = "default_log_buffer_size")]
-  log_buffer_size: ByteSize,
-
-  /// Number of buckets to allocate. Can be overridden via CLI.
-  buckets: Option<u64>,
-
-  /// Number of objects to create. Can be overridden via CLI.
-  objects: Option<u64>,
-
-  /// Size of each object in bytes. Can be overridden via CLI.
-  object_size: Option<u64>,
-
-  /// Concurrency level. Can be overridden via CLI.
-  concurrency: Option<usize>,
-}
 
 #[derive(Parser)]
 struct Cli {
@@ -185,75 +99,6 @@ struct Cli {
   skip_deletion: bool,
 }
 
-#[derive(Serialize, Clone)]
-struct OpMetricsSample {
-  timestamp: DateTime<Utc>,
-  ops_completed: u64,
-  bytes_transferred: u64,
-}
-
-#[derive(Serialize)]
-struct OpResult {
-  started: DateTime<Utc>,
-  exec_secs: f64,
-  samples: Vec<OpMetricsSample>,
-}
-
-#[derive(Default, Serialize)]
-struct OpResults {
-  #[serde(skip_serializing_if = "Option::is_none")]
-  create: Option<OpResult>,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  write: Option<OpResult>,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  commit: Option<OpResult>,
-  inspect: Option<OpResult>,
-  read: Option<OpResult>,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  delete: Option<OpResult>,
-}
-
-#[derive(Serialize, Clone, Default)]
-struct SystemMetricsSample {
-  timestamp: DateTime<Utc>,
-  cpu_user_percent: f32,
-  cpu_system_percent: f32,
-  memory_used_bytes: u64,
-  memory_total_bytes: u64,
-  /// Bytes read since last sample
-  disk_read_bytes: u64,
-  /// Bytes written since last sample
-  disk_write_bytes: u64,
-  /// Read operations since last sample
-  disk_read_ops: u64,
-  /// Write operations since last sample
-  disk_write_ops: u64,
-  /// Read merges since last sample
-  disk_read_merges: u64,
-  /// Write merges since last sample
-  disk_write_merges: u64,
-  /// Current in-flight requests (queue depth at this moment)
-  disk_in_flight: u64,
-  /// I/O ticks since last sample (ms)
-  disk_io_ticks: u64,
-  /// Time in queue since last sample (ms)
-  disk_time_in_queue: u64,
-}
-
-#[derive(Serialize)]
-struct BenchmarkResults {
-  benchmark_name: String,
-  cfg: Config,
-  buckets: u64,
-  objects: u64,
-  object_size: u64,
-  concurrency: usize,
-  op: OpResults,
-  wait_for_end_secs: f64,
-  store_metrics: HashMap<String, u64>,
-  system_metrics: Vec<SystemMetricsSample>,
-}
-
 fn run_script(script_path: &Path) {
   info!(script = %script_path.display(), "running script");
   let status = Command::new("bash")
@@ -271,6 +116,28 @@ fn run_script(script_path: &Path) {
   );
 }
 
+fn malloc_trim() {
+  info!("trimming malloc");
+  unsafe {
+    libc::malloc_trim(0);
+  }
+}
+
+fn drop_caches() {
+  info!("dropping kernel caches");
+  // First sync to flush buffers
+  unsafe {
+    libc::sync();
+  }
+  // Drop caches (requires root)
+  fs::write("/proc/sys/vm/drop_caches", "3").expect("failed to drop caches (requires root)");
+}
+
+fn cleanup_memory() {
+  malloc_trim();
+  drop_caches();
+}
+
 struct MetricsCollector {
   samples: Arc<parking_lot::Mutex<Vec<SystemMetricsSample>>>,
   stop_signal: Arc<AtomicBool>,
@@ -286,10 +153,9 @@ impl MetricsCollector {
       let samples = samples.clone();
       let stop_signal = stop_signal.clone();
       move || {
-        let sys = SysstatSystem::new();
         let interval = std::time::Duration::from_secs(1);
 
-        #[derive(Default)]
+        #[derive(Default, Clone)]
         struct DiskCounters {
           read_bytes: u64,
           write_bytes: u64,
@@ -301,64 +167,87 @@ impl MetricsCollector {
           time_in_queue: u64,
         }
 
-        let mut prev = DiskCounters::default();
+        // Read /proc/stat using procfs - cumulative CPU ticks since boot (all cores combined)
+        fn read_cpu_ticks() -> (u64, u64) {
+          let stat = procfs::KernelStats::current().unwrap();
+          let cpu_total = &stat.total;
+          let user = cpu_total.user + cpu_total.nice;
+          let system = cpu_total.system;
+          (user, system)
+        }
+
+        // Read /proc/meminfo using procfs
+        fn read_memory() -> (u64, u64) {
+          let meminfo = procfs::Meminfo::current().unwrap();
+          let total = meminfo.mem_total;
+          let available = meminfo.mem_available.unwrap_or(meminfo.mem_free);
+          let used = total.saturating_sub(available);
+          (used, total)
+        }
+
+        // Read /proc/diskstats using procfs - cumulative disk I/O since boot (all disks combined)
+        fn read_disk_stats() -> (DiskCounters, u64) {
+          let mut counters = DiskCounters::default();
+          let mut in_flight = 0u64;
+
+          if let Ok(diskstats) = procfs::diskstats() {
+            for stat in &diskstats {
+              counters.read_bytes += stat.sectors_read * 512;
+              counters.write_bytes += stat.sectors_written * 512;
+              counters.read_ops += stat.reads;
+              counters.write_ops += stat.writes;
+              counters.read_merges += stat.merged;
+              counters.write_merges += stat.writes_merged;
+              in_flight += stat.in_progress as u64;
+              counters.io_ticks += stat.time_in_progress;
+              counters.time_in_queue += stat.weighted_time_in_progress;
+            }
+          }
+
+          (counters, in_flight)
+        }
+
+        // Get baseline readings on first sample - will subtract these to get "since benchmark start"
+        let mut baseline_cpu: Option<(u64, u64)> = None;
+        let clock_ticks_per_sec = procfs::ticks_per_second() as f64;
+        let mut baseline_disk: Option<DiskCounters> = None;
 
         while !stop_signal.load(Ordering::Relaxed) {
           let loop_start = std::time::Instant::now();
 
-          // Get CPU load aggregate with proper user/system breakdown
-          let (cpu_user, cpu_system) = sys
-            .cpu_load_aggregate()
-            .and_then(|cpu| {
-              std::thread::sleep(std::time::Duration::from_millis(100));
-              cpu.done()
-            })
-            .map(|cpu| (cpu.user * 100.0, cpu.system * 100.0))
-            .unwrap_or((0.0, 0.0));
+          // Read current CPU ticks
+          let (curr_user, curr_system) = read_cpu_ticks();
+          let baseline = baseline_cpu.get_or_insert((curr_user, curr_system));
+          let cpu_user_ticks = curr_user.saturating_sub(baseline.0);
+          let cpu_system_ticks = curr_system.saturating_sub(baseline.1);
+          let cpu_user_secs = cpu_user_ticks as f64 / clock_ticks_per_sec;
+          let cpu_system_secs = cpu_system_ticks as f64 / clock_ticks_per_sec;
 
-          // Get memory info
-          let (memory_used_bytes, memory_total_bytes) = sys
-            .memory()
-            .map(|mem| (mem.total.as_u64() - mem.free.as_u64(), mem.total.as_u64()))
-            .unwrap_or((0, 0));
+          // Read current memory usage
+          let (memory_used_bytes, memory_total_bytes) = read_memory();
 
-          // Get disk I/O stats from systemstat (cumulative)
-          let mut curr = DiskCounters::default();
-          let mut disk_in_flight = 0u64;
+          // Read current disk stats
+          let (curr, disk_in_flight) = read_disk_stats();
+          let baseline = baseline_disk.get_or_insert(curr.clone());
 
-          if let Ok(stats) = sys.block_device_statistics() {
-            for (_name, stat) in stats {
-              curr.read_bytes += (stat.read_sectors as u64) * 512;
-              curr.write_bytes += (stat.write_sectors as u64) * 512;
-              curr.read_ops += stat.read_ios as u64;
-              curr.write_ops += stat.write_ios as u64;
-              curr.read_merges += stat.read_merges as u64;
-              curr.write_merges += stat.write_merges as u64;
-              disk_in_flight += stat.in_flight as u64;
-              curr.io_ticks += stat.io_ticks as u64;
-              curr.time_in_queue += stat.time_in_queue as u64;
-            }
-          }
-
-          // Calculate deltas (rates since last sample)
+          // Store cumulative values since benchmark start (subtract baseline)
           let sample = SystemMetricsSample {
             timestamp: Utc::now(),
-            cpu_user_percent: cpu_user as f32,
-            cpu_system_percent: cpu_system as f32,
+            cpu_user_secs,
+            cpu_system_secs,
             memory_used_bytes,
             memory_total_bytes,
-            disk_read_bytes: curr.read_bytes.saturating_sub(prev.read_bytes),
-            disk_write_bytes: curr.write_bytes.saturating_sub(prev.write_bytes),
-            disk_read_ops: curr.read_ops.saturating_sub(prev.read_ops),
-            disk_write_ops: curr.write_ops.saturating_sub(prev.write_ops),
-            disk_read_merges: curr.read_merges.saturating_sub(prev.read_merges),
-            disk_write_merges: curr.write_merges.saturating_sub(prev.write_merges),
+            disk_read_bytes: curr.read_bytes.saturating_sub(baseline.read_bytes),
+            disk_write_bytes: curr.write_bytes.saturating_sub(baseline.write_bytes),
+            disk_read_ops: curr.read_ops.saturating_sub(baseline.read_ops),
+            disk_write_ops: curr.write_ops.saturating_sub(baseline.write_ops),
+            disk_read_merges: curr.read_merges.saturating_sub(baseline.read_merges),
+            disk_write_merges: curr.write_merges.saturating_sub(baseline.write_merges),
             disk_in_flight,
-            disk_io_ticks: curr.io_ticks.saturating_sub(prev.io_ticks),
-            disk_time_in_queue: curr.time_in_queue.saturating_sub(prev.time_in_queue),
+            disk_io_ticks: curr.io_ticks.saturating_sub(baseline.io_ticks),
+            disk_time_in_queue: curr.time_in_queue.saturating_sub(baseline.time_in_queue),
           };
 
-          prev = curr;
           samples.lock().push(sample);
 
           // Sleep for the remaining interval time
@@ -516,7 +405,7 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
     concurrency,
     op: OpResults::default(),
     wait_for_end_secs: 0.0,
-    store_metrics: HashMap::new(),
+    store_metrics: HashMap::<String, u64>::new(),
     system_metrics: Vec::new(),
   };
 
@@ -554,7 +443,10 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
       cfg.tiering.unwrap(),
     )),
     TargetType::S3 => Arc::new(cfg.s3.unwrap().build_store().await),
-    TargetType::RocksDB => Arc::new(RocksDBStore::new(cfg.prefix.unwrap().to_str().unwrap())),
+    TargetType::RocksDB => Arc::new(RocksDBStore::new(
+      cfg.prefix.unwrap().to_str().unwrap(),
+      cfg.use_block_cache,
+    )),
   };
 
   if !cli.skip_creation {
@@ -714,14 +606,18 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
   let now = Instant::now();
   let tracker = OpMetricsTracker::new();
 
+  // Evict kernel block cache before reads to ensure we measure actual disk I/O
+  drop_caches();
+
   iter(0..object_count)
     .for_each_concurrent(concurrency, async |i| {
       let store = store.clone();
       let tracker = tracker.clone();
+      let rand_pool = rand_pool.clone();
       spawn(async move {
         for start in (0..object_size).step_by(usz!(read_size)) {
           let read_len = min(object_size, start + read_size) - start;
-          let res = store
+          let mut res = store
             .read_object(ReadObjectInput {
               key: create_u64_be(i).into(),
               id: None,
@@ -730,9 +626,13 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
               stream_buffer_size: read_stream_buffer_size,
             })
             .await;
-          let page_count = res.data_stream.count().await;
-          // Do something with `page_count` so that the compiler doesn't just drop it, and then possibly drop the stream too.
-          assert!(page_count > 0);
+          // Do something sophisticated with the response data so the compiler doesnt just drop it and we get insane "read throughput".
+          // WARNING: At max opt levels, the compiler is very aggressive! Even something like checking if len() is greater than 0 may mean compiler drops as soon as one byte is read! Or if only checking length, then it may just skip reading data and just check length only.
+          let mut offset = usz!(start);
+          while let Some(chunk) = res.data_stream.next().await {
+            assert_eq!(chunk, rand_pool[offset..offset + chunk.len()]);
+            offset += chunk.len();
+          }
           tracker.add_bytes(read_len);
         }
         tracker.inc_ops();
@@ -819,6 +719,9 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
   if ran_start_script && stop_script.exists() {
     run_script(&stop_script);
   }
+
+  // Always cleanup memory after benchmarking
+  cleanup_memory();
 
   // Write results to benchmark folder
   let json_output = serde_json::to_string_pretty(&results).expect("failed to serialize results");
