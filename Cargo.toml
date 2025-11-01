@@ -1,7 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-  "benchmarker",
+  "benchmark-plotter",
+  "benchmark-runner",
+  "benchmark-types",
   "blobc",
   "blobd-client-rs",
   "blobd-token",

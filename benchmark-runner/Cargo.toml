@@ -1,11 +1,12 @@
 [package]
-name = "blobd-benchmarker"
+name = "benchmark-runner"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
 [dependencies]
 ahash = "0.8.12"
+benchmark-types = { version = "0.1.0", path = "../benchmark-types" }
 bytesize = { version = "1.2.0", features = ["serde"] }
 charts-rs = { version = "0.3", features = ["image-encoder"] }
 chrono = { version = "0.4", features = ["serde"] }

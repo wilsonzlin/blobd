@@ -5,7 +5,17 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
-use store::s3::S3StoreConfig;
+
+// This is redefined here from store::s3::S3StoreConfig to avoid a dependency on the store crate which is giant and takes a long time to compile.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct S3StoreConfig {
+  pub region: String,
+  pub endpoint: String,
+  pub access_key_id: String,
+  pub secret_access_key: String,
+  pub bucket: String,
+  pub part_size: u64,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, Serialize)]
 pub enum TargetType {
