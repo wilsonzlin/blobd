@@ -137,6 +137,8 @@ impl Store for S3Store {
     let parts = in_flight_upload
       .part_etags
       .into_iter()
+      // Parts must be sorted by part number.
+      .sorted_by_key(|(part_number, _)| *part_number)
       .map(|(part_number, etag)| {
         CompletedPart::builder()
           .part_number(part_number)
@@ -182,6 +184,7 @@ impl Store for S3Store {
       .get_object()
       .bucket(&self.bucket)
       .key(BASE64_URL_SAFE_NO_PAD.encode(&input.key))
+      .range(format!("bytes={}-{}", input.start, input.end.unwrap_or(u64::MAX)))
       .send()
       .await
       .unwrap();
