@@ -87,7 +87,7 @@ pub(crate) async fn op_read_object(
     let mut idx = div_pow2(start, pages.lpage_size_pow2);
     if idx >= alloc_cfg.lpage_count {
       // We're starting inside the tail data, but that doesn't mean we're starting from the first tail page.
-      let mut accum = idx * alloc_cfg.lpage_count;
+      let mut accum = idx * pages.lpage_size();
       for (_, sz_pow2) in alloc_cfg.tail_page_sizes_pow2 {
         accum += 1 << sz_pow2;
         // This should be `>` not `>=`. For example, if lpage size is 16 MiB and first tail page is 8 MiB, and `start` is 24 MiB exactly, then it needs to start on the *second* tail page, not the first.
@@ -105,7 +105,7 @@ pub(crate) async fn op_read_object(
         (dev_offset, page_size_pow2)
       } else {
         let tail_idx = u8!(idx - alloc_cfg.lpage_count);
-        debug_assert!(tail_idx < alloc_cfg.tail_page_sizes_pow2.len());
+        assert!(tail_idx < alloc_cfg.tail_page_sizes_pow2.len());
         let dev_offset = dev.read_u48_be_at(object_dev_offset + off.tail_page(tail_idx)).await;
         let page_size_pow2 = alloc_cfg.tail_page_sizes_pow2.get(tail_idx).unwrap();
         (dev_offset, page_size_pow2)

@@ -442,7 +442,17 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
       cfg.prefix.clone().unwrap(),
       cfg.tiering.unwrap(),
     )),
-    TargetType::S3 => Arc::new(cfg.s3.unwrap().build_store().await),
+    TargetType::S3 => Arc::new({
+      let s3 = cfg.s3.unwrap();
+      store::s3::S3StoreConfig {
+        region: s3.region,
+        endpoint: s3.endpoint,
+        access_key_id: s3.access_key_id,
+        secret_access_key: s3.secret_access_key,
+        bucket: s3.bucket,
+        part_size: s3.part_size,
+      }.build_store().await
+    }),
     TargetType::RocksDB => Arc::new(RocksDBStore::new(
       cfg.prefix.unwrap().to_str().unwrap(),
       cfg.use_block_cache,
