@@ -6,20 +6,33 @@
 // type: 'time' for time-based metrics, 'storage' for storage amounts, 'storage-rate' for throughput, 'ops' for operations
 const metrics = [
   {
-    id: 'put_ops_per_second',
-    name: 'Put effective throughput',
-    unit: 'MB/s',
-    type: 'storage-rate',
+    id: 'create_ops_per_second',
+    name: 'Create operations per second',
+    unit: 'ops/s',
+    type: 'ops',
     compute: (r) => {
-      const write = r.op.write;
-      if (!write) return null;
-      // For systems with create/commit, use total time; for others (RocksDB/FS), just write time
-      const totalSecs = (r.op.create && r.op.commit) 
-        ? (r.op.create.exec_secs + write.exec_secs + r.op.commit.exec_secs)
-        : write.exec_secs;
-      // Calculate throughput: total bytes written / execution time (return bytes/sec)
-      const totalBytes = r.objects * r.object_size;
-      return totalBytes / totalSecs; // Return bytes/sec, formatter will convert to MB/s, GB/s, etc.
+      if (!r.op.create) return null;
+      return r.objects / r.op.create.exec_secs;
+    }
+  },
+  {
+    id: 'write_ops_per_second',
+    name: 'Write operations per second',
+    unit: 'ops/s',
+    type: 'ops',
+    compute: (r) => {
+      if (!r.op.write) return null;
+      return r.objects / r.op.write.exec_secs;
+    }
+  },
+  {
+    id: 'commit_ops_per_second',
+    name: 'Commit operations per second',
+    unit: 'ops/s',
+    type: 'ops',
+    compute: (r) => {
+      if (!r.op.commit) return null;
+      return r.objects / r.op.commit.exec_secs;
     }
   },
   {
@@ -84,14 +97,62 @@ const metrics = [
     compute: (r) => r.wait_for_end_secs
   },
   {
+    id: 'random_read_ops_per_second',
+    name: 'Random read operations per second',
+    unit: 'ops/s',
+    type: 'ops',
+    compute: (r) => {
+      if (!r.op.random_read) return null;
+      return r.objects / r.op.random_read.exec_secs;
+    }
+  },
+  {
+    id: 'random_read_mbs',
+    name: 'Random read throughput',
+    unit: 'MB/s',
+    type: 'storage-rate',
+    compute: (r) => {
+      if (!r.op.random_read) return null;
+      // Random reads only read 4000 bytes per object
+      const bytesPerRead = Math.min(4000, r.object_size);
+      const totalBytes = r.objects * bytesPerRead;
+      return totalBytes / r.op.random_read.exec_secs;
+    }
+  },
+  {
+    id: 'read_ttfb',
+    name: 'Read TTFB (avg to p99 spread)',
+    unit: 'ms',
+    type: 'latency',
+    compute: (r) => {
+      if (!r.op.read || !r.op.read.ttfb) return null;
+      return {
+        avg: r.op.read.ttfb.avg_ms / 1000, // Convert ms to seconds
+        p99: r.op.read.ttfb.p99_ms / 1000
+      };
+    }
+  },
+  {
+    id: 'random_read_ttfb',
+    name: 'Random read TTFB (avg to p99 spread)',
+    unit: 'ms',
+    type: 'latency',
+    compute: (r) => {
+      if (!r.op.random_read || !r.op.random_read.ttfb) return null;
+      return {
+        avg: r.op.random_read.ttfb.avg_ms / 1000, // Convert ms to seconds
+        p99: r.op.random_read.ttfb.p99_ms / 1000
+      };
+    }
+  },
+  {
     id: 'total_cpu_secs',
     name: 'Total CPU seconds used',
     unit: 'seconds',
     type: 'time',
     compute: (r) => {
-      if (!r.system_metrics || r.system_metrics.length === 0) return null;
-      const last = r.system_metrics[r.system_metrics.length - 1];
-      return last.cpu_user_secs + last.cpu_system_secs;
+      if (!r.system_metrics) return null;
+      return r.system_metrics.total_cpu_user_secs + r.system_metrics.total_cpu_system_secs;
     }
   },
   {
@@ -100,9 +161,8 @@ const metrics = [
     unit: 'MB',
     type: 'storage',
     compute: (r) => {
-      if (!r.system_metrics || r.system_metrics.length === 0) return null;
-      const last = r.system_metrics[r.system_metrics.length - 1];
-      return last.disk_read_bytes; // Return bytes, formatter will convert to MB, GB, etc.
+      if (!r.system_metrics) return null;
+      return r.system_metrics.total_disk_read_bytes; // Return bytes, formatter will convert to MB, GB, etc.
     }
   },
   {
@@ -111,20 +171,130 @@ const metrics = [
     unit: 'MB',
     type: 'storage',
     compute: (r) => {
-      if (!r.system_metrics || r.system_metrics.length === 0) return null;
-      const last = r.system_metrics[r.system_metrics.length - 1];
-      return last.disk_write_bytes; // Return bytes, formatter will convert to MB, GB, etc.
+      if (!r.system_metrics) return null;
+      return r.system_metrics.total_disk_write_bytes; // Return bytes, formatter will convert to MB, GB, etc.
+    }
+  },
+  {
+    id: 'total_disk_read_ops',
+    name: 'Total disk read operations',
+    unit: 'ops',
+    type: 'ops',
+    compute: (r) => {
+      if (!r.system_metrics) return null;
+      return r.system_metrics.total_disk_read_ops;
+    }
+  },
+  {
+    id: 'total_disk_write_ops',
+    name: 'Total disk write operations',
+    unit: 'ops',
+    type: 'ops',
+    compute: (r) => {
+      if (!r.system_metrics) return null;
+      return r.system_metrics.total_disk_write_ops;
     }
   },
   {
     id: 'max_memory_gb',
-    name: 'Maximum memory usage',
+    name: 'Peak memory usage',
     unit: 'GB',
     type: 'storage',
     compute: (r) => {
-      if (!r.system_metrics || r.system_metrics.length === 0) return null;
-      const max = Math.max(...r.system_metrics.map(m => m.memory_used_bytes));
-      return max; // Return bytes, formatter will convert to MB, GB, etc.
+      if (!r.system_metrics) return null;
+      return r.system_metrics.peak_memory_bytes; // Return bytes, formatter will convert to MB, GB, etc.
+    }
+  },
+  // Latency metrics with spread visualization
+  {
+    id: 'create_latency',
+    name: 'Create latency (avg to p99 spread)',
+    unit: 'ms',
+    type: 'latency',
+    compute: (r) => {
+      if (!r.op.create || !r.op.create.latency) return null;
+      return {
+        avg: r.op.create.latency.avg_ms / 1000, // Convert to seconds
+        p99: r.op.create.latency.p99_ms / 1000
+      };
+    }
+  },
+  {
+    id: 'write_latency',
+    name: 'Write latency (avg to p99 spread)',
+    unit: 'ms',
+    type: 'latency',
+    compute: (r) => {
+      if (!r.op.write || !r.op.write.latency) return null;
+      return {
+        avg: r.op.write.latency.avg_ms / 1000,
+        p99: r.op.write.latency.p99_ms / 1000
+      };
+    }
+  },
+  {
+    id: 'commit_latency',
+    name: 'Commit latency (avg to p99 spread)',
+    unit: 'ms',
+    type: 'latency',
+    compute: (r) => {
+      if (!r.op.commit || !r.op.commit.latency) return null;
+      return {
+        avg: r.op.commit.latency.avg_ms / 1000,
+        p99: r.op.commit.latency.p99_ms / 1000
+      };
+    }
+  },
+  {
+    id: 'inspect_latency',
+    name: 'Inspect latency (avg to p99 spread)',
+    unit: 'ms',
+    type: 'latency',
+    compute: (r) => {
+      if (!r.op.inspect || !r.op.inspect.latency) return null;
+      return {
+        avg: r.op.inspect.latency.avg_ms / 1000,
+        p99: r.op.inspect.latency.p99_ms / 1000
+      };
+    }
+  },
+  {
+    id: 'random_read_latency',
+    name: 'Random read latency (avg to p99 spread)',
+    unit: 'ms',
+    type: 'latency',
+    compute: (r) => {
+      if (!r.op.random_read || !r.op.random_read.latency) return null;
+      return {
+        avg: r.op.random_read.latency.avg_ms / 1000,
+        p99: r.op.random_read.latency.p99_ms / 1000
+      };
+    }
+  },
+  {
+    id: 'read_latency',
+    name: 'Read latency (avg to p99 spread)',
+    unit: 'ms',
+    type: 'latency',
+    compute: (r) => {
+      if (!r.op.read || !r.op.read.latency) return null;
+      return {
+        avg: r.op.read.latency.avg_ms / 1000,
+        p99: r.op.read.latency.p99_ms / 1000
+      };
+    }
+  },
+  {
+    id: 'delete_latency',
+    name: 'Delete latency (avg to p99 spread)',
+    unit: 'ms',
+    type: 'latency',
+    compute: (r) => {
+      if (!r.op.delete || !r.op.delete.latency) return null;
+      return {
+        avg: r.op.delete.latency.avg_ms / 1000,
+        p99: r.op.delete.latency.p99_ms / 1000
+      };
     }
   }
 ];
@@ -192,7 +362,7 @@ function formatTimeAxis(value) {
 function getTickFormatter(metricType) {
   if (metricType === 'storage') return formatBytesAxis;
   if (metricType === 'storage-rate') return formatBytesPerSecAxis;
-  if (metricType === 'time') return formatTimeAxis;
+  if (metricType === 'time' || metricType === 'latency') return formatTimeAxis;
   return null; // Default formatting for ops/s and others
 }
 
@@ -231,6 +401,37 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
 
+    // Filter out benchmarks that don't support the operation
+    // Create operation: skip RocksDB
+    // Commit operation: skip RocksDB and FS
+    const createMetrics = ['create_ops_per_second', 'create_latency'];
+    const commitMetrics = ['commit_ops_per_second', 'commit_latency'];
+    
+    if (createMetrics.includes(selectedMetric.id) || commitMetrics.includes(selectedMetric.id)) {
+      benchmarkNames = benchmarkNames.filter(benchmarkName => {
+        // Find any result with this benchmark name to check its target type
+        const sampleResult = data
+          .flatMap(d => d.results)
+          .find(r => r.benchmark_name === benchmarkName);
+        
+        if (!sampleResult) return true;
+        
+        const targetType = sampleResult.cfg.target;
+        
+        // Filter based on metric type
+        if (createMetrics.includes(selectedMetric.id)) {
+          // RocksDB doesn't have create operation
+          return targetType !== 'RocksDB';
+        }
+        if (commitMetrics.includes(selectedMetric.id)) {
+          // RocksDB and FS don't have commit operation
+          return targetType !== 'RocksDB' && targetType !== 'FS';
+        }
+        
+        return true;
+      });
+    }
+
     // Color palette for different benchmarks
     const colors = [
       '#2563eb', '#dc2626', '#16a34a', '#ea580c', 
@@ -238,9 +439,13 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
 
     // Create a trace (line) for each benchmark
-    const traces = benchmarkNames.map((benchmarkName, idx) => {
+    const traces = [];
+    const isLatencyMetric = selectedMetric.type === 'latency';
+    
+    benchmarkNames.forEach((benchmarkName, idx) => {
       const x = []; // Object sizes
-      const y = []; // Metric values
+      const y_avg = []; // Average values (for latency) or regular values
+      const y_p99 = []; // P99 values (for latency only)
       const sizes = data.map(d => d.object_size).sort((a, b) => a - b);
 
       // Collect data points for this benchmark across all object sizes
@@ -250,24 +455,75 @@ document.addEventListener('DOMContentLoaded', () => {
         const result = dataset.results.find(r => r.benchmark_name === benchmarkName);
         if (!result) return;
         const value = selectedMetric.compute(result);
-        if (value !== null && !isNaN(value)) {
+        
+        if (isLatencyMetric && value !== null && value.avg !== undefined && value.p99 !== undefined) {
+          // Latency metric with spread
           x.push(size);
-          y.push(value);
+          y_avg.push(value.avg);
+          y_p99.push(value.p99);
+        } else if (!isLatencyMetric && value !== null && !isNaN(value)) {
+          // Regular metric
+          x.push(size);
+          y_avg.push(value);
         }
       });
 
-      if (x.length === 0) return null;
+      if (x.length === 0) return;
 
-      return {
-        x: x,
-        y: y,
-        type: 'scatter',
-        mode: 'lines+markers',
-        name: benchmarkName,
-        line: { width: 2.5, color: colors[idx % colors.length] },
-        marker: { size: 8, color: colors[idx % colors.length] }
-      };
-    }).filter(t => t !== null);
+      const color = colors[idx % colors.length];
+      
+      if (isLatencyMetric) {
+        // Create two traces: one for p99 (upper bound) and one for avg (lower bound) with fill
+        // Convert hex color to rgba for fill
+        let fillColor = color;
+        if (color.startsWith('#')) {
+          const r = parseInt(color.slice(1, 3), 16);
+          const g = parseInt(color.slice(3, 5), 16);
+          const b = parseInt(color.slice(5, 7), 16);
+          fillColor = `rgba(${r}, ${g}, ${b}, 0.2)`;
+        } else if (color.startsWith('rgb')) {
+          fillColor = color.replace(')', ', 0.2)').replace('rgb', 'rgba');
+        }
+        
+        // Upper bound (p99) - invisible line
+        traces.push({
+          x: x,
+          y: y_p99,
+          type: 'scatter',
+          mode: 'lines',
+          name: benchmarkName + ' (p99)',
+          showlegend: false,
+          line: { width: 0 },
+          hoverinfo: 'skip'
+        });
+        
+        // Lower bound (avg) - visible line with fill to previous trace
+        traces.push({
+          x: x,
+          y: y_avg,
+          type: 'scatter',
+          mode: 'lines+markers',
+          name: benchmarkName,
+          line: { width: 2.5, color: color },
+          marker: { size: 8, color: color },
+          fill: 'tonexty',
+          fillcolor: fillColor,
+          customdata: y_p99.map((p99, i) => [p99, y_avg[i]]),
+          hovertemplate: '<b>%{fullData.name}</b><br>Object size: %{x}<br>Avg: %{customdata[1]:.4f}s<br>P99: %{customdata[0]:.4f}s<extra></extra>'
+        });
+      } else {
+        // Regular metric - single line
+        traces.push({
+          x: x,
+          y: y_avg,
+          type: 'scatter',
+          mode: 'lines+markers',
+          name: benchmarkName,
+          line: { width: 2.5, color: color },
+          marker: { size: 8, color: color }
+        });
+      }
+    });
 
     // Format X-axis (object size) ticks as bytes
     const allXValues = traces.flatMap(t => t.x).filter(v => !isNaN(v) && isFinite(v));
