@@ -2,10 +2,10 @@ use ahash::HashMap;
 use ahash::HashMapExt;
 use benchmark_types::BenchmarkResults;
 use benchmark_types::Config;
-use benchmark_types::OpMetricsSample;
+use benchmark_types::FinalSystemMetrics;
+use benchmark_types::LatencyStats;
 use benchmark_types::OpResult;
 use benchmark_types::OpResults;
-use benchmark_types::SystemMetricsSample;
 use benchmark_types::TargetType;
 use chrono::Utc;
 use clap::Parser;
@@ -15,7 +15,9 @@ use off64::int::create_u64_be;
 use off64::usz;
 use procfs::Current;
 use procfs::CurrentSI;
+use rand::seq::SliceRandom;
 use rand::thread_rng;
+use rand::Rng;
 use rand::RngCore;
 use std::cmp::min;
 use std::fs;
@@ -138,215 +140,122 @@ fn cleanup_memory() {
   drop_caches();
 }
 
-struct MetricsCollector {
-  samples: Arc<parking_lot::Mutex<Vec<SystemMetricsSample>>>,
+// Utility function to calculate percentiles from latencies
+fn calculate_percentiles(mut latencies: Vec<f64>) -> LatencyStats {
+  if latencies.is_empty() {
+    return LatencyStats {
+      avg_ms: 0.0,
+      p95_ms: 0.0,
+      p99_ms: 0.0,
+      max_ms: 0.0,
+    };
+  }
+  
+  latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+  
+  let avg = latencies.iter().sum::<f64>() / latencies.len() as f64;
+  let p95_idx = (latencies.len() as f64 * 0.95) as usize;
+  let p99_idx = (latencies.len() as f64 * 0.99) as usize;
+  let p95 = latencies[p95_idx.min(latencies.len() - 1)];
+  let p99 = latencies[p99_idx.min(latencies.len() - 1)];
+  let max = *latencies.last().unwrap();
+  
+  LatencyStats {
+    avg_ms: avg,
+    p95_ms: p95,
+    p99_ms: p99,
+    max_ms: max,
+  }
+}
+
+// Utility function to generate shuffled indices
+fn shuffle_indices(count: u64) -> Vec<u64> {
+  let mut indices: Vec<u64> = (0..count).collect();
+  indices.shuffle(&mut thread_rng());
+  indices
+}
+
+// Lightweight memory peak tracker
+struct MemoryPeakTracker {
+  peak_memory: Arc<AtomicU64>,
   stop_signal: Arc<AtomicBool>,
   handle: std::thread::JoinHandle<()>,
 }
 
-impl MetricsCollector {
+impl MemoryPeakTracker {
   fn new() -> Self {
-    let samples = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let peak_memory = Arc::new(AtomicU64::new(0));
     let stop_signal = Arc::new(AtomicBool::new(false));
 
     let handle = std::thread::spawn({
-      let samples = samples.clone();
+      let peak_memory = peak_memory.clone();
       let stop_signal = stop_signal.clone();
       move || {
-        let interval = std::time::Duration::from_secs(1);
-
-        #[derive(Default, Clone)]
-        struct DiskCounters {
-          read_bytes: u64,
-          write_bytes: u64,
-          read_ops: u64,
-          write_ops: u64,
-          read_merges: u64,
-          write_merges: u64,
-          io_ticks: u64,
-          time_in_queue: u64,
-        }
-
-        // Read /proc/stat using procfs - cumulative CPU ticks since boot (all cores combined)
-        fn read_cpu_ticks() -> (u64, u64) {
-          let stat = procfs::KernelStats::current().unwrap();
-          let cpu_total = &stat.total;
-          let user = cpu_total.user + cpu_total.nice;
-          let system = cpu_total.system;
-          (user, system)
-        }
-
-        // Read /proc/meminfo using procfs
-        fn read_memory() -> (u64, u64) {
-          let meminfo = procfs::Meminfo::current().unwrap();
-          let total = meminfo.mem_total;
-          let available = meminfo.mem_available.unwrap_or(meminfo.mem_free);
-          let used = total.saturating_sub(available);
-          (used, total)
-        }
-
-        // Read /proc/diskstats using procfs - cumulative disk I/O since boot (all disks combined)
-        fn read_disk_stats() -> (DiskCounters, u64) {
-          let mut counters = DiskCounters::default();
-          let mut in_flight = 0u64;
-
-          if let Ok(diskstats) = procfs::diskstats() {
-            for stat in &diskstats {
-              counters.read_bytes += stat.sectors_read * 512;
-              counters.write_bytes += stat.sectors_written * 512;
-              counters.read_ops += stat.reads;
-              counters.write_ops += stat.writes;
-              counters.read_merges += stat.merged;
-              counters.write_merges += stat.writes_merged;
-              in_flight += stat.in_progress as u64;
-              counters.io_ticks += stat.time_in_progress;
-              counters.time_in_queue += stat.weighted_time_in_progress;
+        let interval = std::time::Duration::from_millis(200);
+        
+        while !stop_signal.load(Ordering::Relaxed) {
+          if let Ok(meminfo) = procfs::Meminfo::current() {
+            let total = meminfo.mem_total;
+            let available = meminfo.mem_available.unwrap_or(meminfo.mem_free);
+            let used = total.saturating_sub(available);
+            
+            // Update peak if current is higher
+            let current_peak = peak_memory.load(Ordering::Relaxed);
+            if used > current_peak {
+              peak_memory.store(used, Ordering::Relaxed);
             }
           }
-
-          (counters, in_flight)
-        }
-
-        // Get baseline readings on first sample - will subtract these to get "since benchmark start"
-        let mut baseline_cpu: Option<(u64, u64)> = None;
-        let clock_ticks_per_sec = procfs::ticks_per_second() as f64;
-        let mut baseline_disk: Option<DiskCounters> = None;
-
-        while !stop_signal.load(Ordering::Relaxed) {
-          let loop_start = std::time::Instant::now();
-
-          // Read current CPU ticks
-          let (curr_user, curr_system) = read_cpu_ticks();
-          let baseline = baseline_cpu.get_or_insert((curr_user, curr_system));
-          let cpu_user_ticks = curr_user.saturating_sub(baseline.0);
-          let cpu_system_ticks = curr_system.saturating_sub(baseline.1);
-          let cpu_user_secs = cpu_user_ticks as f64 / clock_ticks_per_sec;
-          let cpu_system_secs = cpu_system_ticks as f64 / clock_ticks_per_sec;
-
-          // Read current memory usage
-          let (memory_used_bytes, memory_total_bytes) = read_memory();
-
-          // Read current disk stats
-          let (curr, disk_in_flight) = read_disk_stats();
-          let baseline = baseline_disk.get_or_insert(curr.clone());
-
-          // Store cumulative values since benchmark start (subtract baseline)
-          let sample = SystemMetricsSample {
-            timestamp: Utc::now(),
-            cpu_user_secs,
-            cpu_system_secs,
-            memory_used_bytes,
-            memory_total_bytes,
-            disk_read_bytes: curr.read_bytes.saturating_sub(baseline.read_bytes),
-            disk_write_bytes: curr.write_bytes.saturating_sub(baseline.write_bytes),
-            disk_read_ops: curr.read_ops.saturating_sub(baseline.read_ops),
-            disk_write_ops: curr.write_ops.saturating_sub(baseline.write_ops),
-            disk_read_merges: curr.read_merges.saturating_sub(baseline.read_merges),
-            disk_write_merges: curr.write_merges.saturating_sub(baseline.write_merges),
-            disk_in_flight,
-            disk_io_ticks: curr.io_ticks.saturating_sub(baseline.io_ticks),
-            disk_time_in_queue: curr.time_in_queue.saturating_sub(baseline.time_in_queue),
-          };
-
-          samples.lock().push(sample);
-
-          // Sleep for the remaining interval time
-          let elapsed = loop_start.elapsed();
-          if elapsed < interval {
-            std::thread::sleep(interval - elapsed);
-          }
+          
+          std::thread::sleep(interval);
         }
       }
     });
 
     Self {
-      samples,
+      peak_memory,
       stop_signal,
       handle,
     }
   }
 
-  fn stop(self) -> Vec<SystemMetricsSample> {
+  fn stop(self) -> u64 {
     self.stop_signal.store(true, Ordering::Relaxed);
     self.handle.join().unwrap();
-    Arc::try_unwrap(self.samples).ok().unwrap().into_inner()
+    self.peak_memory.load(Ordering::Relaxed)
   }
 }
 
-struct OpMetricsTracker {
-  ops_completed: Arc<AtomicU64>,
-  bytes_transferred: Arc<AtomicU64>,
-  samples: Arc<parking_lot::Mutex<Vec<OpMetricsSample>>>,
-  stop_signal: Arc<AtomicBool>,
-  handle: Option<std::thread::JoinHandle<()>>,
+#[derive(Default, Clone)]
+struct DiskCounters {
+  read_bytes: u64,
+  write_bytes: u64,
+  read_ops: u64,
+  write_ops: u64,
 }
 
-impl Clone for OpMetricsTracker {
-  fn clone(&self) -> Self {
-    Self {
-      ops_completed: self.ops_completed.clone(),
-      bytes_transferred: self.bytes_transferred.clone(),
-      samples: self.samples.clone(),
-      stop_signal: self.stop_signal.clone(),
-      handle: None,
-    }
-  }
+// Read /proc/stat using procfs - cumulative CPU ticks since boot (all cores combined)
+fn read_cpu_ticks() -> (u64, u64) {
+  let stat = procfs::KernelStats::current().unwrap();
+  let cpu_total = &stat.total;
+  let user = cpu_total.user + cpu_total.nice;
+  let system = cpu_total.system;
+  (user, system)
 }
 
-impl OpMetricsTracker {
-  fn new() -> Self {
-    let ops_completed = Arc::new(AtomicU64::new(0));
-    let bytes_transferred = Arc::new(AtomicU64::new(0));
-    let samples = Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let stop_signal = Arc::new(AtomicBool::new(false));
+// Read /proc/diskstats using procfs - cumulative disk I/O since boot (all disks combined)
+fn read_disk_stats() -> DiskCounters {
+  let mut counters = DiskCounters::default();
 
-    let handle = std::thread::spawn({
-      let ops_completed = ops_completed.clone();
-      let bytes_transferred = bytes_transferred.clone();
-      let samples = samples.clone();
-      let stop_signal = stop_signal.clone();
-      move || {
-        let mut prev_ops = 0u64;
-        let mut prev_bytes = 0u64;
-        while !stop_signal.load(Ordering::Relaxed) {
-          std::thread::sleep(std::time::Duration::from_secs(1));
-          let curr_ops = ops_completed.load(Ordering::Relaxed);
-          let curr_bytes = bytes_transferred.load(Ordering::Relaxed);
-          samples.lock().push(OpMetricsSample {
-            timestamp: Utc::now(),
-            ops_completed: curr_ops - prev_ops,
-            bytes_transferred: curr_bytes - prev_bytes,
-          });
-          prev_ops = curr_ops;
-          prev_bytes = curr_bytes;
-        }
-      }
-    });
-
-    Self {
-      ops_completed,
-      bytes_transferred,
-      samples,
-      stop_signal,
-      handle: Some(handle),
+  if let Ok(diskstats) = procfs::diskstats() {
+    for stat in &diskstats {
+      counters.read_bytes += stat.sectors_read * 512;
+      counters.write_bytes += stat.sectors_written * 512;
+      counters.read_ops += stat.reads;
+      counters.write_ops += stat.writes;
     }
   }
 
-  fn inc_ops(&self) {
-    self.ops_completed.fetch_add(1, Ordering::Relaxed);
-  }
-
-  fn add_bytes(&self, bytes: u64) {
-    self.bytes_transferred.fetch_add(bytes, Ordering::Relaxed);
-  }
-
-  fn finish(mut self) -> Vec<OpMetricsSample> {
-    self.stop_signal.store(true, Ordering::Relaxed);
-    if let Some(handle) = self.handle.take() {
-      handle.join().ok();
-    }
-    self.samples.lock().clone()
-  }
+  counters
 }
 
 async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli) {
@@ -387,8 +296,13 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
     false
   };
 
-  // Start metrics collection (sample every 1 second)
-  let metrics_collector = MetricsCollector::new();
+  // Start memory peak tracking
+  let memory_peak_tracker = MemoryPeakTracker::new();
+  
+  // Capture baseline system metrics
+  let baseline_cpu = read_cpu_ticks();
+  let baseline_disk = read_disk_stats();
+  let clock_ticks_per_sec = procfs::ticks_per_second() as f64;
 
   // Initialize random pool based on object size
   info!(object_size, "initializing random pool");
@@ -406,7 +320,7 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
     op: OpResults::default(),
     wait_for_end_secs: 0.0,
     store_metrics: HashMap::<String, u64>::new(),
-    system_metrics: Vec::new(),
+    system_metrics: FinalSystemMetrics::default(),
   };
 
   let object_count = objects;
@@ -464,33 +378,38 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
 
     let create_started = Utc::now();
     let now = Instant::now();
-    let tracker = OpMetricsTracker::new();
+    let latencies = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let indices = shuffle_indices(object_count);
 
-    iter(0..object_count)
+    iter(indices)
       .for_each_concurrent(concurrency, async |i| {
         let store = store.clone();
         let incomplete_tokens = incomplete_tokens.clone();
-        let tracker = tracker.clone();
+        let latencies = latencies.clone();
         spawn(async move {
-          let res = store
-            .create_object(CreateObjectInput {
-              key: create_u64_be(i).into(),
-              size: object_size,
-            })
-            .await;
-          incomplete_tokens.lock().push((i, res.token));
-          tracker.inc_ops();
-        })
-        .await
-        .unwrap();
+            let op_start = Instant::now();
+            let res = store
+              .create_object(CreateObjectInput {
+                key: create_u64_be(i).into(),
+                size: object_size,
+              })
+              .await;
+            let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+            incomplete_tokens.lock().push((i, res.token));
+            latencies.lock().push(latency_ms);
+          })
+          .await
+          .unwrap();
       })
       .await;
 
     let create_exec_secs = now.elapsed().as_secs_f64();
+    let latency_stats = calculate_percentiles(latencies.lock().clone());
     results.op.create = Some(OpResult {
       started: create_started,
       exec_secs: create_exec_secs,
-      samples: tracker.finish(),
+      latency: latency_stats.clone(),
+      ttfb: None,
     });
     info!(
       create_exec_secs,
@@ -500,39 +419,44 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
 
     let write_started = Utc::now();
     let now = Instant::now();
-    let tracker = OpMetricsTracker::new();
+    let latencies = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let mut tokens_vec = incomplete_tokens.lock().to_vec();
+    tokens_vec.shuffle(&mut thread_rng());
 
-    iter(incomplete_tokens.lock().to_vec())
+    iter(tokens_vec)
       .for_each_concurrent(concurrency, async |(key, incomplete_token)| {
         let store = store.clone();
-        let tracker = tracker.clone();
+        let latencies = latencies.clone();
         let rand_pool = rand_pool.clone();
         spawn(async move {
-          let write_chunk_size = store.write_chunk_size();
-          for offset in (0..object_size).step_by(usz!(write_chunk_size)) {
-            let data_len = min(object_size - offset, write_chunk_size);
-            store
-              .write_object(WriteObjectInput {
-                key: create_u64_be(key).into(),
-                offset,
-                incomplete_token: incomplete_token.clone(),
-                data: &rand_pool[usz!(offset)..usz!(offset + data_len)],
-              })
-              .await;
-            tracker.add_bytes(data_len);
-          }
-          tracker.inc_ops();
-        })
-        .await
-        .unwrap();
+            let op_start = Instant::now();
+            let write_chunk_size = store.write_chunk_size();
+            for offset in (0..object_size).step_by(usz!(write_chunk_size)) {
+              let data_len = min(object_size - offset, write_chunk_size);
+              store
+                .write_object(WriteObjectInput {
+                  key: create_u64_be(key).into(),
+                  offset,
+                  incomplete_token: incomplete_token.clone(),
+                  data: &rand_pool[usz!(offset)..usz!(offset + data_len)],
+                })
+                .await;
+            }
+            let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+            latencies.lock().push(latency_ms);
+          })
+          .await
+          .unwrap();
       })
       .await;
 
     let write_exec_secs = now.elapsed().as_secs_f64();
+    let latency_stats = calculate_percentiles(latencies.lock().clone());
     results.op.write = Some(OpResult {
       started: write_started,
       exec_secs: write_exec_secs,
-      samples: tracker.finish(),
+      latency: latency_stats.clone(),
+      ttfb: None,
     });
     info!(
       write_exec_secs,
@@ -544,32 +468,38 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
 
     let commit_started = Utc::now();
     let now = Instant::now();
-    let tracker = OpMetricsTracker::new();
+    let latencies = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let mut tokens_vec = incomplete_tokens.lock().to_vec();
+    tokens_vec.shuffle(&mut thread_rng());
 
-    iter(incomplete_tokens.lock().to_vec())
+    iter(tokens_vec)
       .for_each_concurrent(concurrency, async |(i, incomplete_token)| {
         let store = store.clone();
-        let tracker = tracker.clone();
+        let latencies = latencies.clone();
         spawn(async move {
-          let key = create_u64_be(i).into();
-          store
-            .commit_object(CommitObjectInput {
-              incomplete_token: incomplete_token.clone(),
-              key,
-            })
-            .await;
-          tracker.inc_ops();
-        })
-        .await
-        .unwrap();
+            let op_start = Instant::now();
+            let key = create_u64_be(i).into();
+            store
+              .commit_object(CommitObjectInput {
+                incomplete_token: incomplete_token.clone(),
+                key,
+              })
+              .await;
+            let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+            latencies.lock().push(latency_ms);
+          })
+          .await
+          .unwrap();
       })
       .await;
 
     let commit_exec_secs = now.elapsed().as_secs_f64();
+    let latency_stats = calculate_percentiles(latencies.lock().clone());
     results.op.commit = Some(OpResult {
       started: commit_started,
       exec_secs: commit_exec_secs,
-      samples: tracker.finish(),
+      latency: latency_stats.clone(),
+      ttfb: None,
     });
     info!(
       commit_exec_secs,
@@ -580,31 +510,36 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
 
   let inspect_started = Utc::now();
   let now = Instant::now();
-  let tracker = OpMetricsTracker::new();
+  let latencies = Arc::new(parking_lot::Mutex::new(Vec::new()));
+  let indices = shuffle_indices(object_count);
 
-  iter(0..object_count)
+  iter(indices)
     .for_each_concurrent(concurrency, async |i| {
       let store = store.clone();
-      let tracker = tracker.clone();
+      let latencies = latencies.clone();
       spawn(async move {
-        store
-          .inspect_object(InspectObjectInput {
-            key: create_u64_be(i).into(),
-            id: None,
-          })
-          .await;
-        tracker.inc_ops();
-      })
-      .await
-      .unwrap();
+          let op_start = Instant::now();
+          store
+            .inspect_object(InspectObjectInput {
+              key: create_u64_be(i).into(),
+              id: None,
+            })
+            .await;
+          let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+          latencies.lock().push(latency_ms);
+        })
+        .await
+        .unwrap();
     })
     .await;
 
   let inspect_exec_secs = now.elapsed().as_secs_f64();
+  let latency_stats = calculate_percentiles(latencies.lock().clone());
   results.op.inspect = Some(OpResult {
     started: inspect_started,
     exec_secs: inspect_exec_secs,
-    samples: tracker.finish(),
+    latency: latency_stats.clone(),
+    ttfb: None,
   });
   info!(
     inspect_exec_secs,
@@ -612,51 +547,137 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
     "completed all inspect ops",
   );
 
-  let read_started = Utc::now();
-  let now = Instant::now();
-  let tracker = OpMetricsTracker::new();
-
-  // Evict kernel block cache before reads to ensure we measure actual disk I/O
+  // Random read phase: read random 4000-byte ranges
   drop_caches();
+  let random_read_started = Utc::now();
+  let now = Instant::now();
+  let latencies = Arc::new(parking_lot::Mutex::new(Vec::new()));
+  let ttfb_latencies = Arc::new(parking_lot::Mutex::new(Vec::new()));
+  let indices = shuffle_indices(object_count);
 
-  iter(0..object_count)
+  iter(indices.clone())
     .for_each_concurrent(concurrency, async |i| {
       let store = store.clone();
-      let tracker = tracker.clone();
+      let latencies = latencies.clone();
+      let ttfb_latencies = ttfb_latencies.clone();
       let rand_pool = rand_pool.clone();
       spawn(async move {
-        for start in (0..object_size).step_by(usz!(read_size)) {
-          let read_len = min(object_size, start + read_size) - start;
+          let op_start = Instant::now();
+          // Pick random offset (ensure at least 4000 bytes available)
+          let random_offset = if object_size > 4000 {
+            thread_rng().gen_range(0..object_size - 4000)
+          } else {
+            0
+          };
+          let read_len = min(4000, object_size);
+          
           let mut res = store
             .read_object(ReadObjectInput {
               key: create_u64_be(i).into(),
               id: None,
-              start,
-              end: Some(start + read_len),
+              start: random_offset,
+              end: Some(random_offset + read_len),
               stream_buffer_size: read_stream_buffer_size,
             })
             .await;
-          // Do something sophisticated with the response data so the compiler doesnt just drop it and we get insane "read throughput".
-          // WARNING: At max opt levels, the compiler is very aggressive! Even something like checking if len() is greater than 0 may mean compiler drops as soon as one byte is read! Or if only checking length, then it may just skip reading data and just check length only.
-          let mut offset = usz!(start);
+          
+          // Measure TTFB: time to first chunk
+          let mut ttfb_recorded = false;
+          let mut offset = usz!(random_offset);
           while let Some(chunk) = res.data_stream.next().await {
+            if !ttfb_recorded {
+              let ttfb_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+              ttfb_latencies.lock().push(ttfb_ms);
+              ttfb_recorded = true;
+            }
             assert_eq!(chunk, rand_pool[offset..offset + chunk.len()]);
             offset += chunk.len();
           }
-          tracker.add_bytes(read_len);
-        }
-        tracker.inc_ops();
-      })
-      .await
-      .unwrap();
+          
+          let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+          latencies.lock().push(latency_ms);
+        })
+        .await
+        .unwrap();
+    })
+    .await;
+
+  let random_read_exec_secs = now.elapsed().as_secs_f64();
+  let latency_stats = calculate_percentiles(latencies.lock().clone());
+  let ttfb_stats = calculate_percentiles(ttfb_latencies.lock().clone());
+  results.op.random_read = Some(OpResult {
+    started: random_read_started,
+    exec_secs: random_read_exec_secs,
+    latency: latency_stats.clone(),
+    ttfb: Some(ttfb_stats.clone()),
+  });
+  info!(
+    random_read_exec_secs,
+    random_read_ops_per_second = object_count as f64 / random_read_exec_secs,
+    "completed all random read ops",
+  );
+
+  // Regular read phase
+  drop_caches();
+  let read_started = Utc::now();
+  let now = Instant::now();
+  let latencies = Arc::new(parking_lot::Mutex::new(Vec::new()));
+  let ttfb_latencies = Arc::new(parking_lot::Mutex::new(Vec::new()));
+  let indices = shuffle_indices(object_count);
+
+  iter(indices)
+    .for_each_concurrent(concurrency, async |i| {
+      let store = store.clone();
+      let latencies = latencies.clone();
+      let ttfb_latencies = ttfb_latencies.clone();
+      let rand_pool = rand_pool.clone();
+      spawn(async move {
+          let op_start = Instant::now();
+          let mut ttfb_recorded = false;
+          
+          for start in (0..object_size).step_by(usz!(read_size)) {
+            let read_len = min(object_size, start + read_size) - start;
+            let mut res = store
+              .read_object(ReadObjectInput {
+                key: create_u64_be(i).into(),
+                id: None,
+                start,
+                end: Some(start + read_len),
+                stream_buffer_size: read_stream_buffer_size,
+              })
+              .await;
+            
+            // Do something sophisticated with the response data so the compiler doesnt just drop it and we get insane "read throughput".
+            // WARNING: At max opt levels, the compiler is very aggressive! Even something like checking if len() is greater than 0 may mean compiler drops as soon as one byte is read! Or if only checking length, then it may just skip reading data and just check length only.
+            let mut offset = usz!(start);
+            while let Some(chunk) = res.data_stream.next().await {
+              // Record TTFB on first chunk of first read
+              if !ttfb_recorded {
+                let ttfb_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+                ttfb_latencies.lock().push(ttfb_ms);
+                ttfb_recorded = true;
+              }
+              assert_eq!(chunk, rand_pool[offset..offset + chunk.len()]);
+              offset += chunk.len();
+            }
+          }
+          
+          let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+          latencies.lock().push(latency_ms);
+        })
+        .await
+        .unwrap();
     })
     .await;
 
   let read_exec_secs = now.elapsed().as_secs_f64();
+  let latency_stats = calculate_percentiles(latencies.lock().clone());
+  let ttfb_stats = calculate_percentiles(ttfb_latencies.lock().clone());
   results.op.read = Some(OpResult {
     started: read_started,
     exec_secs: read_exec_secs,
-    samples: tracker.finish(),
+    latency: latency_stats.clone(),
+    ttfb: Some(ttfb_stats.clone()),
   });
   info!(
     read_exec_secs,
@@ -668,31 +689,36 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
   if !cli.skip_deletion {
     let delete_started = Utc::now();
     let now = Instant::now();
-    let tracker = OpMetricsTracker::new();
+    let latencies = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let indices = shuffle_indices(object_count);
 
-    iter(0..object_count)
+    iter(indices)
       .for_each_concurrent(concurrency, async |i| {
         let store = store.clone();
-        let tracker = tracker.clone();
+        let latencies = latencies.clone();
         spawn(async move {
-          store
-            .delete_object(DeleteObjectInput {
-              key: create_u64_be(i).into(),
-              id: None,
-            })
-            .await;
-          tracker.inc_ops();
-        })
-        .await
-        .unwrap();
+            let op_start = Instant::now();
+            store
+              .delete_object(DeleteObjectInput {
+                key: create_u64_be(i).into(),
+                id: None,
+              })
+              .await;
+            let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+            latencies.lock().push(latency_ms);
+          })
+          .await
+          .unwrap();
       })
       .await;
 
     let delete_exec_secs = now.elapsed().as_secs_f64();
+    let latency_stats = calculate_percentiles(latencies.lock().clone());
     results.op.delete = Some(OpResult {
       started: delete_started,
       exec_secs: delete_exec_secs,
-      samples: tracker.finish(),
+      latency: latency_stats.clone(),
+      ttfb: None,
     });
     info!(
       delete_exec_secs,
@@ -721,9 +747,25 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
   info!("dropping store to release file handles");
   drop(store);
 
-  // Stop metrics collection
-  info!("stopping metrics collection");
-  results.system_metrics = metrics_collector.stop();
+  // Stop memory peak tracking and capture final system metrics
+  info!("stopping memory peak tracking and capturing final metrics");
+  let peak_memory_bytes = memory_peak_tracker.stop();
+  
+  let final_cpu = read_cpu_ticks();
+  let final_disk = read_disk_stats();
+  
+  let cpu_user_ticks = final_cpu.0.saturating_sub(baseline_cpu.0);
+  let cpu_system_ticks = final_cpu.1.saturating_sub(baseline_cpu.1);
+  
+  results.system_metrics = FinalSystemMetrics {
+    peak_memory_bytes,
+    total_cpu_user_secs: cpu_user_ticks as f64 / clock_ticks_per_sec,
+    total_cpu_system_secs: cpu_system_ticks as f64 / clock_ticks_per_sec,
+    total_disk_read_bytes: final_disk.read_bytes.saturating_sub(baseline_disk.read_bytes),
+    total_disk_write_bytes: final_disk.write_bytes.saturating_sub(baseline_disk.write_bytes),
+    total_disk_read_ops: final_disk.read_ops.saturating_sub(baseline_disk.read_ops),
+    total_disk_write_ops: final_disk.write_ops.saturating_sub(baseline_disk.write_ops),
+  };
 
   // Run stop.sh if start.sh was run
   if ran_start_script && stop_script.exists() {

@@ -142,12 +142,10 @@ impl Store for RocksDBStore {
     // Use stream as we calculate TTFB based on time to first chunk, which is incorrect if we simply read all at once.
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     spawn_blocking(move || {
-      let mmap = db.get_pinned(input.key).unwrap().unwrap();
-      let slice = &mmap[usz!(input.start)..input.end.map(|e| usz!(e)).unwrap_or(mmap.len())];
-      // TODO Allow configuring chunk size. We have no idea what the correct value is, as it is likely dynamic.
-      for chunk in slice.chunks(512) {
-        tx.send(chunk.to_vec()).unwrap();
-      }
+      // RocksDB has no partial range read, it pays the cost for this design decision.
+      let obj = db.get_pinned(input.key).unwrap().unwrap();
+      let slice = &obj[usz!(input.start)..input.end.map(|e| usz!(e)).unwrap_or(obj.len())];
+      tx.send(slice.to_vec()).unwrap();
     })
     .await
     .unwrap();

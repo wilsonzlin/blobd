@@ -112,18 +112,21 @@ pub struct Config {
   pub use_block_cache: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct OpMetricsSample {
-  pub timestamp: DateTime<Utc>,
-  pub ops_completed: u64,
-  pub bytes_transferred: u64,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LatencyStats {
+  pub avg_ms: f64,
+  pub p95_ms: f64,
+  pub p99_ms: f64,
+  pub max_ms: f64,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct OpResult {
   pub started: DateTime<Utc>,
   pub exec_secs: f64,
-  pub samples: Vec<OpMetricsSample>,
+  pub latency: LatencyStats,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub ttfb: Option<LatencyStats>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -135,30 +138,22 @@ pub struct OpResults {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub commit: Option<OpResult>,
   pub inspect: Option<OpResult>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub random_read: Option<OpResult>,
   pub read: Option<OpResult>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub delete: Option<OpResult>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
-pub struct SystemMetricsSample {
-  pub timestamp: DateTime<Utc>,
-  /// Cumulative CPU user time in seconds (all cores combined)
-  pub cpu_user_secs: f64,
-  /// Cumulative CPU system time in seconds (all cores combined)
-  pub cpu_system_secs: f64,
-  pub memory_used_bytes: u64,
-  pub memory_total_bytes: u64,
-  /// These are cumulative if they are counters (total since benchmark start)
-  pub disk_read_bytes: u64,
-  pub disk_write_bytes: u64,
-  pub disk_read_ops: u64,
-  pub disk_write_ops: u64,
-  pub disk_read_merges: u64,
-  pub disk_write_merges: u64,
-  pub disk_in_flight: u64,
-  pub disk_io_ticks: u64,
-  pub disk_time_in_queue: u64,
+pub struct FinalSystemMetrics {
+  pub peak_memory_bytes: u64,
+  pub total_cpu_user_secs: f64,
+  pub total_cpu_system_secs: f64,
+  pub total_disk_read_bytes: u64,
+  pub total_disk_write_bytes: u64,
+  pub total_disk_read_ops: u64,
+  pub total_disk_write_ops: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -172,7 +167,7 @@ pub struct BenchmarkResults {
   pub op: OpResults,
   pub wait_for_end_secs: f64,
   pub store_metrics: HashMap<String, u64>,
-  pub system_metrics: Vec<SystemMetricsSample>,
+  pub system_metrics: FinalSystemMetrics,
 }
 
 impl BenchmarkResults {
