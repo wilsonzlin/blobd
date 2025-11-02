@@ -91,21 +91,13 @@ fn generate_html(datasets: Vec<Dataset>) -> Markup {
       }
       body {
         div.container {
-          h1 { "Benchmark results" }
-          div.controls {
+          div.controls id="controls" {
             div.control-group {
               label for="metric" { "Metric" }
               select id="metric" {}
             }
-            div.control-group {
-              label.checkbox-label {
-                input type="checkbox" id="showFs" checked {}
-                span { "Show file systems" }
-              }
-            }
           }
           div.section {
-            div.section-title { "Performance by object size" }
             div id="chart" {}
           }
         }

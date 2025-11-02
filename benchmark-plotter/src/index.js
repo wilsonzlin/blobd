@@ -1,5 +1,19 @@
 // Benchmark Results Visualization JavaScript
 // This file handles all interactive chart rendering and data manipulation
+//
+// URL Hash Parameters:
+//   - metric=<metric_id>       Select which metric to display (e.g., #metric=read_ops_per_second)
+//                              If not specified, defaults to the first metric in the list
+//   - hideControls=true        Hide the metric dropdown selector
+//                              By default, controls are always visible
+//   - showFs=true              Show file system benchmarks (ext4, xfs, btrfs, f2fs)
+//                              By default, file systems are hidden
+//
+// Examples:
+//   - #metric=read_latency                      Show read latency with dropdown visible, no file systems
+//   - #metric=write_mbs&hideControls=true       Show write throughput without dropdown (minimal view)
+//   - #metric=read_ops_per_second&showFs=true   Show read ops/sec including file systems
+//   - (no hash)                                 Show first metric with dropdown visible, no file systems
 
 // Metric definitions: each metric has an id, display name, unit, type, and compute function
 // The compute function extracts the metric value from a benchmark result object
@@ -366,24 +380,55 @@ function getTickFormatter(metricType) {
   return null; // Default formatting for ops/s and others
 }
 
+// Parse URL hash parameters (e.g., #metric=read_ops_per_second&showFs=true)
+function parseHashParams() {
+  const params = {};
+  const hash = window.location.hash.substring(1); // Remove the '#'
+  if (hash) {
+    hash.split('&').forEach(param => {
+      const [key, value] = param.split('=');
+      if (key) params[key] = decodeURIComponent(value || '');
+    });
+  }
+  return params;
+}
+
+// Update URL hash with current selection
+function updateHash(metric) {
+  if (metric) {
+    window.location.hash = `metric=${encodeURIComponent(metric)}`;
+  }
+}
+
 // Wait for DOM to be ready before accessing elements
 document.addEventListener('DOMContentLoaded', () => {
   // Get DOM references
   const metricSelect = document.getElementById('metric');
+  const controlsDiv = document.getElementById('controls');
+
+  // Parse hash parameters
+  const hashParams = parseHashParams();
+  const initialMetric = hashParams.metric || metrics[0].id;
+  const hideControls = hashParams.hideControls === 'true';
+  const showFs = hashParams.showFs === 'true';
+
+  // Hide controls if hideControls hash parameter is set
+  if (hideControls) {
+    controlsDiv.style.display = 'none';
+  }
 
   // Populate metric dropdown with available metrics
   metrics.forEach(metric => {
     const option = document.createElement('option');
     option.value = metric.id;
     option.textContent = metric.name;
-    if (metrics.indexOf(metric) === 0) option.selected = true;
+    option.selected = metric.id === initialMetric;
     metricSelect.appendChild(option);
   });
 
   // Update the main performance chart (line graph showing metric vs object size)
   function updateMainChart() {
     const metricSelect = document.getElementById('metric');
-    const showFsCheckbox = document.getElementById('showFs');
     const selectedMetric = metrics.find(m => m.id === metricSelect.value);
     if (!selectedMetric) return;
 
@@ -392,8 +437,8 @@ document.addEventListener('DOMContentLoaded', () => {
     data.forEach(d => d.results.forEach(r => benchmarks.add(r.benchmark_name)));
     let benchmarkNames = Array.from(benchmarks).sort();
     
-    // Filter out file-system series if checkbox is unchecked
-    if (!showFsCheckbox.checked) {
+    // Filter out file-system benchmarks unless showFs is true
+    if (!showFs) {
       const fsPatterns = ['ext4', 'xfs', 'btrfs', 'f2fs'];
       benchmarkNames = benchmarkNames.filter(name => {
         const lowerName = name.toLowerCase();
@@ -601,11 +646,17 @@ document.addEventListener('DOMContentLoaded', () => {
       },
       xaxis: xAxisConfig,
       yaxis: yAxisConfig,
-      margin: { l: 80, r: 50, t: 80, b: 60 },
+      margin: { l: 80, r: 50, t: 80, b: 120 },
       paper_bgcolor: 'white',
       plot_bgcolor: 'white',
       font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' },
-      legend: { x: 1.02, y: 1 }
+      legend: { 
+        orientation: 'h',
+        x: 0.5,
+        xanchor: 'center',
+        y: -0.15,
+        yanchor: 'top'
+      }
     };
 
     Plotly.newPlot('chart', traces, layout, {
@@ -616,8 +667,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Set up event listeners
-  metricSelect.addEventListener('change', updateMainChart);
-  document.getElementById('showFs').addEventListener('change', updateMainChart);
+  metricSelect.addEventListener('change', () => {
+    updateHash(metricSelect.value);
+    updateMainChart();
+  });
 
   // Initial render
   updateMainChart();
