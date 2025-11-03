@@ -1,22 +1,40 @@
 # blobd
 
-Extremely fast and parallel object storage, performing at raw device speeds. Designed for millions of concurrent random partial reads over trillions of objects (tiny or huge) with constant latency.
+Extremely fast object storage, performing at raw device speeds. Achieves constant sub-millisecond latency random partial reads over objects regardless of size.
 
-- All the good stuff: shared-nothing architecture, io_uring, async Rust for I/O, no page cache, direct I/O.
-- Guaranteed durability: safe to crash at any time, and a success result means the data has been 100% persisted.
-- Create partitions to locally shard within or across block devices or files for extremely high create and delete throughput.
-- Available as embedded library, RPC server, or HTTP RESTful server with CORS, range requests, presigned URLs, and HTTP/2.
-- Asynchronous replication and event streaming.
+<img src="./README.write-throughput.png">
+<img src="./README.random-read-ops.png">
 
-## Design
+Read the [blog post](https://blog.wilsonl.in/blobd) for an accessible deep dive.
 
-- On-device configurable fixed-size hash map with linked list of objects on the heap. The entire device is mapped to memory.
-- Optimised for reads, then creates, then deletes. There is no way to list objects.
-- Create an object, then concurrently write its data in 16 MiB parts, then commit it.
-- Objects are immutable once committed. Versioning is currently not possible. An object replaces all other objects with the same key when it's committed (not created).
-- Only the size is stored with an object. No other metadata is collected, and custom metadata cannot be set.
-- The device must be under 256 TiB. Objects are limited to 1 TiB. The peak optimal amount of objects stored is around 140 trillion.
-- Uncommitted objects may be deleted after 7 days. Space used by objects may not be immediately freed when the object is deleted.
+## Usage
+
+blobd requires Linux 6.11+, a NVMe SSD with support for atomic writes of 512-byte blocks, and direct access to the raw block device. Install the server by using `cargo`:
+
+```bash
+cargo install blobd
+```
+
+Then set up the configuration file:
+
+```yaml
+partitions:
+- path: /dev/my-nvme-device
+  offset: 0
+  len: <length of block device in bytes>
+token_secret_base64: abcdef123456
+interface: 127.0.0.1
+port: 8080
+```
+
+Now you can format the device and start the server:
+
+```bash
+blobd --config my-config.yaml --format
+blobd --config my-config.yaml
+```
+
+The server can now be accessed over HTTP. Clients are available for Node.js and Python.
 
 ## History
 
