@@ -150,16 +150,16 @@ fn calculate_percentiles(mut latencies: Vec<f64>) -> LatencyStats {
       max_ms: 0.0,
     };
   }
-  
+
   latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
-  
+
   let avg = latencies.iter().sum::<f64>() / latencies.len() as f64;
   let p95_idx = (latencies.len() as f64 * 0.95) as usize;
   let p99_idx = (latencies.len() as f64 * 0.99) as usize;
   let p95 = latencies[p95_idx.min(latencies.len() - 1)];
   let p99 = latencies[p99_idx.min(latencies.len() - 1)];
   let max = *latencies.last().unwrap();
-  
+
   LatencyStats {
     avg_ms: avg,
     p95_ms: p95,
@@ -192,20 +192,20 @@ impl MemoryPeakTracker {
       let stop_signal = stop_signal.clone();
       move || {
         let interval = std::time::Duration::from_millis(200);
-        
+
         while !stop_signal.load(Ordering::Relaxed) {
           if let Ok(meminfo) = procfs::Meminfo::current() {
             let total = meminfo.mem_total;
             let available = meminfo.mem_available.unwrap_or(meminfo.mem_free);
             let used = total.saturating_sub(available);
-            
+
             // Update peak if current is higher
             let current_peak = peak_memory.load(Ordering::Relaxed);
             if used > current_peak {
               peak_memory.store(used, Ordering::Relaxed);
             }
           }
-          
+
           std::thread::sleep(interval);
         }
       }
@@ -298,7 +298,7 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
 
   // Start memory peak tracking
   let memory_peak_tracker = MemoryPeakTracker::new();
-  
+
   // Capture baseline system metrics
   let baseline_cpu = read_cpu_ticks();
   let baseline_disk = read_disk_stats();
@@ -365,7 +365,9 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
         secret_access_key: s3.secret_access_key,
         bucket: s3.bucket,
         part_size: s3.part_size,
-      }.build_store().await
+      }
+      .build_store()
+      .await
     }),
     TargetType::RocksDB => Arc::new(RocksDBStore::new(
       cfg.prefix.unwrap().to_str().unwrap(),
@@ -387,19 +389,19 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
         let incomplete_tokens = incomplete_tokens.clone();
         let latencies = latencies.clone();
         spawn(async move {
-            let op_start = Instant::now();
-            let res = store
-              .create_object(CreateObjectInput {
-                key: create_u64_be(i).into(),
-                size: object_size,
-              })
-              .await;
-            let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
-            incomplete_tokens.lock().push((i, res.token));
-            latencies.lock().push(latency_ms);
-          })
-          .await
-          .unwrap();
+          let op_start = Instant::now();
+          let res = store
+            .create_object(CreateObjectInput {
+              key: create_u64_be(i).into(),
+              size: object_size,
+            })
+            .await;
+          let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+          incomplete_tokens.lock().push((i, res.token));
+          latencies.lock().push(latency_ms);
+        })
+        .await
+        .unwrap();
       })
       .await;
 
@@ -429,24 +431,24 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
         let latencies = latencies.clone();
         let rand_pool = rand_pool.clone();
         spawn(async move {
-            let op_start = Instant::now();
-            let write_chunk_size = store.write_chunk_size();
-            for offset in (0..object_size).step_by(usz!(write_chunk_size)) {
-              let data_len = min(object_size - offset, write_chunk_size);
-              store
-                .write_object(WriteObjectInput {
-                  key: create_u64_be(key).into(),
-                  offset,
-                  incomplete_token: incomplete_token.clone(),
-                  data: &rand_pool[usz!(offset)..usz!(offset + data_len)],
-                })
-                .await;
-            }
-            let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
-            latencies.lock().push(latency_ms);
-          })
-          .await
-          .unwrap();
+          let op_start = Instant::now();
+          let write_chunk_size = store.write_chunk_size();
+          for offset in (0..object_size).step_by(usz!(write_chunk_size)) {
+            let data_len = min(object_size - offset, write_chunk_size);
+            store
+              .write_object(WriteObjectInput {
+                key: create_u64_be(key).into(),
+                offset,
+                incomplete_token: incomplete_token.clone(),
+                data: &rand_pool[usz!(offset)..usz!(offset + data_len)],
+              })
+              .await;
+          }
+          let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+          latencies.lock().push(latency_ms);
+        })
+        .await
+        .unwrap();
       })
       .await;
 
@@ -477,19 +479,19 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
         let store = store.clone();
         let latencies = latencies.clone();
         spawn(async move {
-            let op_start = Instant::now();
-            let key = create_u64_be(i).into();
-            store
-              .commit_object(CommitObjectInput {
-                incomplete_token: incomplete_token.clone(),
-                key,
-              })
-              .await;
-            let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
-            latencies.lock().push(latency_ms);
-          })
-          .await
-          .unwrap();
+          let op_start = Instant::now();
+          let key = create_u64_be(i).into();
+          store
+            .commit_object(CommitObjectInput {
+              incomplete_token: incomplete_token.clone(),
+              key,
+            })
+            .await;
+          let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+          latencies.lock().push(latency_ms);
+        })
+        .await
+        .unwrap();
       })
       .await;
 
@@ -518,18 +520,18 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
       let store = store.clone();
       let latencies = latencies.clone();
       spawn(async move {
-          let op_start = Instant::now();
-          store
-            .inspect_object(InspectObjectInput {
-              key: create_u64_be(i).into(),
-              id: None,
-            })
-            .await;
-          let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
-          latencies.lock().push(latency_ms);
-        })
-        .await
-        .unwrap();
+        let op_start = Instant::now();
+        store
+          .inspect_object(InspectObjectInput {
+            key: create_u64_be(i).into(),
+            id: None,
+          })
+          .await;
+        let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+        latencies.lock().push(latency_ms);
+      })
+      .await
+      .unwrap();
     })
     .await;
 
@@ -562,43 +564,43 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
       let ttfb_latencies = ttfb_latencies.clone();
       let rand_pool = rand_pool.clone();
       spawn(async move {
-          let op_start = Instant::now();
-          // Pick random offset (ensure at least 4000 bytes available)
-          let random_offset = if object_size > 4000 {
-            thread_rng().gen_range(0..object_size - 4000)
-          } else {
-            0
-          };
-          let read_len = min(4000, object_size);
-          
-          let mut res = store
-            .read_object(ReadObjectInput {
-              key: create_u64_be(i).into(),
-              id: None,
-              start: random_offset,
-              end: Some(random_offset + read_len),
-              stream_buffer_size: read_stream_buffer_size,
-            })
-            .await;
-          
-          // Measure TTFB: time to first chunk
-          let mut ttfb_recorded = false;
-          let mut offset = usz!(random_offset);
-          while let Some(chunk) = res.data_stream.next().await {
-            if !ttfb_recorded {
-              let ttfb_ms = op_start.elapsed().as_secs_f64() * 1000.0;
-              ttfb_latencies.lock().push(ttfb_ms);
-              ttfb_recorded = true;
-            }
-            assert_eq!(chunk, rand_pool[offset..offset + chunk.len()]);
-            offset += chunk.len();
+        let op_start = Instant::now();
+        // Pick random offset (ensure at least 4000 bytes available)
+        let random_offset = if object_size > 4000 {
+          thread_rng().gen_range(0..object_size - 4000)
+        } else {
+          0
+        };
+        let read_len = min(4000, object_size);
+
+        let mut res = store
+          .read_object(ReadObjectInput {
+            key: create_u64_be(i).into(),
+            id: None,
+            start: random_offset,
+            end: Some(random_offset + read_len),
+            stream_buffer_size: read_stream_buffer_size,
+          })
+          .await;
+
+        // Measure TTFB: time to first chunk
+        let mut ttfb_recorded = false;
+        let mut offset = usz!(random_offset);
+        while let Some(chunk) = res.data_stream.next().await {
+          if !ttfb_recorded {
+            let ttfb_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+            ttfb_latencies.lock().push(ttfb_ms);
+            ttfb_recorded = true;
           }
-          
-          let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
-          latencies.lock().push(latency_ms);
-        })
-        .await
-        .unwrap();
+          assert_eq!(chunk, rand_pool[offset..offset + chunk.len()]);
+          offset += chunk.len();
+        }
+
+        let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+        latencies.lock().push(latency_ms);
+      })
+      .await
+      .unwrap();
     })
     .await;
 
@@ -632,41 +634,41 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
       let ttfb_latencies = ttfb_latencies.clone();
       let rand_pool = rand_pool.clone();
       spawn(async move {
-          let op_start = Instant::now();
-          let mut ttfb_recorded = false;
-          
-          for start in (0..object_size).step_by(usz!(read_size)) {
-            let read_len = min(object_size, start + read_size) - start;
-            let mut res = store
-              .read_object(ReadObjectInput {
-                key: create_u64_be(i).into(),
-                id: None,
-                start,
-                end: Some(start + read_len),
-                stream_buffer_size: read_stream_buffer_size,
-              })
-              .await;
-            
-            // Do something sophisticated with the response data so the compiler doesnt just drop it and we get insane "read throughput".
-            // WARNING: At max opt levels, the compiler is very aggressive! Even something like checking if len() is greater than 0 may mean compiler drops as soon as one byte is read! Or if only checking length, then it may just skip reading data and just check length only.
-            let mut offset = usz!(start);
-            while let Some(chunk) = res.data_stream.next().await {
-              // Record TTFB on first chunk of first read
-              if !ttfb_recorded {
-                let ttfb_ms = op_start.elapsed().as_secs_f64() * 1000.0;
-                ttfb_latencies.lock().push(ttfb_ms);
-                ttfb_recorded = true;
-              }
-              assert_eq!(chunk, rand_pool[offset..offset + chunk.len()]);
-              offset += chunk.len();
+        let op_start = Instant::now();
+        let mut ttfb_recorded = false;
+
+        for start in (0..object_size).step_by(usz!(read_size)) {
+          let read_len = min(object_size, start + read_size) - start;
+          let mut res = store
+            .read_object(ReadObjectInput {
+              key: create_u64_be(i).into(),
+              id: None,
+              start,
+              end: Some(start + read_len),
+              stream_buffer_size: read_stream_buffer_size,
+            })
+            .await;
+
+          // Do something sophisticated with the response data so the compiler doesnt just drop it and we get insane "read throughput".
+          // WARNING: At max opt levels, the compiler is very aggressive! Even something like checking if len() is greater than 0 may mean compiler drops as soon as one byte is read! Or if only checking length, then it may just skip reading data and just check length only.
+          let mut offset = usz!(start);
+          while let Some(chunk) = res.data_stream.next().await {
+            // Record TTFB on first chunk of first read
+            if !ttfb_recorded {
+              let ttfb_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+              ttfb_latencies.lock().push(ttfb_ms);
+              ttfb_recorded = true;
             }
+            assert_eq!(chunk, rand_pool[offset..offset + chunk.len()]);
+            offset += chunk.len();
           }
-          
-          let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
-          latencies.lock().push(latency_ms);
-        })
-        .await
-        .unwrap();
+        }
+
+        let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+        latencies.lock().push(latency_ms);
+      })
+      .await
+      .unwrap();
     })
     .await;
 
@@ -697,18 +699,18 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
         let store = store.clone();
         let latencies = latencies.clone();
         spawn(async move {
-            let op_start = Instant::now();
-            store
-              .delete_object(DeleteObjectInput {
-                key: create_u64_be(i).into(),
-                id: None,
-              })
-              .await;
-            let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
-            latencies.lock().push(latency_ms);
-          })
-          .await
-          .unwrap();
+          let op_start = Instant::now();
+          store
+            .delete_object(DeleteObjectInput {
+              key: create_u64_be(i).into(),
+              id: None,
+            })
+            .await;
+          let latency_ms = op_start.elapsed().as_secs_f64() * 1000.0;
+          latencies.lock().push(latency_ms);
+        })
+        .await
+        .unwrap();
       })
       .await;
 
@@ -750,19 +752,23 @@ async fn run_benchmark(benchmark_name: String, benchmark_dir: PathBuf, cli: &Cli
   // Stop memory peak tracking and capture final system metrics
   info!("stopping memory peak tracking and capturing final metrics");
   let peak_memory_bytes = memory_peak_tracker.stop();
-  
+
   let final_cpu = read_cpu_ticks();
   let final_disk = read_disk_stats();
-  
+
   let cpu_user_ticks = final_cpu.0.saturating_sub(baseline_cpu.0);
   let cpu_system_ticks = final_cpu.1.saturating_sub(baseline_cpu.1);
-  
+
   results.system_metrics = FinalSystemMetrics {
     peak_memory_bytes,
     total_cpu_user_secs: cpu_user_ticks as f64 / clock_ticks_per_sec,
     total_cpu_system_secs: cpu_system_ticks as f64 / clock_ticks_per_sec,
-    total_disk_read_bytes: final_disk.read_bytes.saturating_sub(baseline_disk.read_bytes),
-    total_disk_write_bytes: final_disk.write_bytes.saturating_sub(baseline_disk.write_bytes),
+    total_disk_read_bytes: final_disk
+      .read_bytes
+      .saturating_sub(baseline_disk.read_bytes),
+    total_disk_write_bytes: final_disk
+      .write_bytes
+      .saturating_sub(baseline_disk.write_bytes),
     total_disk_read_ops: final_disk.read_ops.saturating_sub(baseline_disk.read_ops),
     total_disk_write_ops: final_disk.write_ops.saturating_sub(baseline_disk.write_ops),
   };

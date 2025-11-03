@@ -107,7 +107,7 @@ pub struct Config {
 
   /// Concurrency level. Can be overridden via CLI.
   pub concurrency: Option<usize>,
-  
+
   #[serde(default = "default_use_block_cache")]
   pub use_block_cache: bool,
 }

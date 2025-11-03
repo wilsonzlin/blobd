@@ -1,12 +1,12 @@
 use super::parse_key;
 use super::transform_op_error;
 use super::HttpCtx;
-use crate::libblobd::op::delete_object::OpDeleteObjectInput;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use blobd_token::AuthTokenAction;
+use libblobd_direct::op::delete_object::OpDeleteObjectInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;

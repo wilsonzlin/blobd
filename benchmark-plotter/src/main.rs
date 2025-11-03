@@ -1,7 +1,9 @@
 use ahash::HashMap;
 use ahash::HashMapExt;
 use benchmark_types::*;
-use maud::{html, Markup, PreEscaped};
+use maud::html;
+use maud::Markup;
+use maud::PreEscaped;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
@@ -114,10 +116,10 @@ fn main() {
   println!("Loaded {} datasets", datasets.len());
 
   let html = generate_html(datasets);
-  
+
   // Create out directory if it doesn't exist
   fs::create_dir_all("out").unwrap();
-  
+
   fs::write("out/index.html", html.into_string()).unwrap();
 
   println!("Generated out/index.html successfully!");

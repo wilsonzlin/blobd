@@ -22,7 +22,7 @@ partitions:
 - path: /dev/my-nvme-device
   offset: 0
   len: <length of block device in bytes>
-token_secret_base64: abcdef123456
+token_secret_base64: abcdef1234567890abcdef1234567890
 interface: 127.0.0.1
 port: 8080
 ```
@@ -34,7 +34,7 @@ blobd --config my-config.yaml --format
 blobd --config my-config.yaml
 ```
 
-The server can now be accessed over HTTP. Clients are available for Node.js and Python.
+The server can now be accessed over HTTP. Clients are available for [Node.js](./blobd-client-js/) and [Rust](./blobd-client-rs/).
 
 ## History
 

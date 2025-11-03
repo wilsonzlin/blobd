@@ -184,7 +184,11 @@ impl Store for S3Store {
       .get_object()
       .bucket(&self.bucket)
       .key(BASE64_URL_SAFE_NO_PAD.encode(&input.key))
-      .range(format!("bytes={}-{}", input.start, input.end.unwrap_or(u64::MAX)))
+      .range(format!(
+        "bytes={}-{}",
+        input.start,
+        input.end.unwrap_or(u64::MAX)
+      ))
       .send()
       .await
       .unwrap();

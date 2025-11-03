@@ -1,6 +1,3 @@
-use crate::libblobd::incomplete_token::IncompleteToken;
-use crate::libblobd::op::OpError;
-use crate::libblobd::Blobd;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use blake3::Hash;
@@ -8,6 +5,9 @@ use blobd_token::AuthToken;
 use blobd_token::AuthTokenAction;
 use blobd_token::BlobdTokens;
 use data_encoding::BASE64URL_NOPAD;
+use libblobd_direct::incomplete_token::IncompleteToken;
+use libblobd_direct::op::OpError;
+use libblobd_direct::Blobd;
 use off64::usz;
 use percent_encoding::percent_decode;
 use rmp_serde::Serializer;

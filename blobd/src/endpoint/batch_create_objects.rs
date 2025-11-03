@@ -1,7 +1,4 @@
 use super::HttpCtx;
-use crate::libblobd::op::commit_object::OpCommitObjectInput;
-use crate::libblobd::op::create_object::OpCreateObjectInput;
-use crate::libblobd::op::write_object::OpWriteObjectInput;
 use axum::extract::BodyStream;
 use axum::extract::Query;
 use axum::extract::State;
@@ -12,6 +9,9 @@ use futures::stream::once;
 use futures::AsyncReadExt;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use libblobd_direct::op::commit_object::OpCommitObjectInput;
+use libblobd_direct::op::create_object::OpCreateObjectInput;
+use libblobd_direct::op::write_object::OpWriteObjectInput;
 use off64::int::Off64ReadInt;
 use off64::usz;
 use serde::Deserialize;
@@ -66,8 +66,6 @@ pub async fn endpoint_batch_create_objects(
       .create_object(OpCreateObjectInput {
         key: key.into(),
         size,
-        #[cfg(feature = "blobd-lite")]
-        assoc_data: Vec::new(),
       })
       .await
     else {
