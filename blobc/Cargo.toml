@@ -9,7 +9,7 @@ authors = ["Wilson Lin <code@wilsonl.in>"]
 edition = "2021"
 
 [dependencies]
-blobd-client-rs = { version = "0.6.0", path = "../blobd-client-rs" }
+blobd-client-rs = { version = "0.7.0", path = "../blobd-client-rs" }
 bytes = "1.4.0"
 clap = { version = "4.1.13", features = ["derive"] }
 data-encoding = "2.3.3"
