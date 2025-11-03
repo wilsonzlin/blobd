@@ -1,367 +1,337 @@
-import net from "net";
-import bigIntToNumber from "@xtjs/lib/js/bigIntToNumber";
-import { Readable, Writable } from "stream";
-import Pool from "@xtjs/lib/js/Pool";
-import util from "util";
-import assertState from "@xtjs/lib/js/assertState";
+import { AuthToken, AuthTokenAction, BlobdTokens } from "./tokens";
+import {
+  BatchCreateObjectEntry,
+  BatchCreatedObjects,
+  CreatedObject,
+  InspectedObject,
+  WrittenObjectPart,
+} from "./types";
 
-const buf = Buffer.alloc(8);
-const encodeI64 = (val: number) => {
-  buf.writeBigInt64BE(BigInt(val));
-  return [...buf];
-};
-const encodeU64 = (val: number) => {
-  buf.writeBigUInt64BE(BigInt(val));
-  return [...buf];
-};
-
-const buildArgs = (method: number, rawBytes: number[]) =>
-  Buffer.from([
-    method,
-    ...rawBytes,
-    ...Array(255 - rawBytes.length - 1).fill(0),
-  ]);
-
-const commit_object = (inodeDevOffset: number, objNo: number) => {
-  const argsRaw = [...encodeU64(inodeDevOffset), ...encodeU64(objNo)];
-  return buildArgs(5, argsRaw);
-};
-
-const create_object = (key: string, size: number) => {
-  const keyBytes = Buffer.from(key);
-  const argsRaw = [keyBytes.length, ...keyBytes, ...encodeU64(size)];
-  return buildArgs(1, argsRaw);
-};
-
-const delete_object = (key: string, objNo: number) => {
-  const keyBytes = Buffer.from(key);
-  const argsRaw = [keyBytes.length, ...keyBytes, ...encodeU64(objNo)];
-  return buildArgs(6, argsRaw);
-};
-
-const inspect_object = (key: string) => {
-  const keyBytes = Buffer.from(key);
-  const argsRaw = [keyBytes.length, ...keyBytes];
-  return buildArgs(2, argsRaw);
-};
-
-const read_object = (key: string, start: number, end: number) => {
-  const keyBytes = Buffer.from(key);
-  const argsRaw = [
-    keyBytes.length,
-    ...keyBytes,
-    ...encodeI64(start),
-    ...encodeI64(end),
-  ];
-  return buildArgs(3, argsRaw);
-};
-
-const write_object = (
-  inodeDevOffset: number,
-  objNo: number,
-  start: number,
-  len: number
-) => {
-  const argsRaw = [
-    ...encodeU64(inodeDevOffset),
-    ...encodeU64(objNo),
-    ...encodeU64(start),
-    ...encodeU64(len),
-  ];
-  return buildArgs(4, argsRaw);
-};
-
-const read = async (socket: net.Socket, method: string, n: number) => {
-  while (true) {
-    const chunk = socket.read(n);
-    if (chunk) {
-      if (chunk.length !== n) {
-        throw new Error(
-          `Invalid ${method} response: ${util.inspect(chunk, {
-            colors: false,
-            depth: null,
-            showHidden: false,
-            compact: true,
-          })}`
-        );
-      }
-      if (chunk[0] !== 0) {
-        throw new TurbostoreError(method, chunk[0]);
-      }
-      return chunk;
-    }
-    // Check after .read() as state could technically synchronously change with .read() call, and if it returned null because it's ended (not because it's not readable yet), then we get stuck. Check after `chunk` as it could be nonreadable after final read().
-    if (!socket.readable) {
-      throw new Error("Turbostore connection is not readable");
-    }
-    await new Promise<void>((resolve, reject) => {
-      const handler = (error?: Error) => {
-        socket.off("error", handler).off("readable", handler);
-        error ? reject(error) : resolve();
-      };
-      // "readable" is also emitted on end.
-      socket.on("error", handler).on("readable", handler);
-    });
-  }
-};
-
-export enum TurbostoreErrorCode {
-  OK = 0,
-  NOT_ENOUGH_ARGS = 1,
-  KEY_TOO_LONG = 2,
-  TOO_MANY_ARGS = 3,
-  NOT_FOUND = 4,
-  INVALID_START = 5,
-  INVALID_END = 6,
+function now(): number {
+  return Math.floor(Date.now() / 1000);
 }
 
-export class TurbostoreError extends Error {
-  constructor(
-    readonly requestType: string,
-    readonly errorCode: TurbostoreErrorCode
-  ) {
-    super(
-      `${requestType} request failed with error ${TurbostoreErrorCode[errorCode]}`
+function encodeU16BE(val: number): Uint8Array {
+  const buf = new Uint8Array(2);
+  new DataView(buf.buffer).setUint16(0, val, false);
+  return buf;
+}
+
+function encodeU40BE(val: number): Uint8Array {
+  const buf = new Uint8Array(5);
+  const view = new DataView(buf.buffer);
+  // Store as 40-bit big-endian (5 bytes)
+  const bigVal = BigInt(val);
+  view.setUint8(0, Number((bigVal >> 32n) & 0xffn));
+  view.setUint32(1, Number(bigVal & 0xffffffffn), false);
+  return buf;
+}
+
+export class BlobdClient {
+  private readonly tokens: BlobdTokens;
+
+  constructor(private readonly endpoint: string, tokenSecret: Buffer) {
+    // Remove trailing slash if present
+    this.endpoint = endpoint.replace(/\/$/, "");
+    this.tokens = new BlobdTokens(tokenSecret);
+  }
+
+  private buildUrl(key: string): string {
+    // Split key by '/' and percent-encode each segment
+    const segments = key
+      .split("/")
+      .map((segment) => encodeURIComponent(segment));
+    return `${this.endpoint}/${segments.join("/")}`;
+  }
+
+  generateTokenQueryParam(
+    action: AuthTokenAction,
+    expiresInSeconds: number
+  ): [string, string] {
+    const t = AuthToken.new(this.tokens, action, now() + expiresInSeconds);
+    return ["t", t];
+  }
+
+  generatePresignedUrl(
+    key: string,
+    action: AuthTokenAction,
+    expiresInSeconds: number
+  ): string {
+    const url = new URL(this.buildUrl(key));
+    const [k, v] = this.generateTokenQueryParam(action, expiresInSeconds);
+    url.searchParams.append(k, v);
+    return url.toString();
+  }
+
+  async createObject(key: string, size: number): Promise<CreatedObject> {
+    const keyBytes = new TextEncoder().encode(key);
+    const url = new URL(this.buildUrl(key));
+    url.searchParams.append("size", size.toString());
+    const [tk, tv] = this.generateTokenQueryParam(
+      { type: "CreateObject", key: keyBytes, size },
+      300
     );
-  }
-}
+    url.searchParams.append(tk, tv);
 
-export class TurbostoreReadObjectStream extends Readable {
-  private pushedLen = 0;
-  private canPush = true;
-
-  constructor(
-    private readonly socket: net.Socket,
-    readonly actualStart: number,
-    readonly actualLength: number,
-    readonly objectSize: number
-  ) {
-    super({
-      autoDestroy: true,
-      emitClose: true,
+    const response = await fetch(url.toString(), {
+      method: "POST",
     });
-    // When makeRequest acquired the client, it attached a "close" listener on `socket` and will destroy this TurbostoreReadObjectStream if `socket` closes, so we don't need to handle that here.
-    socket.on("readable", this.maybePush);
-    this.maybePush();
-  }
 
-  private cleanUp = () => {
-    this.socket.off("readable", this.maybePush);
-  };
-
-  private maybePush = () => {
-    let chunk;
-    while (
-      this.socket.readable &&
-      this.readable &&
-      this.canPush &&
-      (chunk = this.socket.read())
-    ) {
-      this.canPush = this.push(chunk);
-      this.pushedLen += chunk.length;
-      assertState(
-        this.pushedLen <= this.actualLength,
-        `read ${this.pushedLen} of ${this.actualLength} bytes`
+    if (!response.ok) {
+      throw new Error(
+        `Failed to create object: ${response.status} ${response.statusText}`
       );
-      if (this.pushedLen == this.actualLength) {
-        this.push(null);
-        this.cleanUp();
-      }
     }
-  };
 
-  override _destroy(
-    error: Error | null,
-    callback: (error?: Error | null) => void
-  ): void {
-    this.cleanUp();
-    if (this.pushedLen < this.actualLength) {
-      this.socket.destroy(new Error("read_object downstream was destroyed"));
+    const uploadToken = response.headers.get("x-blobd-upload-token");
+    if (!uploadToken) {
+      throw new Error("Missing x-blobd-upload-token header in response");
     }
-    callback(error);
+
+    return { uploadToken };
   }
 
-  override _read(_size: number): void {
-    this.canPush = true;
-    this.maybePush();
+  async writeObject(
+    key: string,
+    creation: CreatedObject,
+    offset: number,
+    data: Uint8Array | ReadableStream<Uint8Array>
+  ): Promise<WrittenObjectPart> {
+    const keyBytes = new TextEncoder().encode(key);
+    const url = new URL(this.buildUrl(key));
+    url.searchParams.append("offset", offset.toString());
+    url.searchParams.append("upload_token", creation.uploadToken);
+    const [tk, tv] = this.generateTokenQueryParam(
+      { type: "WriteObject", key: keyBytes },
+      300
+    );
+    url.searchParams.append(tk, tv);
+
+    const contentLength = data instanceof Uint8Array ? data.length : undefined;
+
+    const headers: HeadersInit = {};
+    if (contentLength !== undefined) {
+      headers["Content-Length"] = contentLength.toString();
+    }
+
+    const response = await fetch(url.toString(), {
+      method: "PATCH",
+      body: data,
+      headers,
+      duplex: "half",
+    } as RequestInit);
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to write object: ${response.status} ${response.statusText}`
+      );
+    }
+
+    const writeReceipt = response.headers.get("x-blobd-write-receipt");
+    if (!writeReceipt) {
+      throw new Error("Missing x-blobd-write-receipt header in response");
+    }
+
+    return { writeReceipt };
   }
-}
 
-export class TurbostoreWriteObjectStream extends Writable {
-  private readResponse = false;
+  async commitObject(
+    key: string,
+    creation: CreatedObject,
+    writeReceipts: string[]
+  ): Promise<void> {
+    const keyBytes = new TextEncoder().encode(key);
+    const url = new URL(this.buildUrl(key));
+    url.searchParams.append("upload_token", creation.uploadToken);
+    url.searchParams.append("write_receipts", writeReceipts.join(","));
+    const [tk, tv] = this.generateTokenQueryParam(
+      { type: "CommitObject", key: keyBytes },
+      300
+    );
+    url.searchParams.append(tk, tv);
 
-  constructor(private readonly socket: net.Socket) {
-    super({
-      autoDestroy: true,
-      emitClose: true,
+    const response = await fetch(url.toString(), {
+      method: "PUT",
     });
-    // We don't need a "close" handler on `socket` as both `socket.write` and `read(socket, 1)` will fail if it's closed.
-  }
 
-  override _destroy(
-    error: Error | null,
-    callback: (error?: Error | null) => void
-  ): void {
-    if (!this.readResponse) {
-      this.socket.destroy(new Error("write_object downstream was destroyed"));
+    if (!response.ok) {
+      throw new Error(
+        `Failed to commit object: ${response.status} ${response.statusText}`
+      );
     }
-    callback(error);
   }
 
-  override _final(callback: (error?: Error | null) => void): void {
-    // TODO Handle case where not enough bytes were written.
-    read(this.socket, "write_object", 1).then(() => {
-      this.readResponse = true;
-      callback();
-    }, callback);
-  }
+  async readObject(
+    key: string,
+    start: number,
+    end?: number
+  ): Promise<ReadableStream<Uint8Array>> {
+    const keyBytes = new TextEncoder().encode(key);
+    const url = new URL(this.buildUrl(key));
+    const [tk, tv] = this.generateTokenQueryParam(
+      { type: "ReadObject", key: keyBytes },
+      300
+    );
+    url.searchParams.append(tk, tv);
 
-  override _write(
-    chunk: any,
-    encoding: BufferEncoding,
-    callback: (error?: Error | null) => void
-  ): void {
-    // TODO Handle case where too many bytes are written.
-    this.socket.write(chunk, encoding, callback);
-  }
-}
+    const rangeEnd = end !== undefined ? end - 1 : ""; // HTTP Range is inclusive
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Range: `bytes=${start}-${rangeEnd}`,
+      },
+    });
 
-export class TurbostoreClient {
-  private readonly clients = new Pool<net.Socket>();
-
-  constructor(
-    private readonly clientOpt: {
-      host?: string;
-      port?: number;
-      unixSocketPath?: string;
+    if (!response.ok) {
+      throw new Error(
+        `Failed to read object: ${response.status} ${response.statusText}`
+      );
     }
-  ) {}
 
-  private getClient() {
-    let client = this.clients.getAvailable();
-    if (!client) {
-      client = net
-        .createConnection({
-          host: this.clientOpt.host,
-          path: this.clientOpt.unixSocketPath,
-          port: this.clientOpt.port as any,
-        })
-        // Suppress any errors. If connection drops while idle, next request will notice.
-        .on("error", () => void 0);
-      this.clients.registerNewItem(client);
+    if (!response.body) {
+      throw new Error("Response body is null");
     }
-    return client.ref();
+
+    return response.body;
   }
 
-  private async makeRequest<T>(fn: (client: net.Socket) => Promise<T>) {
-    const client = this.getClient();
-    this.clients.makeUnavailable(client);
-    let res: T | undefined;
-    let err: Error | undefined;
-    try {
-      res = await fn(client);
-    } catch (e) {
-      err = e;
+  async inspectObject(key: string): Promise<InspectedObject> {
+    const keyBytes = new TextEncoder().encode(key);
+    const url = new URL(this.buildUrl(key));
+    const [tk, tv] = this.generateTokenQueryParam(
+      { type: "InspectObject", key: keyBytes },
+      300
+    );
+    url.searchParams.append(tk, tv);
+
+    const response = await fetch(url.toString(), {
+      method: "HEAD",
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to inspect object: ${response.status} ${response.statusText}`
+      );
     }
-    const cleanUp = () => {
-      if (client.readable) {
-        client.unref();
-        this.clients.makeAvailable(client);
-      } else {
-        this.clients.deregisterItem(client);
-      }
+
+    const contentLength = response.headers.get("content-length");
+    const objectId = response.headers.get("x-blobd-object-id");
+
+    if (!contentLength || !objectId) {
+      throw new Error("Missing required headers in response");
+    }
+
+    return {
+      objectId: parseInt(objectId, 10),
+      contentLength: parseInt(contentLength, 10),
     };
-    if (res instanceof Readable || res instanceof Writable) {
-      const stream = res;
-      // The socket should never end or close, even after all object data has been provided (one connection handles infinite requests).
-      // This handles socket "end", "error", "close".
-      client.once("close", () => {
-        stream.destroy(new Error("Turbostore connection has closed"));
-        cleanUp();
-      });
-    } else {
-      cleanUp();
-    }
-    if (err) {
-      throw err;
-    }
-    return res!;
   }
 
-  async commitObject(inodeDevOffset: number, objNo: number) {
-    return this.makeRequest(async (socket) => {
-      socket.write(commit_object(inodeDevOffset, objNo));
-      await read(socket, "commit_object", 1);
+  async deleteObject(key: string): Promise<void> {
+    const keyBytes = new TextEncoder().encode(key);
+    const url = new URL(this.buildUrl(key));
+    const [tk, tv] = this.generateTokenQueryParam(
+      { type: "DeleteObject", key: keyBytes },
+      300
+    );
+    url.searchParams.append(tk, tv);
+
+    const response = await fetch(url.toString(), {
+      method: "DELETE",
     });
-  }
 
-  async createObject(key: string, size: number) {
-    return this.makeRequest(async (socket) => {
-      socket.write(create_object(key, size));
-      const chunk = await read(socket, "create_object", 17);
-      return {
-        inodeDeviceOffset: bigIntToNumber(chunk.readBigUInt64BE(1)),
-        objectNumber: bigIntToNumber(chunk.readBigUInt64BE(9)),
-      };
-    });
-  }
-
-  async deleteObject(key: string, objNo?: number) {
-    return this.makeRequest(async (socket) => {
-      socket.write(delete_object(key, objNo ?? 0));
-      await read(socket, "delete_object", 1);
-    });
-  }
-
-  async inspectObject(key: string) {
-    return this.makeRequest(async (socket) => {
-      socket.write(inspect_object(key));
-      const chunk = await read(socket, "inspect_object", 10);
-      return {
-        state: chunk[1],
-        size: bigIntToNumber(chunk.readBigUInt64BE(2)),
-      };
-    });
-  }
-
-  async readObject(key: string, start: number, end: number) {
-    return this.makeRequest(async (socket) => {
-      socket.write(read_object(key, start, end));
-      const chunk = await read(socket, "read_object", 25);
-      const actualStart = bigIntToNumber(chunk.readBigUInt64BE(1));
-      const actualLength = bigIntToNumber(chunk.readBigUInt64BE(9));
-      const objectSize = bigIntToNumber(chunk.readBigUInt64BE(17));
-      return new TurbostoreReadObjectStream(
-        socket,
-        actualStart,
-        actualLength,
-        objectSize
+    if (!response.ok) {
+      throw new Error(
+        `Failed to delete object: ${response.status} ${response.statusText}`
       );
-    });
+    }
   }
 
-  async writeObjectWithBuffer(
-    inodeDevOffset: number,
-    objNo: number,
-    start: number,
-    data: Uint8Array
-  ) {
-    return this.makeRequest(async (socket) => {
-      socket.write(write_object(inodeDevOffset, objNo, start, data.length));
-      socket.write(data);
-      await read(socket, "write_object", 1);
-    });
-  }
+  async batchCreateObjects(
+    objects:
+      | AsyncIterable<BatchCreateObjectEntry>
+      | Iterable<BatchCreateObjectEntry>,
+    transferByteCounter?: (bytes: number) => void
+  ): Promise<BatchCreatedObjects> {
+    const url = new URL(this.endpoint);
+    const [tk, tv] = this.generateTokenQueryParam(
+      { type: "BatchCreateObjects" },
+      300
+    );
+    url.searchParams.append(tk, tv);
 
-  async writeObjectWithStream(
-    inodeDevOffset: number,
-    objNo: number,
-    start: number,
-    len: number
-  ) {
-    return this.makeRequest(async (socket) => {
-      socket.write(write_object(inodeDevOffset, objNo, start, len));
-      return new TurbostoreWriteObjectStream(socket);
+    // Create a readable stream that encodes objects in the binary format
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        try {
+          for await (const entry of objects) {
+            // Encode key length (u16 BE)
+            const keyBytes = new TextEncoder().encode(entry.key);
+            controller.enqueue(encodeU16BE(keyBytes.length));
+
+            // Encode key
+            controller.enqueue(keyBytes);
+
+            // Encode size (u40 BE)
+            controller.enqueue(encodeU40BE(entry.size));
+
+            // Encode data
+            if (entry.data instanceof Uint8Array) {
+              transferByteCounter?.(entry.data.length);
+              controller.enqueue(entry.data);
+            } else {
+              // Stream data
+              const reader = entry.data.getReader();
+              try {
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  transferByteCounter?.(value.length);
+                  controller.enqueue(value);
+                }
+              } finally {
+                reader.releaseLock();
+              }
+            }
+          }
+          controller.close();
+        } catch (error) {
+          controller.error(error);
+        }
+      },
     });
+
+    const response = await fetch(url.toString(), {
+      method: "POST",
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to batch create objects: ${response.status} ${response.statusText}`
+      );
+    }
+
+    const countHeader = response.headers.get("x-blobd-objects-created-count");
+    if (!countHeader) {
+      throw new Error(
+        "Missing x-blobd-objects-created-count header in response"
+      );
+    }
+
+    return {
+      successfulCount: parseInt(countHeader, 10),
+    };
   }
 }
+
+// Re-export types for convenience
+export type {
+  AuthTokenAction,
+  BatchCreateObjectEntry,
+  BatchCreatedObjects,
+  CreatedObject,
+  InspectedObject,
+  WrittenObjectPart,
+};
