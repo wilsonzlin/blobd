@@ -1,6 +1,6 @@
 {
   "name": "@blobd/client",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "main": "dist/main.js",
   "files": [
     "dist/**"
