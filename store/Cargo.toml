@@ -14,7 +14,7 @@ blake3 = "1.8.2"
 dashmap = "6.1.0"
 futures = "0.3.28"
 itertools = "0.14.0"
-libblobd-direct = { version = "0.5.4", path = "../libblobd-direct" }
+libblobd-direct = { version = "0.6.0", path = "../libblobd-direct" }
 libblobd-kv = { version = "0.7.2", path = "../libblobd-kv" }
 libblobd-lite = { version = "0.2.0", path = "../libblobd-lite" }
 libc = "0.2.177"
