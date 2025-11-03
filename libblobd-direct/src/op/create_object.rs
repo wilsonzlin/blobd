@@ -6,12 +6,15 @@ use crate::object::Object;
 use crate::object::ObjectMetadata;
 use crate::object::ObjectState;
 use crate::object::ObjectTuple;
+use crate::objects::ObjectId;
 use crate::op::key_debug_str;
 use crate::util::ceil_pow2;
 use chrono::Utc;
 use off64::u64;
 use off64::u8;
 use off64::Off64WriteMut;
+use rand::thread_rng;
+use rand::Rng;
 use serde::Serialize;
 use std::cmp::max;
 use std::sync::atomic::Ordering;
@@ -74,7 +77,7 @@ pub(crate) async fn op_create_object(
   );
   let metadata_dev_offset = ctx.heap_allocator.lock().allocate(metadata_size).unwrap();
 
-  let object_id = ctx.next_object_id.fetch_add(1, Ordering::Relaxed);
+  let object_id: ObjectId = thread_rng().gen();
   let tuple = ObjectTuple {
     id: object_id,
     state: ObjectState::Incomplete,

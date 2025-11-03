@@ -36,7 +36,7 @@ pub(crate) async fn reap_object(ctx: &Ctx, obj: &Object) {
 pub struct OpDeleteObjectInput {
   pub key: Vec<u8>,
   // Only useful if versioning is enabled.
-  pub id: Option<u64>,
+  pub id: Option<u128>,
 }
 
 pub struct OpDeleteObjectOutput {}

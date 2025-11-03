@@ -1,4 +1,5 @@
 use self::tail::TailPageSizes;
+use crate::objects::ObjectId;
 use crate::op::OpError;
 use crate::pages::Pages;
 use crate::util::ceil_pow2;
@@ -62,14 +63,14 @@ pub(crate) fn calc_object_layout(pages: &Pages, object_size: u64) -> ObjectLayou
 
 const TUPLE_OFFSETOF_STATE: u64 = 0;
 const TUPLE_OFFSETOF_ID: u64 = TUPLE_OFFSETOF_STATE + 1;
-const TUPLE_OFFSETOF_METADATA_DEV_OFFSET: u64 = TUPLE_OFFSETOF_ID + 8;
+const TUPLE_OFFSETOF_METADATA_DEV_OFFSET: u64 = TUPLE_OFFSETOF_ID + 16;
 const TUPLE_OFFSETOF_METADATA_PAGE_SIZE_POW2: u64 = TUPLE_OFFSETOF_METADATA_DEV_OFFSET + 6;
 pub(crate) const OBJECT_TUPLE_SERIALISED_LEN: u64 = TUPLE_OFFSETOF_METADATA_PAGE_SIZE_POW2 + 1;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ObjectTuple {
   pub state: ObjectState,
-  pub id: u64,
+  pub id: ObjectId,
   pub metadata_dev_offset: u64,
   pub metadata_page_size_pow2: u8,
 }
@@ -78,7 +79,7 @@ impl ObjectTuple {
   pub fn serialise(&self, out: &mut [u8]) {
     assert_eq!(out.len(), usz!(OBJECT_TUPLE_SERIALISED_LEN));
     out[usz!(TUPLE_OFFSETOF_STATE)] = self.state as u8;
-    out.write_u64_le_at(TUPLE_OFFSETOF_ID, self.id);
+    out.write_u128_le_at(TUPLE_OFFSETOF_ID, self.id);
     out.write_u48_le_at(TUPLE_OFFSETOF_METADATA_DEV_OFFSET, self.metadata_dev_offset);
     out[usz!(TUPLE_OFFSETOF_METADATA_PAGE_SIZE_POW2)] = self.metadata_page_size_pow2;
   }
@@ -87,7 +88,7 @@ impl ObjectTuple {
     assert_eq!(raw.len(), usz!(OBJECT_TUPLE_SERIALISED_LEN));
     Self {
       state: ObjectState::from_u8(raw[usz!(TUPLE_OFFSETOF_STATE)]).unwrap(),
-      id: raw.read_u64_le_at(TUPLE_OFFSETOF_ID),
+      id: raw.read_u128_le_at(TUPLE_OFFSETOF_ID),
       metadata_dev_offset: raw.read_u48_le_at(TUPLE_OFFSETOF_METADATA_DEV_OFFSET),
       metadata_page_size_pow2: raw[usz!(TUPLE_OFFSETOF_METADATA_PAGE_SIZE_POW2)],
     }
@@ -106,7 +107,7 @@ pub(crate) struct ObjectMetadata {
 }
 
 struct ObjectInner {
-  id: u64,
+  id: ObjectId,
   metadata_size: u64, // How large the `metadata` is in bytes when serialised.
   state: AtomicU8,
   lock: RwLock<()>,
@@ -119,7 +120,12 @@ pub(crate) struct Object {
 }
 
 impl Object {
-  pub fn new(id: u64, state: ObjectState, metadata: ObjectMetadata, metadata_size: u64) -> Self {
+  pub fn new(
+    id: ObjectId,
+    state: ObjectState,
+    metadata: ObjectMetadata,
+    metadata_size: u64,
+  ) -> Self {
     Self {
       inner: Arc::new(ObjectInner {
         id,
@@ -131,7 +137,7 @@ impl Object {
     }
   }
 
-  pub fn with_new_id(self, new_id: u64) -> Self {
+  pub fn with_new_id(self, new_id: ObjectId) -> Self {
     Self::new(
       new_id,
       self.get_state(),
@@ -140,7 +146,7 @@ impl Object {
     )
   }
 
-  pub fn id(&self) -> u64 {
+  pub fn id(&self) -> ObjectId {
     self.inner.id
   }
 

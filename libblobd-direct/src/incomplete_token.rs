@@ -1,3 +1,4 @@
+use crate::objects::ObjectId;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt;
@@ -7,7 +8,7 @@ use std::fmt::Debug;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IncompleteToken {
   // WARNING: This will change after committing, so cannot be depended on. Currently, `IncompleteToken` is opaque so this is not an issue.
-  pub(crate) object_id: u64,
+  pub(crate) object_id: ObjectId,
   pub(crate) partition_idx: usize,
 }
 

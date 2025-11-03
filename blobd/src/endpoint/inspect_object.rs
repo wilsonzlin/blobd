@@ -5,6 +5,7 @@ use axum::extract::Query;
 use axum::extract::State;
 use axum::http::header::CONTENT_LENGTH;
 use axum::http::HeaderMap;
+use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::http::Uri;
 use blobd_token::AuthTokenAction;
@@ -38,7 +39,10 @@ pub async fn endpoint_inspect_object(
     Ok(o) => {
       let mut headers = HeaderMap::new();
       headers.insert(CONTENT_LENGTH, o.size.into());
-      headers.insert("x-blobd-object-id", o.id.into());
+      headers.insert(
+        "x-blobd-object-id",
+        HeaderValue::from_str(&o.id.to_string()).unwrap(),
+      );
       (StatusCode::OK, headers)
     }
     Err(err) => (transform_op_error(err), HeaderMap::new()),

@@ -232,7 +232,7 @@ pub struct BlobdListObjectsOutputObject {
   pub key: Vec<u8>,
   pub created: DateTime<Utc>,
   pub size: u64,
-  pub id: u64,
+  pub id: u128,
 }
 
 impl Blobd {

@@ -3,6 +3,7 @@ use crate::backing_store::PartitionStore;
 use crate::object::ObjectState;
 use crate::object::ObjectTuple;
 use crate::object::OBJECT_TUPLE_SERIALISED_LEN;
+use crate::objects::ObjectId;
 use crate::pages::Pages;
 use ahash::HashMap;
 use bufpool::buf::Buf;
@@ -21,7 +22,6 @@ use signal_future::SignalFutureController;
 use std::sync::Arc;
 use tokio::time::sleep;
 
-type ObjectId = u64;
 pub(crate) type BundleId = u32;
 
 #[derive(Default)]
@@ -54,7 +54,7 @@ impl Tuples {
       let bundle_id = u32!(bundle_id);
       let tuple_count = u16!(tuples_init.len());
       assert!(tuple_count <= max_tuples_per_bundle);
-      let mut tuples = HashMap::<u64, ObjectTuple>::default();
+      let mut tuples = HashMap::<ObjectId, ObjectTuple>::default();
       for t in tuples_init {
         assert!(state.object_id_to_bundle.insert(t.id, bundle_id).is_none());
         assert!(tuples.insert(t.id, t).is_none());
@@ -98,8 +98,8 @@ impl Tuples {
 
   pub async fn update_object_id_and_state(
     &self,
-    cur_object_id: u64,
-    new_object_id: u64,
+    cur_object_id: ObjectId,
+    new_object_id: ObjectId,
     new_object_state: ObjectState,
   ) {
     let fut = {
@@ -127,7 +127,7 @@ impl Tuples {
     fut.await;
   }
 
-  pub async fn delete_object(&self, object_id: u64) -> ObjectTuple {
+  pub async fn delete_object(&self, object_id: ObjectId) -> ObjectTuple {
     let (tuple, fut) = {
       let mut state = self.state.lock();
       let bundle_id = state.object_id_to_bundle.remove(&object_id).unwrap();

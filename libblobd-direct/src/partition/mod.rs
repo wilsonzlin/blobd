@@ -12,7 +12,6 @@ use crate::util::floor_pow2;
 use crate::BlobdCfg;
 use bufpool::buf::Buf;
 use parking_lot::Mutex;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::spawn;
 use tracing::info;
@@ -76,7 +75,6 @@ impl PartitionLoader {
       committed_objects,
       heap_allocator,
       incomplete_objects,
-      next_object_id,
       tuples,
     } = load_objects_from_device(
       load_progress,
@@ -94,7 +92,6 @@ impl PartitionLoader {
       heap_allocator: Mutex::new(heap_allocator),
       incomplete_objects,
       metrics: self.metrics.clone(),
-      next_object_id: AtomicU64::new(next_object_id),
       pages: pages.clone(),
       partition_idx: self.partition_idx,
       tuples: tuples.clone(),

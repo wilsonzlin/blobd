@@ -6,7 +6,6 @@ use crate::objects::IncompleteObjects;
 use crate::pages::Pages;
 use crate::tuples::Tuples;
 use parking_lot::Mutex;
-use std::sync::atomic::AtomicU64;
 
 pub(crate) struct Ctx {
   pub committed_objects: CommittedObjects,
@@ -14,7 +13,6 @@ pub(crate) struct Ctx {
   pub heap_allocator: Mutex<Allocator>,
   pub incomplete_objects: IncompleteObjects,
   pub metrics: BlobdMetrics,
-  pub next_object_id: AtomicU64,
   pub pages: Pages,
   pub partition_idx: usize,
   pub tuples: Tuples,

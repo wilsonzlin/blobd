@@ -32,15 +32,16 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::warn;
 
+pub(crate) type ObjectId = u128;
+
 // Map from object ID to bucket ID. It just happens so that object IDs are also chronological, so this map allows removing objects when they're committed and also popping chronologically.
-pub(crate) type IncompleteObjects = Arc<RwLock<BTreeMap<u64, Object>>>;
+pub(crate) type IncompleteObjects = Arc<RwLock<BTreeMap<ObjectId, Object>>>;
 pub(crate) type CommittedObjects = Arc<DashMap<Vec<u8>, Object>>;
 
 pub(crate) struct LoadedObjects {
   pub committed_objects: CommittedObjects,
   pub heap_allocator: Allocator,
   pub incomplete_objects: IncompleteObjects,
-  pub next_object_id: u64,
   pub tuples: Tuples,
 }
 
@@ -73,8 +74,7 @@ pub(crate) async fn load_objects_from_device(
   heap_size: u64,
 ) -> LoadedObjects {
   let committed: Arc<CommittedObjects> = Default::default();
-  let incomplete: Arc<RwLock<BTreeMap<u64, Object>>> = Default::default();
-  let next_object_id: Arc<Mutex<u64>> = Default::default();
+  let incomplete: Arc<RwLock<BTreeMap<ObjectId, Object>>> = Default::default();
   let heap_allocator = Arc::new(Mutex::new(Allocator::new(
     heap_dev_offset,
     heap_size,
@@ -97,7 +97,6 @@ pub(crate) async fn load_objects_from_device(
       let heap_allocator = heap_allocator.clone();
       let incomplete = incomplete.clone();
       let metrics = metrics.clone();
-      let next_object_id = next_object_id.clone();
       let pages = pages.clone();
       let progress = progress.clone();
 
@@ -127,12 +126,8 @@ pub(crate) async fn load_objects_from_device(
           let layout = calc_object_layout(&pages, object_size);
 
           let obj = Object::new(object_id, object_state, metadata, metadata_size);
-          // Check if we should insert first before doing anything further e.g. updating metrics, updating allocator, pushing tuple. However, do update next_object_id; it's harmless to skip a few but dangerous to reuse: we still need to check assertions around IDs being unique and we may not actually delete duplicate objects before we accidentally reuse them.
+          // Check if we should insert first before doing anything further e.g. updating metrics, updating allocator, pushing tuple.
           // We'll increment metrics for object counts at the end, in one addition.
-          {
-            let mut next_object_id = next_object_id.lock();
-            *next_object_id = max(*next_object_id, object_id + 1);
-          };
           match object_state {
             ObjectState::Incomplete => {
               assert!(incomplete.write().insert(object_id, obj.clone()).is_none());
@@ -202,7 +197,6 @@ pub(crate) async fn load_objects_from_device(
     committed_objects: Arc::into_inner(committed).unwrap(),
     heap_allocator: Arc::into_inner(heap_allocator).unwrap().into_inner(),
     incomplete_objects: incomplete,
-    next_object_id: Arc::into_inner(next_object_id).unwrap().into_inner(),
     tuples: Tuples::new(pages, tuples),
   }
 }

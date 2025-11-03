@@ -61,7 +61,7 @@ pub struct WrittenObjectPart {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InspectedObject {
-  pub object_id: u64,
+  pub object_id: u128,
   pub content_length: u64,
 }
 

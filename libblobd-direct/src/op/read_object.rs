@@ -24,7 +24,7 @@ use tracing::trace;
 pub struct OpReadObjectInput {
   pub key: Vec<u8>,
   // Only useful if versioning is enabled.
-  pub id: Option<u64>,
+  pub id: Option<u128>,
   pub start: u64,
   // Exclusive.
   pub end: Option<u64>,
@@ -36,7 +36,7 @@ pub struct OpReadObjectOutput {
   pub start: u64,
   pub end: u64,
   pub object_size: u64,
-  pub object_id: u64,
+  pub object_id: u128,
 }
 
 /// Both `offset` and `len` do not have to be multiples of the spage size.

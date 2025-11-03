@@ -222,7 +222,7 @@ export class BlobdClient {
     }
 
     return {
-      objectId: parseInt(objectId, 10),
+      objectId: BigInt(objectId),
       contentLength: parseInt(contentLength, 10),
     };
   }

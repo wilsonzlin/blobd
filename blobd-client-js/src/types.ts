@@ -7,7 +7,7 @@ export interface WrittenObjectPart {
 }
 
 export interface InspectedObject {
-  objectId: number;
+  objectId: bigint;
   contentLength: number;
 }
 

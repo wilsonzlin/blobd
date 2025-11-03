@@ -4,7 +4,10 @@ use super::OpResult;
 use crate::ctx::Ctx;
 use crate::incomplete_token::IncompleteToken;
 use crate::object::ObjectState;
+use crate::objects::ObjectId;
 use dashmap::mapref::entry::Entry;
+use rand::thread_rng;
+use rand::Rng;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -16,7 +19,7 @@ pub struct OpCommitObjectInput {
 
 pub struct OpCommitObjectOutput {
   /// This will only be None if `if_not_exists` is true and an existing object with the same key was present.
-  pub object_id: Option<u64>,
+  pub object_id: Option<ObjectId>,
 }
 
 pub(crate) async fn op_commit_object(
@@ -38,8 +41,8 @@ pub(crate) async fn op_commit_object(
   let (to_delete, new_object_id) = match ctx.committed_objects.entry(obj.key.clone()) {
     Entry::Occupied(_) if req.if_not_exists => (Some(obj), None),
     e => {
-      // For crash consistency, we must generate a new object ID (such that it's greater than any existing incomplete or committed object's ID) for the object we're about to commit; otherwise, we may have two objects with the same key (e.g. we crash before we manage to delete the existing committed one), and if versioning isn't enabled then it isn't clear which is the winner (objects can be committed in a different order than creation).
-      let new_object_id = ctx.next_object_id.fetch_add(1, Ordering::Relaxed);
+      // For crash consistency, we must generate a new object ID (such that it's different from any existing incomplete or committed object's ID) for the object we're about to commit; otherwise, we may have two objects with the same key (e.g. we crash before we manage to delete the existing committed one), and if versioning isn't enabled then it isn't clear which is the winner (objects can be committed in a different order than creation).
+      let new_object_id: ObjectId = thread_rng().gen();
       let new_obj = obj.with_new_id(new_object_id);
       let existing = match e {
         Entry::Occupied(mut e) => Some(e.insert(new_obj)),
