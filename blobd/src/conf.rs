@@ -19,7 +19,7 @@ pub struct Conf {
   #[serde(default)]
   pub versioning: bool,
 
-  pub partitions: Vec<ConfPartition>,
+  pub device: ConfPartition,
 
   // This is required even if authentication is disabled, as it's used for other internal features too.
   pub token_secret_base64: String,

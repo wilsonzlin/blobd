@@ -46,15 +46,11 @@ async fn main() {
   let tokens = BlobdTokens::new(token_secret.clone());
 
   let blobd = BlobdLoader::new(
-    conf
-      .partitions
-      .into_iter()
-      .map(|p| BlobdCfgPartition {
-        len: p.len,
-        offset: p.offset,
-        path: p.path,
-      })
-      .collect(),
+    vec![BlobdCfgPartition {
+      path: conf.device.path,
+      offset: conf.device.offset,
+      len: conf.device.len,
+    }],
     BlobdCfg {
       backing_store: BlobdCfgBackingStore::Uring,
       expire_incomplete_objects_after_secs: conf.reap_objects_after_secs,

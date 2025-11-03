@@ -18,8 +18,8 @@ cargo install blobd
 Then set up the configuration file:
 
 ```yaml
-partitions:
-- path: /dev/my-nvme-device
+device:
+  path: /dev/my-nvme-device
   offset: 0
   len: <length of block device in bytes>
 token_secret_base64: abcdef1234567890abcdef1234567890
