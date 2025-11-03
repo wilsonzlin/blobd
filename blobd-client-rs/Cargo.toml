@@ -12,7 +12,7 @@ edition = "2021"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-blobd-token = { version = "0.2.0", path = "../blobd-token" }
+blobd-token = { version = "0.3.0", path = "../blobd-token" }
 bytes = "1.4"
 futures = "0.3"
 itertools = "0.10.5"
