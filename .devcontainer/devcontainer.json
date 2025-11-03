@@ -5,6 +5,9 @@
     "ghcr.io/devcontainers/features/common-utils:2": {
       "installOhMyZsh": true,
       "configureZshAsDefaultShell": true
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "25"
     }
   },
   "customizations": {
@@ -18,7 +21,9 @@
     }
   },
   "mounts": [
-    "type=bind,source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,readonly"
+    "type=bind,source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,readonly",
+    "type=bind,source=${localEnv:HOME}/.cargo/credentials.toml,target=/home/vscode/.cargo/credentials.toml,readonly"
   ],
+  "postCreateCommand": "rustup toolchain install nightly --component rustfmt --component clippy",
   "remoteUser": "vscode"
 }
