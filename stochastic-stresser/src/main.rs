@@ -1,16 +1,3 @@
-use blobd_universal_client::direct::Direct;
-use blobd_universal_client::kv::Kv;
-use blobd_universal_client::lite::Lite;
-use blobd_universal_client::BlobdProvider;
-use blobd_universal_client::CommitObjectInput;
-use blobd_universal_client::CreateObjectInput;
-use blobd_universal_client::DeleteObjectInput;
-use blobd_universal_client::IncompleteToken;
-use blobd_universal_client::InitCfg;
-use blobd_universal_client::InitCfgPartition;
-use blobd_universal_client::InspectObjectInput;
-use blobd_universal_client::ReadObjectInput;
-use blobd_universal_client::WriteObjectInput;
 use bytesize::ByteSize;
 use futures::StreamExt;
 use off64::int::create_u64_le;
@@ -30,8 +17,20 @@ use std::sync::Arc;
 use std::time::Duration;
 use stochastic_queue::stochastic_channel;
 use stochastic_queue::StochasticMpmcRecvError;
+use store::direct::BlobdDirectStore;
+use store::kv::BlobdKVStore;
+use store::lite::BlobdLiteStore;
+use store::CommitObjectInput;
+use store::CreateObjectInput;
+use store::DeleteObjectInput;
+use store::IncompleteToken;
+use store::InitCfg;
+use store::InitCfgPartition;
+use store::InspectObjectInput;
+use store::ReadObjectInput;
+use store::Store;
+use store::WriteObjectInput;
 use strum_macros::Display;
-use tinybuf::TinyBuf;
 use tokio::spawn;
 use tokio::task::spawn_blocking;
 use tokio::time::sleep;
@@ -124,7 +123,7 @@ impl Pool {
     &self.data[start..end]
   }
 
-  fn get_then_prefix(&self, offset: u64, len: u64, prefix: u64) -> TinyBuf {
+  fn get_then_prefix(&self, offset: u64, len: u64, prefix: u64) -> Vec<u8> {
     let mut out = create_u64_le(prefix).to_vec();
     out.extend_from_slice(self.get(offset, len));
     out.into()
@@ -163,7 +162,7 @@ enum Task {
     key_offset: u64,
     data_len: u64,
     data_offset: u64,
-    object_id: u64,
+    object_id: Option<String>,
   },
   Read {
     key_prefix: u64,
@@ -172,13 +171,13 @@ enum Task {
     data_len: u64,
     data_offset: u64,
     chunk_offset: u64,
-    object_id: u64,
+    object_id: Option<String>,
   },
   Delete {
     key_prefix: u64,
     key_len: u64,
     key_offset: u64,
-    object_id: u64,
+    object_id: Option<String>,
   },
 }
 
@@ -236,10 +235,10 @@ async fn main() {
       })
       .collect(),
   };
-  let blobd: Arc<dyn BlobdProvider> = match cli.target {
-    TargetType::Direct => Arc::new(Direct::start(cfg).await),
-    TargetType::Kv => Arc::new(Kv::start(cfg).await),
-    TargetType::Lite => Arc::new(Lite::start(cfg).await),
+  let blobd: Arc<dyn Store> = match cli.target {
+    TargetType::Direct => Arc::new(BlobdDirectStore::start(cfg).await),
+    TargetType::Kv => Arc::new(BlobdKVStore::start(cfg).await),
+    TargetType::Lite => Arc::new(BlobdLiteStore::start(cfg).await),
   };
 
   info!(
@@ -422,8 +421,12 @@ async fn main() {
             data_offset,
             incomplete_token,
           } => {
+            let key = pool.get_then_prefix(key_offset, key_len, key_prefix);
             let res = blobd
-              .commit_object(CommitObjectInput { incomplete_token })
+              .commit_object(CommitObjectInput {
+                incomplete_token,
+                key,
+              })
               .await;
             completed_by_type.commit.fetch_add(1, Ordering::Relaxed);
             tasks_sender
@@ -448,7 +451,7 @@ async fn main() {
             let res = blobd
               .inspect_object(InspectObjectInput {
                 key: pool.get_then_prefix(key_offset, key_len, key_prefix),
-                id: Some(object_id),
+                id: object_id.clone(),
               })
               .await;
             completed_by_type.inspect.fetch_add(1, Ordering::Relaxed);
@@ -483,7 +486,7 @@ async fn main() {
                 start: chunk_offset,
                 key: pool.get_then_prefix(key_offset, key_len, key_prefix),
                 stream_buffer_size: 1024 * 16,
-                id: Some(object_id),
+                id: object_id.clone(),
               })
               .await;
             while let Some(chunk) = res.data_stream.next().await {
@@ -527,7 +530,7 @@ async fn main() {
             blobd
               .delete_object(DeleteObjectInput {
                 key: pool.get_then_prefix(key_offset, key_len, key_prefix),
-                id: Some(object_id),
+                id: object_id,
               })
               .await;
             if completed_by_type.delete.fetch_add(1, Ordering::Relaxed) + 1 == object_count {

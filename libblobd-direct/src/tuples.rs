@@ -4,8 +4,8 @@ use crate::object::ObjectState;
 use crate::object::ObjectTuple;
 use crate::object::OBJECT_TUPLE_SERIALISED_LEN;
 use crate::pages::Pages;
+use ahash::HashMap;
 use bufpool::buf::Buf;
-use croaring::Bitmap;
 use futures::stream::iter;
 use futures::StreamExt;
 use itertools::Itertools;
@@ -15,7 +15,7 @@ use off64::u32;
 use off64::u64;
 use off64::usz;
 use parking_lot::Mutex;
-use rustc_hash::FxHashMap;
+use roaring::RoaringBitmap;
 use signal_future::SignalFuture;
 use signal_future::SignalFutureController;
 use std::sync::Arc;
@@ -26,16 +26,16 @@ pub(crate) type BundleId = u32;
 
 #[derive(Default)]
 struct TuplesState {
-  object_id_to_bundle: FxHashMap<ObjectId, BundleId>,
-  bundle_tuples: Vec<FxHashMap<ObjectId, ObjectTuple>>,
+  object_id_to_bundle: HashMap<ObjectId, BundleId>,
+  bundle_tuples: Vec<HashMap<ObjectId, ObjectTuple>>,
   // These bitmaps provide some features:
   // - Quickly find a dirty bundle to add a new tuple to, to try and coalesce writes.
   // - Try to keep picking the same dirty bundle (`.minimum()`) while it's still free to add new tuples to, to further try and coalesce writes. Deletes may interfere with this.
   // - Provide quick set-like insertion and deletion.
   // Any dirty tuple is as good as any other, so there's no need for an ordered (by usage) data structure.
-  free_bundles: Bitmap,
-  dirty_bundles: Bitmap,
-  free_and_dirty_bundles: Bitmap,
+  free_bundles: RoaringBitmap,
+  dirty_bundles: RoaringBitmap,
+  free_and_dirty_bundles: RoaringBitmap,
   dirty_signals: Vec<SignalFutureController<()>>,
 }
 
@@ -54,14 +54,14 @@ impl Tuples {
       let bundle_id = u32!(bundle_id);
       let tuple_count = u16!(tuples_init.len());
       assert!(tuple_count <= max_tuples_per_bundle);
-      let mut tuples = FxHashMap::<u64, ObjectTuple>::default();
+      let mut tuples = HashMap::<u64, ObjectTuple>::default();
       for t in tuples_init {
         assert!(state.object_id_to_bundle.insert(t.id, bundle_id).is_none());
         assert!(tuples.insert(t.id, t).is_none());
       }
       state.bundle_tuples.push(tuples);
       if tuple_count < max_tuples_per_bundle {
-        state.free_bundles.add(bundle_id);
+        state.free_bundles.insert(bundle_id);
       };
     }
     Self {
@@ -75,8 +75,8 @@ impl Tuples {
       let mut state = self.state.lock();
       let bundle_id = state
         .free_and_dirty_bundles
-        .minimum()
-        .or_else(|| state.free_bundles.minimum())
+        .min()
+        .or_else(|| state.free_bundles.min())
         .expect("run out of space for tuples");
       assert!(state.object_id_to_bundle.insert(o.id, bundle_id).is_none());
       let bundle = &mut state.bundle_tuples[usz!(bundle_id)];
@@ -86,9 +86,9 @@ impl Tuples {
         state.free_and_dirty_bundles.remove(bundle_id);
         state.free_bundles.remove(bundle_id);
       } else {
-        state.free_and_dirty_bundles.add(bundle_id);
+        state.free_and_dirty_bundles.insert(bundle_id);
       }
-      state.dirty_bundles.add(bundle_id);
+      state.dirty_bundles.insert(bundle_id);
       let (fut, fut_ctl) = SignalFuture::new();
       state.dirty_signals.push(fut_ctl);
       fut
@@ -117,9 +117,9 @@ impl Tuples {
         .is_none());
       // We didn't add any tuples, but we did update one, making this bundle dirty and eligible for `free_and_dirty_bundles`.
       if bundle_len < self.max_tuples_per_bundle {
-        state.free_and_dirty_bundles.add(bundle_id);
+        state.free_and_dirty_bundles.insert(bundle_id);
       }
-      state.dirty_bundles.add(bundle_id);
+      state.dirty_bundles.insert(bundle_id);
       let (fut, fut_ctl) = SignalFuture::new();
       state.dirty_signals.push(fut_ctl);
       fut
@@ -134,8 +134,8 @@ impl Tuples {
       let tuple = state.bundle_tuples[usz!(bundle_id)]
         .remove(&object_id)
         .unwrap();
-      state.free_and_dirty_bundles.add(bundle_id);
-      state.dirty_bundles.add(bundle_id);
+      state.free_and_dirty_bundles.insert(bundle_id);
+      state.dirty_bundles.insert(bundle_id);
       let (fut, fut_ctl) = SignalFuture::new();
       state.dirty_signals.push(fut_ctl);
       (tuple, fut)

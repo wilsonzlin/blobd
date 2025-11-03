@@ -2,7 +2,7 @@
 name = "libblobd-kv"
 version = "0.7.2"
 description = "Library for blobd, KV variant"
-license = "SSPL-1.0"
+license = "Apache-2.0"
 homepage = "https://github.com/wilsonzlin/blobd"
 repository = "https://github.com/wilsonzlin/blobd.git"
 authors = ["Wilson Lin <code@wilsonl.in>"]
@@ -10,7 +10,7 @@ edition = "2021"
 
 [dependencies]
 ahash = { version = "0.8.3", features = ["compile-time-rng"] }
-async-trait = "0.1.68"
+async-trait = "0.1"
 blake3 = "1.3.3"
 bufpool = { version = "0.2.4", features = ["no-pool"] } # Use no-pool as otherwise memory will never get released, and a lot of allocated system memory will sit idle and be wasted. It should only be enabled if the system allocator is very slow, and there's never any bursty workload where a lot of memory could be suddenly allocated and then never used again.
 chrono = { version = "0.4.24", features = ["serde"] }
@@ -21,7 +21,7 @@ itertools = "0.10"
 libc = "0.2.142"
 num-derive = "0.4.0"
 num-traits = "0.2.15"
-off64 = "0.6"
+off64 = "0.9"
 once_cell = "1.17.1"
 parking_lot = "0.12.1"
 roaring = "0.10.1"
@@ -30,7 +30,6 @@ signal-future = "0.1.1"
 struct-name = "0.0.1"
 struct-name-macro = "0.0.2"
 strum = { version = "0.24", features = ["derive"] }
-tinybuf = { version = "0.3.0", features = ["serde"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 tracing = "0.1.37"
 

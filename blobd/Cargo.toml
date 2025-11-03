@@ -2,7 +2,7 @@
 name = "blobd"
 version = "0.2.1"
 description = "Blob storage designed for huge amounts of random reads and small objects with constant latency"
-license = "SSPL-1.0"
+license = "Apache-2.0"
 homepage = "https://github.com/wilsonzlin/blobd"
 repository = "https://github.com/wilsonzlin/blobd.git"
 readme = "README.md"
@@ -28,13 +28,11 @@ futures = "0.3"
 itertools = "0.10"
 libblobd-lite = { version = "0.2.0", path = "../libblobd-lite", optional = true }
 libblobd-direct = { version = "0.5.4", path = "../libblobd-direct", optional = true }
-off64 = "0.6"
+off64 = "0.9"
 percent-encoding = "2.2"
 rand = "0.8.5"
 rmp-serde = "1.1.1"
-seekable-async-file = "0.11.2"
 serde = { version = "1.0", features = ["derive"] }
-tinybuf = "0.3.0"
 tokio = { version = "1", features = ["full"] }
 toml = "0.7"
 tower-http = { version = "0.4.0", features = ["cors", "trace"] }

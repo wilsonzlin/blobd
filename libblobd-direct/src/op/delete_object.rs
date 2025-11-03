@@ -6,7 +6,6 @@ use crate::object::Object;
 use off64::usz;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 
 pub(crate) async fn reap_object(ctx: &Ctx, obj: &Object) {
   let tuple = ctx.tuples.delete_object(obj.id()).await;
@@ -35,7 +34,7 @@ pub(crate) async fn reap_object(ctx: &Ctx, obj: &Object) {
 }
 
 pub struct OpDeleteObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   // Only useful if versioning is enabled.
   pub id: Option<u64>,
 }
@@ -46,7 +45,10 @@ pub(crate) async fn op_delete_object(
   ctx: Arc<Ctx>,
   req: OpDeleteObjectInput,
 ) -> OpResult<OpDeleteObjectOutput> {
-  let Some((_, obj)) = ctx.committed_objects.remove_if(&req.key, |_, o| req.id.is_none() || Some(o.id()) == req.id) else {
+  let Some((_, obj)) = ctx
+    .committed_objects
+    .remove_if(&req.key, |_, o| req.id.is_none() || Some(o.id()) == req.id)
+  else {
     return Err(OpError::ObjectNotFound);
   };
 

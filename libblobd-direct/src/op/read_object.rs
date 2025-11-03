@@ -19,11 +19,10 @@ use std::cmp::max;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 use tracing::trace;
 
 pub struct OpReadObjectInput {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   // Only useful if versioning is enabled.
   pub id: Option<u64>,
   pub start: u64,
@@ -70,7 +69,12 @@ pub(crate) async fn op_read_object(
   ctx: Arc<Ctx>,
   req: OpReadObjectInput,
 ) -> OpResult<OpReadObjectOutput> {
-  let Some(obj) = ctx.committed_objects.get(&req.key).filter(|o| req.id.is_none() || Some(o.id()) == req.id).map(|e| e.value().clone()) else {
+  let Some(obj) = ctx
+    .committed_objects
+    .get(&req.key)
+    .filter(|o| req.id.is_none() || Some(o.id()) == req.id)
+    .map(|e| e.value().clone())
+  else {
     return Err(OpError::ObjectNotFound);
   };
   let object_id = obj.id();

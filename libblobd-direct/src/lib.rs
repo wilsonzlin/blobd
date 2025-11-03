@@ -9,6 +9,7 @@ use crate::backing_store::BackingStore;
 use crate::backing_store::PartitionStore;
 use crate::pages::Pages;
 use crate::partition::PartitionLoader;
+use ahash::HashMap;
 use chrono::DateTime;
 use chrono::Utc;
 use exporter::BlobdExporter;
@@ -40,7 +41,6 @@ use op::write_object::OpWriteObjectInput;
 use op::write_object::OpWriteObjectOutput;
 use op::OpResult;
 use partition::Partition;
-use rustc_hash::FxHashMap;
 use std::error::Error;
 use std::fs::OpenOptions;
 #[cfg(target_os = "linux")]
@@ -48,7 +48,6 @@ use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 use tokio::spawn;
 use tokio::time::sleep;
 use tracing::info;
@@ -130,7 +129,7 @@ impl BlobdLoader {
 
     let metrics = BlobdMetrics::default();
     let pages = Pages::new(cfg.spage_size_pow2, cfg.lpage_size_pow2);
-    let mut devices = FxHashMap::<PathBuf, Arc<dyn BackingStore>>::default();
+    let mut devices = HashMap::<PathBuf, Arc<dyn BackingStore>>::default();
     let partitions = partition_cfg
       .into_iter()
       .enumerate()
@@ -230,7 +229,7 @@ pub struct Blobd {
 }
 
 pub struct BlobdListObjectsOutputObject {
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub created: DateTime<Utc>,
   pub size: u64,
   pub id: u64,

@@ -47,7 +47,6 @@ async fn main() {
     assert_eq!(conf.partitions[0].offset, 0);
     seekable_async_file::SeekableAsyncFile::open(
       &conf.partitions[0].path,
-      conf.partitions[0].len,
       io_metrics,
       std::time::Duration::from_micros(200),
       0,

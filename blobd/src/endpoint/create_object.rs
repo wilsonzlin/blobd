@@ -39,7 +39,7 @@ pub async fn endpoint_create_object(
       key,
       size: req.size,
       #[cfg(feature = "blobd-lite")]
-      assoc_data: tinybuf::TinyBuf::empty(),
+      assoc_data: Vec::new(),
     })
     .await;
 

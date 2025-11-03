@@ -9,19 +9,16 @@ default = []
 instrumentation = ["dep:console-subscriber", "tokio/tracing"] # https://github.com/tokio-rs/console/blob/main/console-subscriber/README.md#enabling-tokio-instrumentation
 
 [dependencies]
-async-trait = "0.1.68"
-blobd-universal-client = { version = "0.1.0", path = "../blobd-universal-client" }
 bytesize = { version = "1.2.0", features = ["serde"] }
 console-subscriber = { version = "0.1.8", optional = true }
 futures = "0.3.27"
-off64 = "0.6.0"
+off64 = "0.9"
 rand = "0.8.5"
-seekable-async-file = "0.11.2"
 serde = { version = "1.0.164", features = ["derive"] }
 serde_yaml = "0.9.21"
 stochastic-queue = "0.1.1"
+store = { path = "../store" }
 strum_macros = "0.24.3"
-tinybuf = "0.3.0"
 tokio = { version = "1.27.0", features = ["full"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"

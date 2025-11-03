@@ -23,7 +23,11 @@ pub(crate) async fn op_commit_object(
   ctx: Arc<Ctx>,
   req: OpCommitObjectInput,
 ) -> OpResult<OpCommitObjectOutput> {
-  let Some(obj) = ctx.incomplete_objects.write().remove(&req.incomplete_token.object_id) else {
+  let Some(obj) = ctx
+    .incomplete_objects
+    .write()
+    .remove(&req.incomplete_token.object_id)
+  else {
     return Err(OpError::ObjectNotFound);
   };
 

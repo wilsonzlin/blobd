@@ -38,7 +38,7 @@ pub async fn endpoint_write_object(
   };
 
   let Some((incomplete_token, _)) = ctx.parse_and_verify_upload_token(&req.upload_token) else {
-    return (StatusCode::NOT_FOUND,  HeaderMap::new());
+    return (StatusCode::NOT_FOUND, HeaderMap::new());
   };
 
   let res = ctx

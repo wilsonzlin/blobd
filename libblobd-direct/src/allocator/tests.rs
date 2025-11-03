@@ -3,13 +3,14 @@ use super::Allocator;
 use crate::allocator::OutOfSpaceError;
 use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
+use ahash::HashMap;
+use ahash::HashMapExt;
 use itertools::Itertools;
 use off64::u32;
 use off64::u8;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rand::Rng;
-use rustc_hash::FxHashMap;
 use std::cmp::min;
 
 #[test]
@@ -36,7 +37,7 @@ fn test_allocator_from_left() {
   assert!(alloc.bitmap(14).contains_range(0..7));
 
   // Allocate all space.
-  let mut seen = FxHashMap::default();
+  let mut seen = HashMap::new();
   let mut free = heap_size;
   while free > 0 {
     // We must always use `free.ilog2()`, as otherwise we may attempt to allocate rounded up to next page size that is greater than `free`.
@@ -99,8 +100,8 @@ fn test_allocator_from_right() {
   );
 
   // Allocate all space.
-  let mut last_seen_for_size = FxHashMap::default();
-  let mut seen = FxHashMap::default();
+  let mut last_seen_for_size = HashMap::new();
+  let mut seen = HashMap::new();
   let mut free = heap_size;
   while free > 0 {
     // We must always use `free.ilog2()`, as otherwise we may attempt to allocate rounded up to next page size that is greater than `free`.

@@ -2,41 +2,41 @@
 name = "libblobd-lite"
 version = "0.2.0"
 description = "Library for blobd, lite variant"
-license = "SSPL-1.0"
+license = "Apache-2.0"
 homepage = "https://github.com/wilsonzlin/blobd"
 repository = "https://github.com/wilsonzlin/blobd.git"
 authors = ["Wilson Lin <code@wilsonl.in>"]
-edition = "2021"
-
-[features]
-default = ["io_mmap"]
-io_file = ["seekable-async-file/tokio_file", "write-journal/io_file"]
-io_mmap = ["seekable-async-file/mmap", "write-journal/io_mmap"]
+edition = "2024"
 
 [dependencies]
+ahash = "0.8.12"
+arbitrary-lock = "0.1.1"
 async-recursion = "1.0.4"
 async-stream = "0.3.4"
-async-trait = "0.1.68"
+async-trait = "0.1"
+bitcode = "0.6.7"
+blake3 = "1.8.2"
 chrono = "0.4.24"
 dashmap = "5.4.0"
 futures = "0.3"
 itertools = "0.10"
-num-derive = "0.3"
+libc = "0.2.177"
+num-derive = "0.4"
 num-traits = "0.2"
-off64 = "0.6"
+off64 = "0.9"
+once_cell = "1.21.3"
 parking_lot = "0.12.1"
-rustc-hash = "1.1"
-seekable-async-file = { version = "0.11.3", default-features = false }
+rand = "0.8.5"
+rayon = "1.11.0"
+roaring = "0.11.2"
 serde = { version = "1.0.160", features = ["derive"] }
 signal-future = "0.1.1"
 struct-name = "0.0.1"
 struct-name-macro = "0.0.2"
 strum = { version = "0.24", features = ["derive"] }
-tinybuf = "0.3.0"
 tokio = { version = "1", features = ["macros", "sync"] }
 tracing = "0.1.37"
 twox-hash = "=1.6.3" # Pin the version as the docs mention that outputs could change in future versions, which would be fatal: https://docs.rs/twox-hash/1.6.3/src/twox_hash/xxh3.rs.html
-write-journal = { version = "0.11.1", default-features = false }
 
 [dev-dependencies]
 rand = "0.8.5"

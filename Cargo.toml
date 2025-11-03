@@ -1,19 +1,25 @@
 [workspace]
+resolver = "2"
 members = [
-  "benchmarker",
+  "benchmark-plotter",
+  "benchmark-runner",
+  "benchmark-types",
   "blobc",
   "blobd-client-rs",
   "blobd-token",
-  "blobd-universal-client",
   "blobd",
   "libblobd-direct",
   "libblobd-kv",
   "libblobd-lite",
   "stochastic-stresser",
+  "store",
 ]
 
 [profile.release]
-codegen-units = 1
 debug = true
+
+[profile.release-max]
+inherits = "release"
+codegen-units = 1
 lto = true
 opt-level = 3

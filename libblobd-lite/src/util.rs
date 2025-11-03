@@ -34,7 +34,11 @@ pub(crate) fn mod_pow2(val: u64, pow2: u8) -> u64 {
   mod_
 }
 
-// Round up to next `2^pow2`.
+pub(crate) fn mul_pow2(val: u64, pow2: u8) -> u64 {
+  val << pow2
+}
+
+/// Round up to next `2^pow2`.
 pub(crate) fn ceil_pow2(val: u64, pow2: u8) -> u64 {
   let (mut div, mod_) = div_mod_pow2(val, pow2);
   if mod_ != 0 {
@@ -43,7 +47,7 @@ pub(crate) fn ceil_pow2(val: u64, pow2: u8) -> u64 {
   div << pow2
 }
 
-// Round down to previous `2^pow2`.
+/// Round down to previous `2^pow2`.
 pub(crate) fn floor_pow2(val: u64, pow2: u8) -> u64 {
   let (mut div, mod_) = div_mod_pow2(val, pow2);
   div << pow2

@@ -25,20 +25,16 @@ use serde::Deserialize;
 use std::cmp::max;
 use std::cmp::min;
 use std::collections::BTreeMap;
-use std::hash::BuildHasherDefault;
 use std::io::Cursor;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 use tracing::warn;
 
 // Map from object ID to bucket ID. It just happens so that object IDs are also chronological, so this map allows removing objects when they're committed and also popping chronologically.
 pub(crate) type IncompleteObjects = Arc<RwLock<BTreeMap<u64, Object>>>;
-// XXH3 should be a much higher quality hash than FxHasher.
-pub(crate) type CommittedObjects =
-  Arc<DashMap<TinyBuf, Object, BuildHasherDefault<twox_hash::xxh3::Hash64>>>;
+pub(crate) type CommittedObjects = Arc<DashMap<Vec<u8>, Object>>;
 
 pub(crate) struct LoadedObjects {
   pub committed_objects: CommittedObjects,

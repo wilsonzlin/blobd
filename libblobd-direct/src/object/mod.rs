@@ -19,7 +19,6 @@ use std::ops::Deref;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 use tokio::sync::RwLock;
 use tokio::sync::RwLockReadGuard;
 
@@ -101,7 +100,7 @@ pub(crate) struct ObjectMetadata {
   pub size: u64,
   #[serde(with = "ts_microseconds")]
   pub created: DateTime<Utc>,
-  pub key: TinyBuf,
+  pub key: Vec<u8>,
   pub lpage_dev_offsets: Vec<u64>,
   pub tail_page_dev_offsets: Vec<u64>,
 }
@@ -163,7 +162,7 @@ impl Object {
   pub async fn lock_for_writing_if_still_valid(
     &self,
     expected_state: ObjectState,
-  ) -> Result<RwLockReadGuard<()>, OpError> {
+  ) -> Result<RwLockReadGuard<'_, ()>, OpError> {
     // Acquire lock BEFORE checking state.
     let lock = self.inner.lock.read().await;
     if self.get_state() != expected_state {

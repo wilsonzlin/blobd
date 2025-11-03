@@ -18,7 +18,6 @@ use std::cmp::min;
 use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tinybuf::TinyBuf;
 use tracing::info;
 
 /*
@@ -59,11 +58,11 @@ pub(crate) const OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD: usize = 7;
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub(crate) enum ObjectTupleKey {
   Hash([u8; 32]),
-  Literal(TinyBuf),
+  Literal(Vec<u8>),
 }
 
 impl ObjectTupleKey {
-  pub fn from_raw_and_hash(raw: TinyBuf, hash: blake3::Hash) -> Self {
+  pub fn from_raw_and_hash(raw: Vec<u8>, hash: blake3::Hash) -> Self {
     if raw.len() <= 32 {
       ObjectTupleKey::Literal(raw)
     } else {
@@ -71,7 +70,7 @@ impl ObjectTupleKey {
     }
   }
 
-  pub fn from_raw(raw: TinyBuf) -> Self {
+  pub fn from_raw(raw: Vec<u8>) -> Self {
     if raw.len() <= 32 {
       ObjectTupleKey::Literal(raw)
     } else {
@@ -103,14 +102,14 @@ impl ObjectTupleKey {
   pub fn deserialise<T: AsRef<[u8]>>(raw: &mut ByteConsumer<T>) -> Self {
     match raw.consume(1)[0] {
       255 => ObjectTupleKey::Hash(raw.consume(32).try_into().unwrap()),
-      n => ObjectTupleKey::Literal(TinyBuf::from_slice(raw.consume(n.into()))),
+      n => ObjectTupleKey::Literal(raw.consume(n.into()).to_vec()),
     }
   }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum ObjectTupleData {
-  Inline(TinyBuf),
+  Inline(Vec<u8>),
   // WARNING: Do not reorder fields, the serialised MessagePack format does not store field names.
   Heap { size: u32, dev_offset: u64 },
 }
@@ -152,7 +151,7 @@ impl ObjectTupleData {
       } else {
         usz!(raw.consume(4).read_u32_le_at(0))
       };
-      ObjectTupleData::Inline(TinyBuf::from_slice(raw.consume(len)))
+      ObjectTupleData::Inline(raw.consume(len).to_vec())
     } else {
       let dev_offset = raw.consume(5).read_u40_be_at(0) << 9;
       let size = raw.consume(3).read_u24_le_at(0) + 1;
