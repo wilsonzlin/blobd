@@ -78,6 +78,9 @@ fn generate_html(datasets: Vec<Dataset>) -> Markup {
         meta charset="UTF-8" {}
         meta name="viewport" content="width=device-width, initial-scale=1.0" {}
         title { "Benchmark results" }
+        link rel="preconnect" href="https://fonts.googleapis.com" {}
+        link rel="preconnect" href="https://fonts.gstatic.com" crossorigin {}
+        link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wght@8..144,300;8..144,400;8..144,500;8..144,600&display=swap" rel="stylesheet" {}
         style {
           (PreEscaped(include_str!("index.css")))
         }

@@ -4,15 +4,16 @@
 // URL Hash Parameters:
 //   - metric=<metric_id>       Select which metric to display (e.g., #metric=read_ops_per_second)
 //                              If not specified, defaults to the first metric in the list
-//   - hideControls=true        Hide the metric dropdown selector
-//                              By default, controls are always visible
+//   - hideControls=true        Hide the metric dropdown selector and remove all container styling
+//                              (background, border-radius, padding, shadow) for embedding/minimal view
+//                              By default, controls are always visible with full page styling
 //   - showFs=true              Show file system benchmarks (ext4, xfs, btrfs, f2fs)
 //                              By default, file systems are hidden
 //
 // Examples:
 //   - #metric=read_latency                      Show read latency with dropdown visible, no file systems
-//   - #metric=write_mbs&hideControls=true       Show write throughput without dropdown (minimal view)
-//   - #metric=read_ops_per_second&showFs=true   Show read ops/sec including file systems
+//   - #metric=write_mbs&hideControls=true       Show write throughput, minimal view (just graph, for embedding)
+//   - #metric=read_ops_per_second&showFs=true   Show read op/sec including file systems
 //   - (no hash)                                 Show first metric with dropdown visible, no file systems
 
 // Metric definitions: each metric has an id, display name, unit, type, and compute function
@@ -22,7 +23,7 @@ const metrics = [
   {
     id: 'create_ops_per_second',
     name: 'Create operations per second',
-    unit: 'ops/s',
+    unit: 'op/s',
     type: 'ops',
     compute: (r) => {
       if (!r.op.create) return null;
@@ -32,7 +33,7 @@ const metrics = [
   {
     id: 'write_ops_per_second',
     name: 'Write operations per second',
-    unit: 'ops/s',
+    unit: 'op/s',
     type: 'ops',
     compute: (r) => {
       if (!r.op.write) return null;
@@ -42,7 +43,7 @@ const metrics = [
   {
     id: 'commit_ops_per_second',
     name: 'Commit operations per second',
-    unit: 'ops/s',
+    unit: 'op/s',
     type: 'ops',
     compute: (r) => {
       if (!r.op.commit) return null;
@@ -52,7 +53,7 @@ const metrics = [
   {
     id: 'read_ops_per_second',
     name: 'Read operations per second',
-    unit: 'ops/s',
+    unit: 'op/s',
     type: 'ops',
     compute: (r) => {
       if (!r.op.read) return null;
@@ -62,7 +63,7 @@ const metrics = [
   {
     id: 'inspect_ops_per_second',
     name: 'Inspect operations per second',
-    unit: 'ops/s',
+    unit: 'op/s',
     type: 'ops',
     compute: (r) => {
       if (!r.op.inspect) return null;
@@ -72,7 +73,7 @@ const metrics = [
   {
     id: 'delete_ops_per_second',
     name: 'Delete operations per second',
-    unit: 'ops/s',
+    unit: 'op/s',
     type: 'ops',
     compute: (r) => {
       if (!r.op.delete) return null;
@@ -89,6 +90,18 @@ const metrics = [
       // Calculate throughput: total bytes written / execution time (return bytes/sec)
       const totalBytes = r.objects * r.object_size;
       return totalBytes / r.op.write.exec_secs; // Return bytes/sec, formatter will convert to MB/s, GB/s, etc.
+    }
+  },
+  {
+    id: 'write_mbs_normalized',
+    name: 'Write throughput (normalized to blobd)',
+    unit: '%',
+    type: 'ratio',
+    compute: (r) => {
+      if (!r.op.write) return null;
+      // Calculate throughput: total bytes written / execution time (return bytes/sec)
+      const totalBytes = r.objects * r.object_size;
+      return totalBytes / r.op.write.exec_secs;
     }
   },
   {
@@ -113,7 +126,7 @@ const metrics = [
   {
     id: 'random_read_ops_per_second',
     name: 'Random read operations per second',
-    unit: 'ops/s',
+    unit: 'op/s',
     type: 'ops',
     compute: (r) => {
       if (!r.op.random_read) return null;
@@ -372,12 +385,27 @@ function formatTimeAxis(value) {
   return parts.join(' ') || '0s';
 }
 
+// Format ratio/percentage for axis ticks
+function formatPercentageAxis(value) {
+  return (value * 100).toFixed(0) + '%';
+}
+
 // Get tick formatter function based on metric type
 function getTickFormatter(metricType) {
   if (metricType === 'storage') return formatBytesAxis;
   if (metricType === 'storage-rate') return formatBytesPerSecAxis;
   if (metricType === 'time' || metricType === 'latency') return formatTimeAxis;
-  return null; // Default formatting for ops/s and others
+  if (metricType === 'ratio') return formatPercentageAxis;
+  return null; // Default formatting for op/s and others
+}
+
+// Map internal benchmark names to display names
+function getDisplayName(benchmarkName) {
+  const nameMap = {
+    'direct': 'blobd',
+    'lite': 'blobd-lite'
+  };
+  return nameMap[benchmarkName] || benchmarkName;
 }
 
 // Parse URL hash parameters (e.g., #metric=read_ops_per_second&showFs=true)
@@ -415,6 +443,22 @@ document.addEventListener('DOMContentLoaded', () => {
   // Hide controls if hideControls hash parameter is set
   if (hideControls) {
     controlsDiv.style.display = 'none';
+    // Remove container styling to make it just the graph
+    const container = document.querySelector('.container');
+    container.style.background = 'transparent';
+    container.style.borderRadius = '0';
+    container.style.padding = '0';
+    container.style.boxShadow = 'none';
+    container.style.maxWidth = 'none';
+    // Remove body background and padding
+    document.body.style.background = 'white';
+    document.body.style.padding = '0';
+    document.body.style.margin = '0';
+    document.body.style.overflow = 'hidden';
+    // Make chart fill viewport
+    const chart = document.getElementById('chart');
+    chart.style.height = '100vh';
+    chart.style.borderRadius = '0';
   }
 
   // Populate metric dropdown with available metrics
@@ -486,6 +530,24 @@ document.addEventListener('DOMContentLoaded', () => {
     // Create a trace (line) for each benchmark
     const traces = [];
     const isLatencyMetric = selectedMetric.type === 'latency';
+    const isRatioMetric = selectedMetric.type === 'ratio';
+    
+    // For ratio metrics, first collect blobd (direct) benchmark values for normalization
+    const directValues = new Map();
+    if (isRatioMetric) {
+      const sizes = data.map(d => d.object_size).sort((a, b) => a - b);
+      sizes.forEach(size => {
+        const dataset = data.find(d => d.object_size === size);
+        if (!dataset) return;
+        const directResult = dataset.results.find(r => r.benchmark_name === 'direct');
+        if (directResult) {
+          const value = selectedMetric.compute(directResult);
+          if (value !== null && !isNaN(value)) {
+            directValues.set(size, value);
+          }
+        }
+      });
+    }
     
     benchmarkNames.forEach((benchmarkName, idx) => {
       const x = []; // Object sizes
@@ -499,7 +561,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!dataset) return;
         const result = dataset.results.find(r => r.benchmark_name === benchmarkName);
         if (!result) return;
-        const value = selectedMetric.compute(result);
+        let value = selectedMetric.compute(result);
+        
+        // Normalize to blobd (direct) if ratio metric
+        if (isRatioMetric && value !== null && !isNaN(value)) {
+          const directValue = directValues.get(size);
+          if (directValue && directValue !== 0) {
+            value = value / directValue;
+          } else {
+            value = null; // Skip if no blobd value for this size
+          }
+        }
         
         if (isLatencyMetric && value !== null && value.avg !== undefined && value.p99 !== undefined) {
           // Latency metric with spread
@@ -531,41 +603,88 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         // Upper bound (p99) - invisible line
+        const displayName = getDisplayName(benchmarkName);
         traces.push({
           x: x,
           y: y_p99,
           type: 'scatter',
           mode: 'lines',
-          name: benchmarkName + ' (p99)',
+          name: displayName + ' (p99)',
           showlegend: false,
           line: { width: 0 },
           hoverinfo: 'skip'
         });
         
         // Lower bound (avg) - visible line with fill to previous trace
+        const customdata = x.map((size, i) => {
+          return [y_p99[i], y_avg[i], formatBytes(size)];
+        });
+        
         traces.push({
           x: x,
           y: y_avg,
           type: 'scatter',
           mode: 'lines+markers',
-          name: benchmarkName,
+          name: displayName,
           line: { width: 2.5, color: color },
           marker: { size: 8, color: color },
           fill: 'tonexty',
           fillcolor: fillColor,
-          customdata: y_p99.map((p99, i) => [p99, y_avg[i]]),
-          hovertemplate: '<b>%{fullData.name}</b><br>Object size: %{x}<br>Avg: %{customdata[1]:.4f}s<br>P99: %{customdata[0]:.4f}s<extra></extra>'
+          customdata: customdata,
+          hovertemplate: '<b>%{fullData.name}</b><br>Object size: %{customdata[2]}<br>Avg: %{customdata[1]:.4f}s<br>P99: %{customdata[0]:.4f}s<extra></extra>'
         });
       } else {
         // Regular metric - single line
+        // Format hover text based on metric type
+        let hovertemplate = '<b>%{fullData.name}</b><br>Object size: %{customdata[0]}<br>';
+        if (selectedMetric.type === 'storage-rate') {
+          hovertemplate += 'Throughput: %{customdata[1]}<extra></extra>';
+        } else if (selectedMetric.type === 'storage') {
+          hovertemplate += 'Amount: %{customdata[1]}<extra></extra>';
+        } else if (selectedMetric.type === 'time') {
+          hovertemplate += 'Time: %{customdata[1]}<extra></extra>';
+        } else if (selectedMetric.type === 'ratio') {
+          hovertemplate += 'Relative: %{customdata[1]}<extra></extra>';
+        } else if (selectedMetric.type === 'ops') {
+          hovertemplate += 'Rate: %{customdata[1]}<extra></extra>';
+        } else {
+          hovertemplate += 'Value: %{customdata[1]}<extra></extra>';
+        }
+        
+        // Prepare customdata with formatted values
+        const customdata = x.map((size, i) => {
+          const value = y_avg[i];
+          let formattedSize = formatBytes(size);
+          let formattedValue;
+          
+          if (selectedMetric.type === 'storage-rate') {
+            formattedValue = formatBytesPerSecAxis(value);
+          } else if (selectedMetric.type === 'storage') {
+            formattedValue = formatBytesAxis(value);
+          } else if (selectedMetric.type === 'time') {
+            formattedValue = formatTimeAxis(value);
+          } else if (selectedMetric.type === 'ratio') {
+            formattedValue = formatPercentageAxis(value);
+          } else if (selectedMetric.type === 'ops') {
+            formattedValue = value.toFixed(1) + ' op/s';
+          } else {
+            formattedValue = value.toString();
+          }
+          
+          return [formattedSize, formattedValue];
+        });
+        
+        const displayName = getDisplayName(benchmarkName);
         traces.push({
           x: x,
           y: y_avg,
           type: 'scatter',
           mode: 'lines+markers',
-          name: benchmarkName,
+          name: displayName,
           line: { width: 2.5, color: color },
-          marker: { size: 8, color: color }
+          marker: { size: 8, color: color },
+          customdata: customdata,
+          hovertemplate: hovertemplate
         });
       }
     });
@@ -575,8 +694,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let xAxisConfig = {
       title: 'Object size',
       type: 'log', // Logarithmic scale for object sizes
-      titlefont: { size: 14, color: '#6e6e73' },
-      tickfont: { size: 12, color: '#6e6e73' },
+      titlefont: { size: 14, color: '#6e6e73', family: '"Roboto Flex", sans-serif' },
+      tickfont: { size: 12, color: '#6e6e73', family: '"Roboto Flex", sans-serif' },
       gridcolor: '#f5f5f7',
       showgrid: true
     };
@@ -608,8 +727,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const yTickFormatter = getTickFormatter(selectedMetric.type);
     let yAxisConfig = {
       title: '', // No title - values are obvious from formatted ticks
-      titlefont: { size: 14, color: '#6e6e73' },
-      tickfont: { size: 12, color: '#6e6e73' },
+      titlefont: { size: 14, color: '#6e6e73', family: '"Roboto Flex", sans-serif' },
+      tickfont: { size: 12, color: '#6e6e73', family: '"Roboto Flex", sans-serif' },
       gridcolor: '#f5f5f7',
       showgrid: true
     };
@@ -642,27 +761,26 @@ document.addEventListener('DOMContentLoaded', () => {
     const layout = {
       title: {
         text: selectedMetric.name,
-        font: { size: 24, color: '#1d1d1f' }
+        font: { size: 24, color: '#1d1d1f', family: '"Roboto Flex", sans-serif' }
       },
       xaxis: xAxisConfig,
       yaxis: yAxisConfig,
-      margin: { l: 80, r: 50, t: 80, b: 120 },
+      margin: { l: 80, r: 50, t: 80, b: 100 },
       paper_bgcolor: 'white',
       plot_bgcolor: 'white',
-      font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' },
+      font: { family: '"Roboto Flex", sans-serif' },
       legend: { 
         orientation: 'h',
         x: 0.5,
         xanchor: 'center',
-        y: -0.15,
+        y: -0.2,
         yanchor: 'top'
       }
     };
 
     Plotly.newPlot('chart', traces, layout, {
       responsive: true,
-      displayModeBar: true,
-      modeBarButtonsToRemove: ['lasso2d', 'select2d']
+      displayModeBar: false
     });
   }
 
