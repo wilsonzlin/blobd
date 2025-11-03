@@ -276,10 +276,10 @@ impl BlobdClient {
   pub async fn read_object(
     &self,
     key: &str,
-    start: u64,
+    start: Option<u64>,
     end: Option<u64>,
   ) -> reqwest::Result<impl Stream<Item = reqwest::Result<Bytes>>> {
-    let res = self
+    let mut req = self
       .client
       .get(self.build_url(key))
       .query(&[self.generate_token_query_param(
@@ -287,18 +287,20 @@ impl BlobdClient {
           key: key.as_bytes().to_vec(),
         },
         300,
-      )])
-      .header(
+      )]);
+    
+    if let Some(start) = start {
+      req = req.header(
         RANGE,
         format!(
           "bytes={}-{}",
           start,
           end.map(|e| e.to_string()).unwrap_or_default()
         ),
-      )
-      .send()
-      .await?
-      .error_for_status()?;
+      );
+    }
+    
+    let res = req.send().await?.error_for_status()?;
     Ok(res.bytes_stream())
   }
 

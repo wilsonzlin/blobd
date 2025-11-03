@@ -163,7 +163,7 @@ export class BlobdClient {
 
   async readObject(
     key: string,
-    start: number,
+    start?: number,
     end?: number
   ): Promise<ReadableStream<Uint8Array>> {
     const keyBytes = new TextEncoder().encode(key);
@@ -174,12 +174,15 @@ export class BlobdClient {
     );
     url.searchParams.append(tk, tv);
 
-    const rangeEnd = end !== undefined ? end - 1 : ""; // HTTP Range is inclusive
+    const headers: HeadersInit = {};
+    if (start !== undefined) {
+      const rangeEnd = end !== undefined ? end - 1 : ""; // HTTP Range is inclusive
+      headers.Range = `bytes=${start}-${rangeEnd}`;
+    }
+
     const response = await fetch(url.toString(), {
       method: "GET",
-      headers: {
-        Range: `bytes=${start}-${rangeEnd}`,
-      },
+      headers,
     });
 
     if (!response.ok) {

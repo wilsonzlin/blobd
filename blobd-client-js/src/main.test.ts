@@ -147,7 +147,7 @@ test(
           }
 
           // Test full read of object data.
-          const fullRead = await conn.readObject(k, 0, data.length);
+          const fullRead = await conn.readObject(k);
           ensureEqualData(data, await readBufferStream(fullRead));
         })();
         readPromises.push(promise);
@@ -227,7 +227,7 @@ test(
 
     // Verify all objects can be read back with correct data
     const readPromises = objectsToCreate.map(async (obj) => {
-      const stream = await client.readObject(obj.key, 0, obj.size);
+      const stream = await client.readObject(obj.key);
       const readData = await readBufferStream(stream);
       ensureEqualData(obj.data, readData);
     });
