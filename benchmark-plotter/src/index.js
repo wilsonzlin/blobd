@@ -7,14 +7,11 @@
 //   - hideControls=true        Hide the metric dropdown selector and remove all container styling
 //                              (background, border-radius, padding, shadow) for embedding/minimal view
 //                              By default, controls are always visible with full page styling
-//   - showFs=true              Show file system benchmarks (ext4, xfs, btrfs, f2fs)
-//                              By default, file systems are hidden
 //
 // Examples:
-//   - #metric=read_latency                      Show read latency with dropdown visible, no file systems
+//   - #metric=read_latency                      Show read latency with dropdown visible
 //   - #metric=write_mbs&hideControls=true       Show write throughput, minimal view (just graph, for embedding)
-//   - #metric=read_ops_per_second&showFs=true   Show read op/sec including file systems
-//   - (no hash)                                 Show first metric with dropdown visible, no file systems
+//   - (no hash)                                 Show first metric with dropdown visible
 
 // Metric definitions: each metric has an id, display name, unit, type, and compute function
 // The compute function extracts the metric value from a benchmark result object
@@ -408,7 +405,7 @@ function getDisplayName(benchmarkName) {
   return nameMap[benchmarkName] || benchmarkName;
 }
 
-// Parse URL hash parameters (e.g., #metric=read_ops_per_second&showFs=true)
+// Parse URL hash parameters (e.g., #metric=read_ops_per_second)
 function parseHashParams() {
   const params = {};
   const hash = window.location.hash.substring(1); // Remove the '#'
@@ -438,7 +435,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const hashParams = parseHashParams();
   const initialMetric = hashParams.metric || metrics[0].id;
   const hideControls = hashParams.hideControls === 'true';
-  const showFs = hashParams.showFs === 'true';
 
   // Hide controls if hideControls hash parameter is set
   if (hideControls) {
@@ -480,15 +476,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const benchmarks = new Set();
     data.forEach(d => d.results.forEach(r => benchmarks.add(r.benchmark_name)));
     let benchmarkNames = Array.from(benchmarks).sort();
-    
-    // Filter out file-system benchmarks unless showFs is true
-    if (!showFs) {
-      const fsPatterns = ['ext4', 'xfs', 'btrfs', 'f2fs'];
-      benchmarkNames = benchmarkNames.filter(name => {
-        const lowerName = name.toLowerCase();
-        return !fsPatterns.some(pattern => lowerName.includes(pattern));
-      });
-    }
 
     // Filter out benchmarks that don't support the operation
     // Create operation: skip RocksDB
