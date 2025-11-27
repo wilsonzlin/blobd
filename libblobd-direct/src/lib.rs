@@ -3,8 +3,6 @@
 use crate::backing_store::file::FileBackingStore;
 #[cfg(target_os = "linux")]
 use crate::backing_store::uring::UringBackingStore;
-#[cfg(target_os = "linux")]
-use crate::backing_store::uring::UringCfg;
 use crate::backing_store::BackingStore;
 use crate::backing_store::PartitionStore;
 use crate::pages::Pages;
@@ -53,6 +51,8 @@ use tokio::time::sleep;
 use tracing::info;
 use tracing::info_span;
 use tracing::Instrument;
+#[cfg(target_os = "linux")]
+use uring_file::uring::UringCfg;
 
 pub mod allocator;
 pub mod backing_store;

@@ -50,16 +50,6 @@ pub(crate) struct Inner {
   pub(crate) log_buffer_flush_write_us: AtomicU64, // How long it took to perform the log buffer flush's device write.
   pub(crate) log_buffer_flush_total_us: AtomicU64, // How long it took to perform the entire log buffer flush, including the device write and waiting for any antecedent flush to update the overlay and write the virtual tail.
   pub(crate) log_buffer_flush_state_count: AtomicU64, // How many times the log buffer virtual pointers were updated.
-
-  pub(crate) uring_submission_count: AtomicU64,
-  pub(crate) uring_read_request_count: AtomicU64,
-  pub(crate) uring_read_request_bytes: AtomicU64,
-  pub(crate) uring_read_request_us: AtomicU64,
-  pub(crate) uring_write_request_count: AtomicU64,
-  pub(crate) uring_write_request_bytes: AtomicU64,
-  pub(crate) uring_write_request_us: AtomicU64,
-  pub(crate) uring_sync_request_count: AtomicU64,
-  pub(crate) uring_sync_request_us: AtomicU64,
 }
 
 #[derive(Clone, Default)]
@@ -110,14 +100,4 @@ impl BlobdMetrics {
   pub fn log_buffer_flush_write_us(&self) -> u64 { self.0.log_buffer_flush_write_us.load(Relaxed) }
   pub fn log_buffer_flush_total_us(&self) -> u64 { self.0.log_buffer_flush_total_us.load(Relaxed) }
   pub fn log_buffer_flush_state_count(&self) -> u64 { self.0.log_buffer_flush_state_count.load(Relaxed) }
-
-  pub fn uring_submission_count(&self) -> u64 { self.0.uring_submission_count.load(Relaxed) }
-  pub fn uring_read_request_count(&self) -> u64 { self.0.uring_read_request_count.load(Relaxed) }
-  pub fn uring_read_request_bytes(&self) -> u64 { self.0.uring_read_request_bytes.load(Relaxed) }
-  pub fn uring_read_request_us(&self) -> u64 { self.0.uring_read_request_us.load(Relaxed) }
-  pub fn uring_write_request_count(&self) -> u64 { self.0.uring_write_request_count.load(Relaxed) }
-  pub fn uring_write_request_bytes(&self) -> u64 { self.0.uring_write_request_bytes.load(Relaxed) }
-  pub fn uring_write_request_us(&self) -> u64 { self.0.uring_write_request_us.load(Relaxed) }
-  pub fn uring_sync_request_count(&self) -> u64 { self.0.uring_sync_request_count.load(Relaxed) }
-  pub fn uring_sync_request_us(&self) -> u64 { self.0.uring_sync_request_us.load(Relaxed) }
 }

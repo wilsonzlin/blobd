@@ -116,16 +116,6 @@ impl Store for BlobdKVStore {
       ("log_buffer_flush_write_us", metrics.log_buffer_flush_write_us()),
       ("log_buffer_flush_total_us", metrics.log_buffer_flush_total_us()),
       ("log_buffer_flush_state_count", metrics.log_buffer_flush_state_count()),
-
-      ("uring_submission_count", metrics.uring_submission_count()),
-      ("uring_read_request_count", metrics.uring_read_request_count()),
-      ("uring_read_request_bytes", metrics.uring_read_request_bytes()),
-      ("uring_read_request_us", metrics.uring_read_request_us()),
-      ("uring_write_request_count", metrics.uring_write_request_count()),
-      ("uring_write_request_bytes", metrics.uring_write_request_bytes()),
-      ("uring_write_request_us", metrics.uring_write_request_us()),
-      ("uring_sync_request_count", metrics.uring_sync_request_count()),
-      ("uring_sync_request_us", metrics.uring_sync_request_us()),
     ]
   }
 

@@ -4,8 +4,6 @@ use crate::allocator::Allocator;
 use crate::backing_store::file::FileBackingStore;
 #[cfg(target_os = "linux")]
 use crate::backing_store::uring::UringBackingStore;
-#[cfg(target_os = "linux")]
-use crate::backing_store::uring::UringCfg;
 use crate::backing_store::BackingStore;
 use crate::object::LPAGE_SIZE_POW2;
 use crate::object::OBJECT_TUPLE_DATA_LEN_INLINE_THRESHOLD;
@@ -37,6 +35,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::join;
 use tracing::info;
+#[cfg(target_os = "linux")]
+use uring_file::uring::UringCfg;
 
 pub mod allocator;
 pub mod backing_store;
@@ -140,17 +140,14 @@ impl BlobdLoader {
     };
     let dev: Arc<dyn BackingStore> = match cfg.backing_store {
       #[cfg(target_os = "linux")]
-      BlobdCfgBackingStore::Uring => Arc::new(UringBackingStore::new(
-        file,
-        pages.clone(),
-        metrics.clone(),
-        UringCfg {
+      BlobdCfgBackingStore::Uring => {
+        Arc::new(UringBackingStore::new(file, pages.clone(), UringCfg {
           coop_taskrun: cfg.uring_coop_taskrun,
           defer_taskrun: cfg.uring_defer_taskrun,
           iopoll: cfg.uring_iopoll,
           sqpoll: cfg.uring_sqpoll,
-        },
-      )),
+        }))
+      }
       BlobdCfgBackingStore::File => Arc::new(FileBackingStore::new(file, pages.clone())),
     };
 

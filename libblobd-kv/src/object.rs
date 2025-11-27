@@ -1,5 +1,4 @@
 use crate::allocator::Allocator;
-use crate::backing_store::uring::URING_LEN_MAX;
 use crate::backing_store::BackingStore;
 use crate::metrics::BlobdMetrics;
 use crate::pages::Pages;
@@ -19,6 +18,7 @@ use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::info;
+use uring_file::uring::URING_LEN_MAX;
 
 /*
 

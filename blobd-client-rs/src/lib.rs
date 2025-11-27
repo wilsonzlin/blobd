@@ -288,7 +288,7 @@ impl BlobdClient {
         },
         300,
       )]);
-    
+
     if let Some(start) = start {
       req = req.header(
         RANGE,
@@ -299,7 +299,7 @@ impl BlobdClient {
         ),
       );
     }
-    
+
     let res = req.send().await?.error_for_status()?;
     Ok(res.bytes_stream())
   }
