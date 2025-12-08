@@ -95,7 +95,7 @@ pub async fn endpoint_read_object(
         .header("content-length", (end - start).to_string())
         .header(
           "content-range",
-          format!("bytes {start}-{end}/{object_size}"),
+          format!("bytes {start}-{}/{object_size}", end.saturating_sub(1)),
         )
         .header("x-blobd-object-id", object_id.to_string())
         .body(StreamBody::new(data_stream.map(|chunk| {
