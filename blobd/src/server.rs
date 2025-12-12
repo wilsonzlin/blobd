@@ -53,6 +53,7 @@ pub async fn start_http_server_loop(interface: Ipv4Addr, port: u16, ctx: Arc<Htt
   info!(interface = interface.to_string(), port, "starting server");
 
   Server::bind(&addr)
+    .tcp_nodelay(true)
     .serve(app.into_make_service())
     .await
     .unwrap();
